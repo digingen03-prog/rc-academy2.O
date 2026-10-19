@@ -1,0 +1,1124 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ----------------------------------------------------
+// 1. IDENTITY & ACCESS CONTROL (RBAC)
+// ----------------------------------------------------
+
+enum UserRoleType {
+  SUPER_ADMIN
+  ACADEMY_ADMIN
+  TEACHER
+  ACCOUNTANT
+  STAFF
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+}
+
+enum CompensationModel {
+  FIXED_SALARY
+  REVENUE_SHARING
+}
+
+enum PayFrequency {
+  MONTHLY
+  BI_WEEKLY
+  WEEKLY
+}
+
+enum StaffCategory {
+  GENERAL
+  FACULTY
+}
+
+model User {
+  id           String     @id @default(uuid())
+  email        String     @unique
+  passwordHash String
+  firstName    String
+  lastName     String
+  status       UserStatus @default(ACTIVE)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  attendanceCode            String?            @unique // 3-digit attendance code (100-999)
+  phone                     String?
+  designation               String?
+  staffCategory             StaffCategory?     @default(FACULTY)
+  compensationModel         CompensationModel  @default(REVENUE_SHARING)
+  fixedSalaryAmount         Decimal?           @db.Decimal(10, 2)
+  payFrequency              PayFrequency?      @default(MONTHLY)
+  compensationEffectiveDate DateTime?          @default(now())
+
+  userRoles              UserRole[]
+  auditLogs              AuditLog[]
+  createdSessions        AttendanceSession[]
+  markedAttendance       AttendanceRecord[]
+  recordedPayments       Payment[]
+  reviewedEvals          TeacherReview[]
+  assignedAttendanceCode AttendanceCode?
+  staffAssignments       StaffCourseAssignment[]
+  staffAttendanceRecords StaffAttendanceRecord[]
+  salaryPayouts          StaffSalaryPayout[]     @relation("StaffSalaryPayouts")
+  approvedSalaryPayouts  StaffSalaryPayout[]     @relation("ApprovedSalaryPayouts")
+  paidSalaryPayouts      StaffSalaryPayout[]     @relation("PaidSalaryPayouts")
+  staffSalaryLedgers     StaffSalaryLedger[]
+  classSchedules         ClassSchedule[]
+  scheduleExceptions     DailyScheduleException[]
+  authorizedAdjustments  FeeAdjustment[]
+
+  @@map("users")
+}
+
+model Role {
+  id          String       @id @default(uuid())
+  name        UserRoleType @unique
+  description String?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  userRoles       UserRole[]
+  rolePermissions RolePermission[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id          String   @id @default(uuid())
+  code        String   @unique // e.g. "students.create", "fees.record"
+  module      String
+  description String?
+  createdAt   DateTime @default(now())
+
+  rolePermissions RolePermission[]
+
+  @@map("permissions")
+}
+
+model UserRole {
+  userId String
+  roleId String
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+  @@map("user_roles")
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  actorId    String?
+  action     String
+  entityType String
+  entityId   String?
+  details    Json?
+  ipAddress  String?
+  createdAt  DateTime @default(now())
+
+  actor User? @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([entityType, entityId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+// ----------------------------------------------------
+// 2. ACADEMY & STUDENT MANAGEMENT
+// ----------------------------------------------------
+
+enum StudentStatus {
+  ACTIVE
+  ALUMNI
+  WITHDRAWN
+  SUSPENDED
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+}
+
+model AcademicYear {
+  id        String   @id @default(uuid())
+  name      String   @unique // e.g. "2026-2027"
+  startDate DateTime
+  endDate   DateTime
+  isCurrent Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  classes          Class[]
+  feePlans         FeePlan[]
+  courseFeeConfigs CourseFeeConfig[]
+  examinations     Examination[]
+
+  @@map("academic_years")
+}
+
+enum CourseCategory {
+  ACADEMIC
+  SKILL
+}
+
+model Class {
+  id             String         @id @default(uuid())
+  academicYearId String
+  name           String         // e.g. "10th Standard" or "Drawing Masterclass"
+  code           String
+  description    String?
+  category       CourseCategory @default(ACADEMIC)
+  isActive       Boolean        @default(true)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  academicYear     AcademicYear            @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
+  batches          Batch[]
+  subjects         Subject[]
+  examinations     Examination[]
+  staffAssignments StaffCourseAssignment[]
+  feeInvoiceLines  FeeInvoiceLine[]
+  staffSalaryLedgers StaffSalaryLedger[]
+  classSchedules     ClassSchedule[]
+  scheduleExceptions DailyScheduleException[]
+  courseFeeConfigs   CourseFeeConfig[]
+  feeInvoices        FeeInvoice[]            @relation("ClassFeeInvoices")
+  attendanceSessions AttendanceSession[]
+
+  @@unique([academicYearId, code])
+  @@index([category])
+  @@map("classes")
+}
+
+model Batch {
+  id        String   @id @default(uuid())
+  classId   String
+  name      String   // e.g. "Section A"
+  code      String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  class               Class                    @relation(fields: [classId], references: [id], onDelete: Cascade)
+  enrollments         StudentBatchEnrollment[]
+  attendanceSessions  AttendanceSession[]
+  examinations        Examination[]
+  staffAssignments    StaffCourseAssignment[]
+  classSchedules      ClassSchedule[]
+  scheduleExceptions  DailyScheduleException[]
+  courseFeeConfigs    CourseFeeConfig[]
+  feeInvoices         FeeInvoice[]             @relation("BatchFeeInvoices")
+
+  @@map("batches")
+}
+
+model Subject {
+  id        String   @id @default(uuid())
+  classId   String
+  name      String   // e.g. "Physics"
+  code      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  class            Class                    @relation(fields: [classId], references: [id], onDelete: Cascade)
+  questions        Question[]
+  examinations     Examination[]
+  staffAssignments StaffCourseAssignment[]
+  feeInvoiceLines  FeeInvoiceLine[]
+  staffSalaryLedgers StaffSalaryLedger[]
+  classSchedules     ClassSchedule[]
+  scheduleExceptions DailyScheduleException[]
+  courseFeeConfigs   CourseFeeConfig[]
+  feeInvoices        FeeInvoice[]             @relation("SubjectFeeInvoices")
+  enrollments        StudentBatchEnrollment[]
+  attendanceSessions AttendanceSession[]
+
+  @@unique([classId, code])
+  @@map("subjects")
+}
+
+model Student {
+  id              String        @id @default(uuid())
+  studentCode     String        @unique // e.g. "RCA-2026-001"
+  admissionNumber String        @unique // e.g. "ADM-1001"
+  attendanceCode  String?       @unique // 3-digit attendance code (100-999)
+  firstName       String
+  lastName        String
+  schoolName      String?
+  dateOfJoining   DateTime?
+  academicBoard   String?
+  referralSource  String?
+  alternativePhone String?
+  dob             DateTime
+  gender          Gender
+  email           String?
+  phone           String?
+  address         String?
+  status          StudentStatus @default(ACTIVE)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  guardians              StudentGuardian[]
+  batchEnrollments       StudentBatchEnrollment[]
+  attendanceRecords      AttendanceRecord[]
+  feeInvoices            FeeInvoice[]
+  payments               Payment[]
+  submissions            StudentSubmission[]
+  results                Result[]
+  assignedAttendanceCode AttendanceCode?
+
+  @@index([studentCode])
+  @@index([admissionNumber])
+  @@index([attendanceCode])
+  @@index([status])
+  @@index([schoolName])
+  @@index([dateOfJoining])
+  @@index([academicBoard])
+  @@map("students")
+}
+
+model Guardian {
+  id           String   @id @default(uuid())
+  fullName     String
+  phone        String
+  email        String?
+  relationship String   // FATHER, MOTHER, GUARDIAN
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  students StudentGuardian[]
+
+  @@map("guardians")
+}
+
+model StudentGuardian {
+  studentId  String
+  guardianId String
+  isPrimary  Boolean @default(false)
+
+  student  Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  guardian Guardian @relation(fields: [guardianId], references: [id], onDelete: Cascade)
+
+  @@id([studentId, guardianId])
+  @@map("student_guardians")
+}
+
+model StudentBatchEnrollment {
+  id        String    @id @default(uuid())
+  studentId String
+  batchId   String
+  subjectId String?
+  startDate DateTime  @default(now())
+  endDate   DateTime?
+  isActive  Boolean   @default(true)
+
+  student  Student      @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  batch    Batch        @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  subject  Subject?     @relation(fields: [subjectId], references: [id], onDelete: SetNull)
+  invoices FeeInvoice[]
+
+  @@unique([studentId, batchId, subjectId])
+  @@index([studentId])
+  @@index([batchId])
+  @@index([subjectId])
+  @@index([isActive])
+  @@map("student_batch_enrollments")
+}
+
+// ----------------------------------------------------
+// 2B. ATTENDANCE CODES & STAFF ASSIGNMENTS
+// ----------------------------------------------------
+
+model AttendanceCode {
+  id         String   @id @default(uuid())
+  code       String   @unique // 3-digit attendance code: 100-999
+  entityType String   // "STUDENT" | "STAFF"
+  studentId  String?  @unique
+  userId     String?  @unique
+  assignedAt DateTime @default(now())
+
+  student Student? @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  user    User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([code])
+  @@map("attendance_codes")
+}
+
+model StaffCourseAssignment {
+  id                   String    @id @default(uuid())
+  userId               String
+  classId              String
+  subjectId            String?
+  batchId              String?
+  role                 String?   @default("TEACHER")
+  staffSharePercentage Decimal   @default(70.00) @db.Decimal(5, 2)
+  compensationRule     String    @default("REVENUE_SHARE_70_30")
+  isActive             Boolean   @default(true)
+  startDate            DateTime  @default(now())
+  endDate              DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  user          User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  class         Class               @relation(fields: [classId], references: [id], onDelete: Cascade)
+  subject       Subject?            @relation(fields: [subjectId], references: [id], onDelete: SetNull)
+  batch         Batch?              @relation(fields: [batchId], references: [id], onDelete: SetNull)
+  salaryLedgers StaffSalaryLedger[]
+
+  @@unique([userId, classId, subjectId, batchId])
+  @@index([userId])
+  @@index([classId])
+  @@index([subjectId])
+  @@map("staff_course_assignments")
+}
+
+model StaffAttendanceRecord {
+  id         String    @id @default(uuid())
+  userId     String
+  date       DateTime  @db.Date
+  checkInAt  DateTime  @default(now())
+  checkOutAt DateTime?
+  status     String    @default("PRESENT")
+  notes      String?
+  createdAt  DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, date])
+  @@index([userId])
+  @@map("staff_attendance_records")
+}
+
+// ----------------------------------------------------
+// 3. ATTENDANCE DOMAIN
+// ----------------------------------------------------
+
+enum AttendanceStatus {
+  PRESENT
+  ABSENT
+  LATE
+  EXCUSED
+}
+
+enum SessionType {
+  MORNING
+  EVENING
+  FULL_DAY
+}
+
+enum SessionStatus {
+  OPEN
+  CLOSED
+}
+
+model AttendanceSession {
+  id              String        @id @default(uuid())
+  batchId         String
+  classId         String?
+  subjectId       String?
+  classScheduleId String?
+  date            DateTime      @db.Date
+  sessionType     SessionType   @default(MORNING)
+  startTime       String?
+  endTime         String?
+  status          SessionStatus @default(OPEN)
+  createdById     String
+  createdAt       DateTime      @default(now())
+
+  batch         Batch              @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  class         Class?             @relation(fields: [classId], references: [id], onDelete: SetNull)
+  subject       Subject?           @relation(fields: [subjectId], references: [id], onDelete: SetNull)
+  classSchedule ClassSchedule?     @relation(fields: [classScheduleId], references: [id], onDelete: SetNull)
+  createdBy     User               @relation(fields: [createdById], references: [id])
+  records       AttendanceRecord[]
+
+  @@index([classScheduleId])
+  @@index([classId])
+  @@index([subjectId])
+  @@index([date])
+  @@index([batchId])
+  @@map("attendance_sessions")
+}
+
+model AttendanceRecord {
+  id           String           @id @default(uuid())
+  sessionId    String
+  studentId    String
+  status       AttendanceStatus @default(PRESENT)
+  recordedAt   DateTime         @default(now())
+  recordedById String
+
+  session    AttendanceSession      @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  student    Student                @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  recordedBy User                   @relation(fields: [recordedById], references: [id])
+  corrections AttendanceCorrection[]
+
+  @@unique([sessionId, studentId]) // Duplicate prevention
+  @@index([sessionId])
+  @@index([studentId])
+  @@map("attendance_records")
+}
+
+model AttendanceCorrection {
+  id             String           @id @default(uuid())
+  recordId       String
+  previousStatus AttendanceStatus
+  newStatus      AttendanceStatus
+  reason         String
+  authorizedById String
+  createdAt      DateTime         @default(now())
+
+  record AttendanceRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
+
+  @@map("attendance_corrections")
+}
+
+// ----------------------------------------------------
+// 4. FINANCE & PAYROLL DOMAIN
+// ----------------------------------------------------
+
+enum InvoiceStatus {
+  UNPAID
+  PARTIAL
+  PAID
+  CANCELLED
+}
+
+enum PaymentMethod {
+  CASH
+  UPI
+  BANK_TRANSFER
+  CHEQUE
+}
+
+enum PaymentStatus {
+  COMPLETED
+  REVERSED
+  PENDING
+}
+
+model FeePlan {
+  id             String   @id @default(uuid())
+  name           String
+  academicYearId String
+  totalAmount    Decimal  @db.Decimal(10, 2)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  academicYear AcademicYear @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
+  invoices     FeeInvoice[]
+
+  @@map("fee_plans")
+}
+
+model CourseFeeConfig {
+  id                   String    @id @default(uuid())
+  name                 String    // e.g. "Grade 10 Annual Fee", "12th Physics Standard"
+  academicYearId       String
+  classId              String
+  subjectId            String?
+  batchId              String?
+  amount               Decimal   @db.Decimal(10, 2)
+  billingPeriod        String    @default("ANNUAL") // "ANNUAL", "TERM_1", "TERM_2", "MONTHLY", "ONE_TIME"
+  installmentCount     Int       @default(1)
+  installmentsSchedule Json?     // Array of { installmentNumber: number, percentage: number, dueDaysOffset: number }
+  allowedDiscounts     Json?     // Array of { name: string, maxPercentage?: number, maxAmount?: number }
+  effectiveStartDate   DateTime  @default(now())
+  effectiveEndDate     DateTime?
+  isActive             Boolean   @default(true)
+  description          String?
+  createdById          String?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  academicYear AcademicYear @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
+  class        Class        @relation(fields: [classId], references: [id], onDelete: Cascade)
+  subject      Subject?     @relation(fields: [subjectId], references: [id], onDelete: SetNull)
+  batch        Batch?       @relation(fields: [batchId], references: [id], onDelete: SetNull)
+  invoices     FeeInvoice[]
+
+  @@index([academicYearId])
+  @@index([classId])
+  @@index([subjectId])
+  @@index([batchId])
+  @@index([isActive])
+  @@map("course_fee_configs")
+}
+
+enum FeeAdjustmentType {
+  DISCOUNT
+  SCHOLARSHIP
+  CREDIT_ADJUSTMENT
+  WAIVER
+  CORRECTION
+}
+
+model FeeAdjustment {
+  id             String            @id @default(uuid())
+  invoiceId      String
+  type           FeeAdjustmentType @default(DISCOUNT)
+  amount         Decimal           @db.Decimal(10, 2)
+  reason         String
+  authorizedById String
+  createdAt      DateTime          @default(now())
+
+  invoice      FeeInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  authorizedBy User       @relation(fields: [authorizedById], references: [id])
+
+  @@index([invoiceId])
+  @@map("fee_adjustments")
+}
+
+model FeeInvoice {
+  id                    String                  @id @default(uuid())
+  invoiceNumber         String                  @unique // e.g. "INV-2026-0001"
+  studentId             String
+  feePlanId             String?
+  enrollmentId          String?
+  classId               String?
+  subjectId             String?
+  batchId               String?
+  courseFeeConfigId     String?
+  billingPeriod         String?                 // "ANNUAL", "TERM_1", "TERM_2", "MONTHLY", "ONE_TIME"
+  totalAmount           Decimal                 @db.Decimal(10, 2)
+  discountAmount        Decimal                 @default(0.00) @db.Decimal(10, 2)
+  paidAmount            Decimal                 @default(0.00) @db.Decimal(10, 2)
+  balanceAmount         Decimal                 @db.Decimal(10, 2)
+  status                InvoiceStatus           @default(UNPAID)
+  dueDate               DateTime
+  configurationSnapshot Json?                   // Pricing rule snapshot at time of invoice creation
+  createdAt             DateTime                @default(now())
+  updatedAt             DateTime                @updatedAt
+
+  student         Student                 @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  feePlan         FeePlan?                @relation(fields: [feePlanId], references: [id], onDelete: SetNull)
+  enrollment      StudentBatchEnrollment? @relation(fields: [enrollmentId], references: [id], onDelete: SetNull)
+  class           Class?                  @relation("ClassFeeInvoices", fields: [classId], references: [id], onDelete: SetNull)
+  subject         Subject?                @relation("SubjectFeeInvoices", fields: [subjectId], references: [id], onDelete: SetNull)
+  batch           Batch?                  @relation("BatchFeeInvoices", fields: [batchId], references: [id], onDelete: SetNull)
+  courseFeeConfig CourseFeeConfig?        @relation(fields: [courseFeeConfigId], references: [id], onDelete: SetNull)
+  lines           FeeInvoiceLine[]
+  allocations     PaymentAllocation[]
+  adjustments     FeeAdjustment[]
+
+  @@index([studentId])
+  @@index([enrollmentId])
+  @@index([classId])
+  @@index([subjectId])
+  @@index([batchId])
+  @@index([status])
+  @@index([courseFeeConfigId])
+  @@map("fee_invoices")
+}
+
+model FeeInvoiceLine {
+  id          String   @id @default(uuid())
+  invoiceId   String
+  classId     String?
+  subjectId   String?
+  description String
+  amount      Decimal  @db.Decimal(10, 2)
+
+  invoice FeeInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  class   Class?      @relation(fields: [classId], references: [id], onDelete: SetNull)
+  subject Subject?    @relation(fields: [subjectId], references: [id], onDelete: SetNull)
+
+  @@index([classId])
+  @@index([subjectId])
+  @@map("fee_invoice_lines")
+}
+
+model Payment {
+  id             String        @id @default(uuid())
+  receiptNumber  String        @unique // e.g. "REC-2026-0001"
+  idempotencyKey String?       @unique
+  studentId      String
+  amount         Decimal       @db.Decimal(10, 2)
+  paymentMethod  PaymentMethod @default(CASH)
+  status         PaymentStatus @default(COMPLETED)
+  reference      String?
+  notes          String?
+  paidAt         DateTime      @default(now())
+  recordedById   String
+  reversedAt     DateTime?
+  reversedById   String?
+  reversalReason String?
+
+  student           Student                   @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  recordedBy        User                      @relation(fields: [recordedById], references: [id])
+  allocations       PaymentAllocation[]
+  salaryLedgers     StaffSalaryLedger[]
+  revenueExceptions PaymentRevenueException[]
+
+  @@index([studentId])
+  @@index([receiptNumber])
+  @@index([idempotencyKey])
+  @@map("payments")
+}
+
+model PaymentAllocation {
+  id              String  @id @default(uuid())
+  paymentId       String
+  invoiceId       String
+  allocatedAmount Decimal @db.Decimal(10, 2)
+  isReversed      Boolean @default(false)
+
+  payment Payment    @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  invoice FeeInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@map("payment_allocations")
+}
+
+// ----------------------------------------------------
+// 4B. REVENUE-BASED SALARY & MULTI-CLASS LEDGER
+// ----------------------------------------------------
+
+model StaffSalaryPayout {
+  id            String    @id @default(uuid())
+  payoutNumber  String    @unique // e.g. "PAY-2026-0001"
+  userId        String
+  totalAmount   Decimal   @db.Decimal(10, 2)
+  status        String    @default("APPROVED") // "PENDING", "APPROVED", "PAID", "CANCELLED"
+  paymentMethod String    @default("BANK_TRANSFER")
+  reference     String?
+  notes         String?
+  approvedById  String
+  approvedAt    DateTime  @default(now())
+  paidAt        DateTime?
+  paidById      String?
+
+  user          User                @relation("StaffSalaryPayouts", fields: [userId], references: [id], onDelete: Cascade)
+  approvedBy    User                @relation("ApprovedSalaryPayouts", fields: [approvedById], references: [id])
+  paidBy        User?               @relation("PaidSalaryPayouts", fields: [paidById], references: [id], onDelete: SetNull)
+  ledgerEntries StaffSalaryLedger[]
+
+  @@index([userId])
+  @@index([status])
+  @@map("staff_salary_payouts")
+}
+
+model StaffSalaryLedger {
+  id                  String             @id @default(uuid())
+  userId              String
+  compensationModel   CompensationModel  @default(REVENUE_SHARING)
+  assignmentId        String?
+  classId             String?
+  subjectId           String?
+  paymentId           String?
+  paymentAllocationId String?
+  receiptNumber       String?
+  collectedAmount     Decimal            @default(0) @db.Decimal(10, 2)
+  staffPoolRate       Decimal            @default(70.00) @db.Decimal(5, 2)
+  academyShareRate    Decimal            @default(30.00) @db.Decimal(5, 2)
+  academyShareAmount  Decimal            @default(0) @db.Decimal(10, 2)
+  staffPoolAmount     Decimal            @default(0) @db.Decimal(10, 2)
+  earnedAmount        Decimal            @db.Decimal(10, 2)
+  ruleApplied         String             @default("REVENUE_SHARE_70_30")
+  payPeriod           String?            // e.g. "2026-10" for fixed salary accruals
+  notes               String?
+  status              String             @default("ACCRUED") // "ACCRUED", "APPROVED", "PAID", "CANCELLED"
+  payoutId            String?
+  payoutReference     String?
+  payoutDate          DateTime?
+  isReversed          Boolean            @default(false)
+  reversedAt          DateTime?
+  reversalReason      String?
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @default(now()) @updatedAt
+
+  user       User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  assignment StaffCourseAssignment? @relation(fields: [assignmentId], references: [id], onDelete: SetNull)
+  class      Class?                 @relation(fields: [classId], references: [id], onDelete: SetNull)
+  subject    Subject?               @relation(fields: [subjectId], references: [id], onDelete: SetNull)
+  payment    Payment?               @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+  payout     StaffSalaryPayout?     @relation(fields: [payoutId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([compensationModel])
+  @@index([assignmentId])
+  @@index([classId])
+  @@index([subjectId])
+  @@index([paymentId])
+  @@index([status])
+  @@index([payPeriod])
+  @@map("staff_salary_ledgers")
+}
+
+model AcademySalaryConfig {
+  id                      String   @id @default(uuid())
+  defaultStaffPoolRate    Decimal  @default(70.00) @db.Decimal(5, 2)
+  defaultAcademyShareRate Decimal  @default(30.00) @db.Decimal(5, 2)
+  isApprovalRequired      Boolean  @default(true)
+  fixedSalaryAutoAccrue   Boolean  @default(true)
+  payDayOfMonth           Int      @default(1)
+  updatedById             String?
+  updatedAt               DateTime @default(now()) @updatedAt
+
+  @@map("academy_salary_configs")
+}
+
+model PaymentRevenueException {
+  id                String    @id @default(uuid())
+  paymentId         String
+  receiptNumber     String
+  unallocatedAmount Decimal   @db.Decimal(10, 2)
+  reason            String
+  status            String    @default("PENDING") // "PENDING", "RESOLVED", "IGNORED"
+  resolutionNotes   String?
+  resolvedById      String?
+  resolvedAt        DateTime?
+  createdAt         DateTime  @default(now())
+
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+
+  @@index([paymentId])
+  @@index([status])
+  @@map("payment_revenue_exceptions")
+}
+
+// ----------------------------------------------------
+// 5. ACADEMICS & LOCAL AI EXAMINATION DOMAIN
+// ----------------------------------------------------
+
+enum QuestionType {
+  MCQ
+  TRUE_FALSE
+  SHORT_ANSWER
+  LONG_ANSWER
+  NUMERICAL
+}
+
+enum DifficultyLevel {
+  EASY
+  MEDIUM
+  HARD
+}
+
+enum ExaminationStatus {
+  DRAFT
+  SCHEDULED
+  IN_PROGRESS
+  COMPLETED
+  EVALUATION
+  PUBLISHED
+}
+
+enum SubmissionStatus {
+  UPLOADED
+  OCR_PROCESSING
+  AI_EVALUATED
+  TEACHER_REVIEWED
+  APPROVED
+  REJECTED
+  PUBLISHED
+  FLAGGED
+}
+
+enum AIEvalStatus {
+  SUGGESTED
+  VALIDATED
+  FLAGGED
+  APPROVED
+  MODIFIED
+}
+
+enum ExamType {
+  UNIT_TEST
+  WEEKLY_TEST
+  MONTHLY_TEST
+  MODEL_EXAM
+  FINAL_EXAM
+}
+
+enum QuestionStatus {
+  DRAFT
+  REVIEWED
+  APPROVED
+}
+
+enum ExamAttendanceStatus {
+  PRESENT
+  ABSENT
+  EXEMPT
+}
+
+model Question {
+  id                String          @id @default(uuid())
+  subjectId         String
+  topic             String
+  questionType      QuestionType    @default(SHORT_ANSWER)
+  difficulty        DifficultyLevel @default(MEDIUM)
+  status            QuestionStatus  @default(APPROVED)
+  content           String          @db.Text
+  maxMarks          Decimal         @db.Decimal(4, 1)
+  options           Json?           // Array of { key, text, isCorrect }
+  answerKeyText     String?         @db.Text
+  explanation       String?         @db.Text
+  sourceReference   String?
+  markingRubricJson Json?           // Rubric criteria and weights
+  createdById       String?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  subject       Subject               @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  examLinks     ExaminationQuestion[]
+  aiEvaluations AIEvaluation[]
+
+  @@map("questions")
+}
+
+model Examination {
+  id              String            @id @default(uuid())
+  title           String
+  examType        ExamType          @default(UNIT_TEST)
+  classId         String
+  batchId         String?
+  subjectId       String
+  academicYearId  String?
+  date            DateTime
+  durationMinutes Int
+  totalMarks      Decimal           @db.Decimal(5, 2)
+  passMarks       Decimal           @default(35.00) @db.Decimal(5, 2)
+  instructions    String?           @db.Text
+  status          ExaminationStatus @default(DRAFT)
+  isPublished     Boolean           @default(false)
+  paperVersion    Int               @default(1)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  class        Class                 @relation(fields: [classId], references: [id], onDelete: Cascade)
+  batch        Batch?                @relation(fields: [batchId], references: [id], onDelete: SetNull)
+  subject      Subject               @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  academicYear AcademicYear?         @relation(fields: [academicYearId], references: [id], onDelete: SetNull)
+  questions    ExaminationQuestion[]
+  submissions  StudentSubmission[]
+  results      Result[]
+
+  @@map("examinations")
+}
+
+model ExaminationQuestion {
+  examinationId       String
+  questionId          String
+  orderNumber         Int
+  sectionName         String?
+  sectionInstructions String?
+
+  examination Examination @relation(fields: [examinationId], references: [id], onDelete: Cascade)
+  question    Question    @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@id([examinationId, questionId])
+  @@map("examination_questions")
+}
+
+model StudentSubmission {
+  id              String           @id @default(uuid())
+  examinationId   String
+  studentId       String
+  fileAssetUrl    String?
+  fileName        String?
+  fileSizeBytes   Int?
+  pageCount       Int?             @default(1)
+  ocrText         String?          @db.Text
+  status          SubmissionStatus @default(UPLOADED)
+  uploadedById    String?
+  uploadedAt      DateTime         @default(now())
+  approvedMarks   Decimal?         @db.Decimal(5, 2)
+  approvedById    String?
+  approvedAt      DateTime?
+  rejectionReason String?
+  updatedAt       DateTime         @updatedAt
+
+  examination Examination    @relation(fields: [examinationId], references: [id], onDelete: Cascade)
+  student     Student        @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  evaluations AIEvaluation[]
+
+  @@unique([examinationId, studentId])
+  @@map("student_submissions")
+}
+
+model AIEvaluation {
+  id              String       @id @default(uuid())
+  submissionId    String
+  questionId      String?
+  extractedAnswer String?      @db.Text
+  suggestedMarks  Decimal      @db.Decimal(4, 2)
+  maxMarks        Decimal?     @db.Decimal(4, 2)
+  reviewedMarks   Decimal?     @db.Decimal(4, 2)
+  isOverridden    Boolean      @default(false)
+  teacherNotes    String?      @db.Text
+  confidenceScore Float        @default(1.0)
+  ocrQualityScore Float        @default(1.0)
+  modelName       String       @default("qwen2.5:3b")
+  rationale       String?      @db.Text
+  evidence        String?      @db.Text
+  evaluationData  Json         // Full structured rubric breakdown & citations
+  status          AIEvalStatus @default(SUGGESTED)
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  submission StudentSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  question   Question?         @relation(fields: [questionId], references: [id], onDelete: SetNull)
+  reviews    TeacherReview[]
+
+  @@map("ai_evaluations")
+}
+
+model TeacherReview {
+  id             String   @id @default(uuid())
+  evaluationId   String
+  teacherId      String
+  finalMarks     Decimal  @db.Decimal(4, 2)
+  reviewNotes    String?
+  isApproved     Boolean  @default(false)
+  approvedAt     DateTime @default(now())
+
+  evaluation AIEvaluation @relation(fields: [evaluationId], references: [id], onDelete: Cascade)
+  teacher    User         @relation(fields: [teacherId], references: [id])
+
+  @@map("teacher_reviews")
+}
+
+model Result {
+  id               String               @id @default(uuid())
+  examinationId    String
+  studentId        String
+  attendanceStatus ExamAttendanceStatus @default(PRESENT)
+  obtainedMarks    Decimal              @db.Decimal(5, 2)
+  percentage       Decimal              @db.Decimal(5, 2)
+  grade            String?
+  rank             Int?
+  isPassed         Boolean              @default(true)
+  isPublished      Boolean              @default(false)
+  publishedAt      DateTime?
+  correctedMarks   Decimal?             @db.Decimal(5, 2)
+  correctionReason String?
+  correctedById    String?
+  correctedAt      DateTime?
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+
+  examination Examination @relation(fields: [examinationId], references: [id], onDelete: Cascade)
+  student     Student     @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@unique([examinationId, studentId])
+  @@map("results")
+}
+
+// ----------------------------------------------------
+// 6. TIMETABLE, DAILY SCHEDULE & WHATSAPP GENERATOR
+// ----------------------------------------------------
+
+enum ScheduleDayOfWeek {
+  MONDAY
+  TUESDAY
+  WEDNESDAY
+  THURSDAY
+  FRIDAY
+  SATURDAY
+  SUNDAY
+}
+
+enum ScheduleExceptionStatus {
+  ACTIVE
+  CANCELLED
+  SUBSTITUTED
+  RESCHEDULED
+  SPECIAL_CLASS
+}
+
+model ClassSchedule {
+  id                 String             @id @default(uuid())
+  classId            String
+  subjectId          String
+  batchId            String?
+  staffId            String
+  dayOfWeek          ScheduleDayOfWeek
+  startTime          String             // e.g. "09:00"
+  endTime            String             // e.g. "10:30"
+  room               String?
+  effectiveStartDate DateTime?
+  effectiveEndDate   DateTime?
+  isActive           Boolean            @default(true)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @default(now()) @updatedAt
+
+  class              Class              @relation(fields: [classId], references: [id], onDelete: Cascade)
+  subject            Subject            @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  batch              Batch?             @relation(fields: [batchId], references: [id], onDelete: SetNull)
+  staff              User               @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  exceptions         DailyScheduleException[]
+  attendanceSessions AttendanceSession[]
+
+  @@index([classId])
+  @@index([subjectId])
+  @@index([staffId])
+  @@index([dayOfWeek])
+  @@map("class_schedules")
+}
+
+model DailyScheduleException {
+  id                 String                  @id @default(uuid())
+  date               DateTime                @db.Date
+  scheduleId         String?
+  classId            String
+  subjectId          String
+  batchId            String?
+  staffId            String
+  startTime          String                  // e.g. "09:00"
+  endTime            String                  // e.g. "10:30"
+  room               String?
+  status             ScheduleExceptionStatus @default(ACTIVE)
+  cancellationReason String?
+  notes              String?
+  createdAt          DateTime                @default(now())
+  updatedAt          DateTime                @default(now()) @updatedAt
+
+  schedule           ClassSchedule?          @relation(fields: [scheduleId], references: [id], onDelete: SetNull)
+  class              Class                   @relation(fields: [classId], references: [id], onDelete: Cascade)
+  subject            Subject                 @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  batch              Batch?                  @relation(fields: [batchId], references: [id], onDelete: SetNull)
+  staff              User                    @relation(fields: [staffId], references: [id], onDelete: Cascade)
+
+  @@index([date])
+  @@index([scheduleId])
+  @@index([classId])
+  @@index([staffId])
+  @@map("daily_schedule_exceptions")
+}
+
+model AcademyScheduleConfig {
+  id                 String   @id @default(uuid())
+  academyName        String   @default("RC Academy")
+  timezone           String   @default("Asia/Kolkata")
+  headerTemplate     String?  @default("*{academy_name} – Tomorrow's Class Schedule*\n📅 {date}")
+  classItemTemplate  String?  @default("🕘 {start_time} – {end_time}\n📚 Class: {class_name}\n📘 Subject: {subject_name}\n👨‍🏫 Teacher: {teacher_name}\n👥 Batch: {batch_name}\n📍 Room: {room}")
+  footerTemplate     String?  @default("🔔 *Reminder:* Please arrive 10 minutes before class with textbooks and completed homework. Have a great learning session!")
+  groupByBatch       Boolean  @default(false)
+  updatedById        String?
+  updatedAt          DateTime @default(now()) @updatedAt
+
+  @@map("academy_schedule_configs")
+}
