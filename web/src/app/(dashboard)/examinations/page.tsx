@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Header } from '@/components/layout/header';
 import { ResponsivePageContainer } from '@/components/layout/responsive-container';
 import {
@@ -14,18 +14,28 @@ import {
   Award,
   Calendar,
   Building2,
-  X
+  X,
+  Loader2,
+  AlertCircle,
+  CheckCircle2,
+  RefreshCw,
+  ShieldAlert,
 } from 'lucide-react';
 import { Modal } from '@/components/ui/modal';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { ApiClient } from '@/lib/api/api-client';
+import { useAuthUser } from '@/lib/auth/use-role';
 
 interface ExamItem {
   id: string;
   title: string;
   className: string;
+  classId?: string;
   batchName: string;
+  batchId?: string;
   subjectName: string;
+  subjectId?: string;
   date: string;
   durationMinutes: number;
   totalMarks: number;
@@ -47,12 +57,15 @@ interface QuestionItem {
   status: 'DRAFT' | 'APPROVED';
   answerKeyText?: string;
   explanation?: string;
+  sourceReference?: string;
 }
 
 interface CandidateResult {
   studentId: string;
   studentName: string;
   studentCode: string;
+  admissionNumber?: string;
+  batchName?: string;
   attendanceStatus: 'PRESENT' | 'ABSENT' | 'EXEMPT';
   marks: number;
   percentage: number;
@@ -60,215 +73,438 @@ interface CandidateResult {
   rank?: number;
   correctedMarks?: number;
   correctionReason?: string;
+  isPublished?: boolean;
+}
+
+interface CourseOption {
+  id: string;
+  name: string;
+  code?: string;
+  batches?: Array<{ id: string; name: string }>;
+  subjects?: Array<{ id: string; name: string; code?: string }>;
 }
 
 export default function ExaminationsPage() {
+  const { user } = useAuthUser();
+  const canCorrectResults = Boolean(
+    user?.roles?.includes('SUPER_ADMIN') || user?.roles?.includes('ACADEMY_ADMIN'),
+  );
+
   const [activeTab, setActiveTab] = useState<'exams' | 'questions' | 'marks' | 'results'>('exams');
 
-  const [exams, setExams] = useState<ExamItem[]>([
-    {
-      id: 'ex-1',
-      title: 'Unit Test 1 - Physics Mechanics',
-      className: 'Grade 10',
-      batchName: 'Section A',
-      subjectName: 'Physics',
-      date: '2026-10-25',
-      durationMinutes: 90,
-      totalMarks: 50,
-      passMarks: 17.5,
-      status: 'PUBLISHED',
-      isPublished: true,
-      paperVersion: 2,
-      questionsCount: 2,
-    },
-    {
-      id: 'ex-2',
-      title: 'Monthly Assessment - Chemical Bonding',
-      className: 'Grade 11',
-      batchName: 'Section B',
-      subjectName: 'Chemistry',
-      date: '2026-11-05',
-      durationMinutes: 60,
-      totalMarks: 25,
-      passMarks: 9,
-      status: 'SCHEDULED',
-      isPublished: true,
-      paperVersion: 1,
-      questionsCount: 5,
-    },
-  ]);
+  // Server-connected states (zero fabricated records)
+  const [exams, setExams] = useState<ExamItem[]>([]);
+  const [questions, setQuestions] = useState<QuestionItem[]>([]);
+  const [candidates, setCandidates] = useState<CandidateResult[]>([]);
+  const [coursesList, setCoursesList] = useState<CourseOption[]>([]);
 
-  const [questions, setQuestions] = useState<QuestionItem[]>([
-    {
-      id: 'q-1',
-      topic: 'Optics',
-      subjectName: 'Physics',
-      questionType: 'MCQ',
-      difficulty: 'MEDIUM',
-      content: 'What is the speed of light in a vacuum?',
-      maxMarks: 20,
-      status: 'APPROVED',
-      answerKeyText: 'Option A (3 x 10^8 m/s)',
-      explanation: 'Fundamental constant c in vacuum.',
-    },
-    {
-      id: 'q-2',
-      topic: 'Mechanics',
-      subjectName: 'Physics',
-      questionType: 'SHORT_ANSWER',
-      difficulty: 'HARD',
-      content: "State Newton's Second Law of Motion and derive F = ma.",
-      maxMarks: 30,
-      status: 'APPROVED',
-      answerKeyText: 'Rate of change of momentum proportional to force applied.',
-    },
-    {
-      id: 'q-3',
-      topic: 'Thermodynamics',
-      subjectName: 'Physics',
-      questionType: 'MCQ',
-      difficulty: 'MEDIUM',
-      content: 'Which law of thermodynamics defines the concept of entropy?',
-      maxMarks: 5,
-      status: 'DRAFT',
-      answerKeyText: 'Second Law of Thermodynamics',
-    },
-  ]);
+  // Async state & discrete error tracking per resource
+  const [loading, setLoading] = useState(true);
+  const [candidatesLoading, setCandidatesLoading] = useState(false);
+  const [examsError, setExamsError] = useState<string | null>(null);
+  const [questionsError, setQuestionsError] = useState<string | null>(null);
+  const [coursesError, setCoursesError] = useState<string | null>(null);
+  const [candidatesError, setCandidatesError] = useState<string | null>(null);
+  const [actionNotice, setActionNotice] = useState<{
+    type: 'success' | 'warning' | 'error' | 'info';
+    message: string;
+  } | null>(null);
 
-  const [candidates, setCandidates] = useState<CandidateResult[]>([
-    {
-      studentId: 'st-1',
-      studentName: 'Pranav Mukherjee',
-      studentCode: 'RCA-2026-001',
-      attendanceStatus: 'PRESENT',
-      marks: 48,
-      percentage: 96,
-      grade: 'A+',
-      rank: 1,
-      correctedMarks: 48,
-      correctionReason: 'Recounting error in Section B: +3 marks awarded',
-    },
-    {
-      studentId: 'st-2',
-      studentName: 'Ananya Iyer',
-      studentCode: 'RCA-2026-002',
-      attendanceStatus: 'PRESENT',
-      marks: 42,
-      percentage: 84,
-      grade: 'A',
-      rank: 2,
-    },
-    {
-      studentId: 'st-3',
-      studentName: 'Aravind Kumar',
-      studentCode: 'RCA-2026-003',
-      attendanceStatus: 'ABSENT',
-      marks: 0,
-      percentage: 0,
-      grade: 'F',
-    },
-  ]);
+  // Selected entities
+  const [selectedExamId, setSelectedExamId] = useState<string>('');
+  const [selectedExam, setSelectedExam] = useState<ExamItem | null>(null);
+  const [selectedCandidate, setSelectedCandidate] = useState<CandidateResult | null>(null);
 
   // Modal States
   const [showNewExamModal, setShowNewExamModal] = useState(false);
   const [showAiModal, setShowAiModal] = useState(false);
   const [showCorrectionModal, setShowCorrectionModal] = useState(false);
   const [showPaperPreviewModal, setShowPaperPreviewModal] = useState(false);
-  const [selectedExam, setSelectedExam] = useState<ExamItem | null>(exams[0]);
-  const [selectedCandidate, setSelectedCandidate] = useState<CandidateResult | null>(null);
 
-  // Form States
+  // Form States - Create Exam
   const [newExamTitle, setNewExamTitle] = useState('');
-  const [newExamSubject, setNewExamSubject] = useState('Physics');
-  const [newExamDate, setNewExamDate] = useState('2026-11-20');
+  const [newExamClassId, setNewExamClassId] = useState('');
+  const [newExamBatchId, setNewExamBatchId] = useState('');
+  const [newExamSubjectId, setNewExamSubjectId] = useState('');
+  const [newExamDate, setNewExamDate] = useState(() => new Date().toISOString().split('T')[0]);
   const [newExamDuration, setNewExamDuration] = useState(90);
   const [newExamTotalMarks, setNewExamTotalMarks] = useState(50);
   const [newExamPassMarks, setNewExamPassMarks] = useState(17.5);
+  const [submittingExam, setSubmittingExam] = useState(false);
 
-  const [aiTopic, setAiTopic] = useState('Electromagnetism & Induction');
+  // Form States - AI Generation
+  const [aiSubjectId, setAiSubjectId] = useState('');
+  const [aiTopic, setAiTopic] = useState('');
   const [aiCount, setAiCount] = useState(3);
   const [aiDifficulty, setAiDifficulty] = useState<'EASY' | 'MEDIUM' | 'HARD'>('MEDIUM');
   const [generating, setGenerating] = useState(false);
 
-  const [correctionMarks, setCorrectionMarks] = useState(48);
+  // Form States - Correction
+  const [correctionMarks, setCorrectionMarks] = useState(0);
   const [correctionReason, setCorrectionReason] = useState('');
+  const [submittingCorrection, setSubmittingCorrection] = useState(false);
 
-  // Handlers
-  const handleCreateExam = (e: React.FormEvent) => {
+  // Form States - Inline Marks Entry
+  const [editableMarks, setEditableMarks] = useState<Record<string, number>>({});
+  const [savingMarks, setSavingMarks] = useState(false);
+  const [finalizingResults, setFinalizingResults] = useState(false);
+
+  // --------------------------------------------------------------------------
+  // Data Fetching: Deliberate Concurrent Loading with Partial Failure Isolation
+  // --------------------------------------------------------------------------
+  const loadPageData = useCallback(async () => {
+    setLoading(true);
+
+    const [examsResult, questionsResult, coursesResult] = await Promise.allSettled([
+      ApiClient.fetch<any[]>('/examinations'),
+      ApiClient.fetch<any[]>('/examinations/questions'),
+      ApiClient.fetch<any[]>('/courses'),
+    ]);
+
+    const failedParts: string[] = [];
+
+    // 1. Process Examinations
+    if (examsResult.status === 'fulfilled') {
+      const rawExams = examsResult.value || [];
+      const mappedExams: ExamItem[] = rawExams.map((e: any) => ({
+        id: e.id,
+        title: e.title,
+        className: e.class?.name || 'Class',
+        classId: e.classId,
+        batchName: e.batch?.name || 'General Batch',
+        batchId: e.batchId,
+        subjectName: e.subject?.name || 'Subject',
+        subjectId: e.subjectId,
+        date: typeof e.date === 'string' ? e.date.split('T')[0] : new Date(e.date).toISOString().split('T')[0],
+        durationMinutes: Number(e.durationMinutes) || 60,
+        totalMarks: Number(e.totalMarks) || 100,
+        passMarks: Number(e.passMarks) || 35,
+        status: e.status || 'DRAFT',
+        isPublished: Boolean(e.isPublished),
+        paperVersion: Number(e.paperVersion) || 1,
+        questionsCount: e._count?.questions || 0,
+      }));
+      setExams(mappedExams);
+      setExamsError(null);
+
+      if (mappedExams.length > 0) {
+        setSelectedExamId((prev) => (prev && mappedExams.some((x) => x.id === prev) ? prev : mappedExams[0].id));
+      } else {
+        setSelectedExamId('');
+        setSelectedExam(null);
+        setCandidates([]);
+      }
+    } else {
+      const errMsg = examsResult.reason?.message || 'Failed to load examinations';
+      setExamsError(errMsg);
+      failedParts.push(`Examinations: ${errMsg}`);
+      // NOTE: Do not erase previously loaded exams if present!
+    }
+
+    // 2. Process Questions
+    if (questionsResult.status === 'fulfilled') {
+      const rawQuestions = questionsResult.value || [];
+      const mappedQuestions: QuestionItem[] = rawQuestions.map((q: any) => ({
+        id: q.id,
+        topic: q.topic || 'General',
+        subjectName: q.subject?.name || 'Subject',
+        questionType: q.questionType || 'SHORT_ANSWER',
+        difficulty: q.difficulty || 'MEDIUM',
+        content: q.content || '',
+        maxMarks: Number(q.maxMarks) || 5,
+        status: q.status || 'DRAFT',
+        answerKeyText: q.answerKeyText,
+        explanation: q.explanation,
+        sourceReference: q.sourceReference,
+      }));
+      setQuestions(mappedQuestions);
+      setQuestionsError(null);
+    } else {
+      const errMsg = questionsResult.reason?.message || 'Failed to load questions';
+      setQuestionsError(errMsg);
+      failedParts.push(`Questions: ${errMsg}`);
+      // NOTE: Do not erase previously loaded questions!
+    }
+
+    // 3. Process Courses & Dropdown Options
+    if (coursesResult.status === 'fulfilled') {
+      const rawCourses = coursesResult.value || [];
+      setCoursesList(rawCourses);
+      setCoursesError(null);
+
+      if (rawCourses.length > 0) {
+        setNewExamClassId((prev) => prev || rawCourses[0].id);
+        if (rawCourses[0].subjects && rawCourses[0].subjects.length > 0) {
+          setNewExamSubjectId((prev) => prev || rawCourses[0].subjects[0].id);
+          setAiSubjectId((prev) => prev || rawCourses[0].subjects[0].id);
+        }
+        if (rawCourses[0].batches && rawCourses[0].batches.length > 0) {
+          setNewExamBatchId((prev) => prev || rawCourses[0].batches[0].id);
+        }
+      }
+    } else {
+      const errMsg = coursesResult.reason?.message || 'Failed to load curriculum courses';
+      setCoursesError(errMsg);
+      failedParts.push(`Courses: ${errMsg}`);
+    }
+
+    setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    loadPageData();
+  }, [loadPageData]);
+
+  // --------------------------------------------------------------------------
+  // Data Fetching: Candidates for Selected Exam
+  // --------------------------------------------------------------------------
+  const loadCandidates = useCallback(async (examId: string) => {
+    if (!examId) {
+      setCandidates([]);
+      setCandidatesError(null);
+      return;
+    }
+    setCandidatesLoading(true);
+    setCandidatesError(null);
+    try {
+      const rawCandidates = await ApiClient.fetch<any[]>(`/examinations/${examId}/candidates`);
+      const mapped: CandidateResult[] = (rawCandidates || []).map((c: any) => {
+        const res = c.result;
+        return {
+          studentId: c.studentId,
+          studentName: c.studentName,
+          studentCode: c.studentCode,
+          admissionNumber: c.admissionNumber,
+          batchName: c.batchName,
+          attendanceStatus: c.attendanceStatus || 'PRESENT',
+          marks: res ? Number(res.obtainedMarks) : 0,
+          percentage: res ? Number(res.percentage) : 0,
+          grade: res ? res.grade : '—',
+          rank: res?.rank || undefined,
+          correctedMarks: res?.correctedMarks ? Number(res.correctedMarks) : undefined,
+          correctionReason: res?.correctionReason || undefined,
+          isPublished: Boolean(res?.isPublished),
+        };
+      });
+      setCandidates(mapped);
+
+      // Initialize inline editable marks map
+      const marksMap: Record<string, number> = {};
+      mapped.forEach((c) => {
+        marksMap[c.studentId] = c.marks;
+      });
+      setEditableMarks(marksMap);
+    } catch (err) {
+      const msg = (err as Error).message || 'Failed to load candidates';
+      setCandidatesError(msg);
+      // Retain previously loaded candidates on failure rather than wiping to []
+    } finally {
+      setCandidatesLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (selectedExamId) {
+      const match = exams.find((e) => e.id === selectedExamId) || null;
+      setSelectedExam(match);
+      loadCandidates(selectedExamId);
+    } else {
+      setSelectedExam(null);
+      setCandidates([]);
+    }
+  }, [selectedExamId, exams, loadCandidates]);
+
+  // --------------------------------------------------------------------------
+  // Mutation: Create Examination
+  // --------------------------------------------------------------------------
+  const handleCreateExam = async (e: React.FormEvent) => {
     e.preventDefault();
-    const newExam: ExamItem = {
-      id: `ex-${Date.now()}`,
-      title: newExamTitle,
-      className: 'Grade 10',
-      batchName: 'Section A',
-      subjectName: newExamSubject,
-      date: newExamDate,
-      durationMinutes: newExamDuration,
-      totalMarks: newExamTotalMarks,
-      passMarks: newExamPassMarks,
-      status: 'DRAFT',
-      isPublished: false,
-      paperVersion: 1,
-      questionsCount: 0,
-    };
-    setExams([newExam, ...exams]);
-    setShowNewExamModal(false);
-    setNewExamTitle('');
+    if (!newExamTitle.trim() || !newExamClassId || !newExamSubjectId) {
+      setActionNotice({ type: 'error', message: 'Please provide Title, Class, and Subject.' });
+      return;
+    }
+
+    setSubmittingExam(true);
+    try {
+      await ApiClient.fetch('/examinations', {
+        method: 'POST',
+        body: JSON.stringify({
+          title: newExamTitle.trim(),
+          classId: newExamClassId,
+          batchId: newExamBatchId || undefined,
+          subjectId: newExamSubjectId,
+          date: newExamDate,
+          durationMinutes: Number(newExamDuration),
+          totalMarks: Number(newExamTotalMarks),
+          passMarks: Number(newExamPassMarks),
+        }),
+      });
+
+      setShowNewExamModal(false);
+      setNewExamTitle('');
+      setActionNotice({ type: 'success', message: 'Examination blueprint created successfully.' });
+      await loadPageData();
+    } catch (err) {
+      setActionNotice({ type: 'error', message: (err as Error).message || 'Failed to create examination.' });
+    } finally {
+      setSubmittingExam(false);
+    }
   };
 
-  const handleGenerateAi = (e: React.FormEvent) => {
+  // --------------------------------------------------------------------------
+  // Mutation: AI Question Generation (With limitation notice)
+  // --------------------------------------------------------------------------
+  const handleGenerateAi = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!aiTopic.trim()) {
+      setActionNotice({ type: 'error', message: 'Please provide a curriculum topic for AI generation.' });
+      return;
+    }
+    if (!aiSubjectId) {
+      setActionNotice({ type: 'error', message: 'Please select a subject to associate questions with.' });
+      return;
+    }
+
     setGenerating(true);
-    setTimeout(() => {
-      setGenerating(false);
-      const newAiQuestions: QuestionItem[] = [
-        {
-          id: `q-ai-1-${Date.now()}`,
-          topic: aiTopic,
-          subjectName: 'Physics',
-          questionType: 'MCQ',
+    try {
+      const res = await ApiClient.fetch<any>('/examinations/ai/generate-questions', {
+        method: 'POST',
+        body: JSON.stringify({
+          subjectId: aiSubjectId,
+          topic: aiTopic.trim(),
+          count: Number(aiCount),
           difficulty: aiDifficulty,
-          content: `State Faraday's law regarding induced electromotive force in a closed loop.`,
-          maxMarks: 5,
-          status: 'DRAFT',
-          answerKeyText: 'Induced EMF is proportional to negative rate of change of magnetic flux.',
-          explanation: 'Synthesized via local on-premise Ollama qwen2.5:3b.',
-        },
-        {
-          id: `q-ai-2-${Date.now()}`,
-          topic: aiTopic,
-          subjectName: 'Physics',
-          questionType: 'SHORT_ANSWER',
-          difficulty: aiDifficulty,
-          content: `Derive the expression for magnetic field inside an ideal solenoid carrying current I.`,
-          maxMarks: 10,
-          status: 'DRAFT',
-          answerKeyText: 'B = mu_0 * n * I',
-        },
-      ];
-      setQuestions([...newAiQuestions, ...questions]);
+        }),
+      });
+
       setShowAiModal(false);
-    }, 1200);
+      setAiTopic('');
+      setActionNotice({
+        type: 'info',
+        message: `${res.message || 'Draft questions generated via backend template synthesizer.'} Note: Direct Ollama local inference is awaiting background queue wiring.`,
+      });
+      await loadPageData();
+      setActiveTab('questions');
+    } catch (err) {
+      setActionNotice({ type: 'error', message: (err as Error).message || 'Failed to synthesize questions.' });
+    } finally {
+      setGenerating(false);
+    }
   };
 
-  const handleApplyCorrection = () => {
-    if (!selectedCandidate) return;
-    setCandidates((prev) =>
-      prev.map((c) =>
-        c.studentId === selectedCandidate.studentId
-          ? {
-              ...c,
-              marks: correctionMarks,
-              percentage: (correctionMarks / (selectedExam?.totalMarks || 50)) * 100,
-              correctedMarks: correctionMarks,
-              correctionReason,
-              grade: correctionMarks >= 45 ? 'A+' : correctionMarks >= 40 ? 'A' : 'B',
-            }
-          : c,
-      ),
-    );
-    setShowCorrectionModal(false);
+  // --------------------------------------------------------------------------
+  // Mutation: Save Marks
+  // --------------------------------------------------------------------------
+  const handleSaveMarks = async () => {
+    if (!selectedExamId || candidates.length === 0) return;
+    setSavingMarks(true);
+    try {
+      const entries = candidates.map((c) => ({
+        studentId: c.studentId,
+        marks: Number(editableMarks[c.studentId] !== undefined ? editableMarks[c.studentId] : c.marks),
+        attendanceStatus: c.attendanceStatus,
+      }));
+
+      await ApiClient.fetch(`/examinations/${selectedExamId}/marks`, {
+        method: 'POST',
+        body: JSON.stringify({ entries }),
+      });
+
+      setActionNotice({ type: 'success', message: `Saved marks for ${entries.length} candidate(s).` });
+      await loadCandidates(selectedExamId);
+    } catch (err) {
+      setActionNotice({ type: 'error', message: (err as Error).message || 'Failed to submit candidate marks.' });
+    } finally {
+      setSavingMarks(false);
+    }
   };
+
+  // --------------------------------------------------------------------------
+  // Mutation: Finalize & Publish Results
+  // --------------------------------------------------------------------------
+  const handleFinalizeResults = async () => {
+    if (!selectedExamId) return;
+    setFinalizingResults(true);
+    try {
+      const res = await ApiClient.fetch<any>(`/examinations/${selectedExamId}/results/finalize`, {
+        method: 'POST',
+      });
+      setActionNotice({ type: 'success', message: res.message || 'Results finalized and published.' });
+      await loadPageData();
+      await loadCandidates(selectedExamId);
+      setActiveTab('results');
+    } catch (err) {
+      setActionNotice({ type: 'error', message: (err as Error).message || 'Failed to finalize examination results.' });
+    } finally {
+      setFinalizingResults(false);
+    }
+  };
+
+  // --------------------------------------------------------------------------
+  // Mutation: Audited Result Correction (Admin authorization enforced)
+  // --------------------------------------------------------------------------
+  const handleApplyCorrection = async () => {
+    if (!canCorrectResults) {
+      setActionNotice({
+        type: 'error',
+        message: 'Unauthorized: Only Administrators (SUPER_ADMIN or ACADEMY_ADMIN) can apply audited corrections.',
+      });
+      setShowCorrectionModal(false);
+      return;
+    }
+
+    if (!selectedExamId || !selectedCandidate) return;
+    if (!correctionReason.trim()) {
+      setActionNotice({ type: 'error', message: 'A mandatory audit reason is required for mark corrections.' });
+      return;
+    }
+
+    setSubmittingCorrection(true);
+    try {
+      await ApiClient.fetch(`/examinations/${selectedExamId}/results/correct`, {
+        method: 'POST',
+        body: JSON.stringify({
+          studentId: selectedCandidate.studentId,
+          correctedMarks: Number(correctionMarks),
+          reason: correctionReason.trim(),
+        }),
+      });
+
+      setShowCorrectionModal(false);
+      setCorrectionReason('');
+      setActionNotice({
+        type: 'success',
+        message: `Audited correction recorded for ${selectedCandidate.studentName}.`,
+      });
+      await loadCandidates(selectedExamId);
+    } catch (err) {
+      setActionNotice({ type: 'error', message: (err as Error).message || 'Failed to apply audited correction.' });
+    } finally {
+      setSubmittingCorrection(false);
+    }
+  };
+
+  // --------------------------------------------------------------------------
+  // Dynamic Metric Calculations (Derived strictly from live records)
+  // --------------------------------------------------------------------------
+  const scoredCandidates = candidates.filter(
+    (c) => c.marks !== undefined && c.marks !== null && c.attendanceStatus === 'PRESENT',
+  );
+  const classAverage =
+    scoredCandidates.length > 0
+      ? (
+          scoredCandidates.reduce((acc, c) => acc + (c.percentage || 0), 0) / scoredCandidates.length
+        ).toFixed(1) + '%'
+      : 'N/A';
+
+  const passRate =
+    scoredCandidates.length > 0
+      ? `${Math.round(
+          (scoredCandidates.filter((c) => (c.marks || 0) >= (selectedExam?.passMarks || 35)).length /
+            scoredCandidates.length) *
+            100,
+        )}% pass rate`
+      : 'No finalized results';
 
   return (
     <>
@@ -278,32 +514,93 @@ export default function ExaminationsPage() {
       />
 
       <ResponsivePageContainer>
-        {/* Metric Row (2x2 Grid on Mobile) */}
+        {/* User Action Feedback Banner */}
+        {actionNotice && (
+          <div
+            className={`p-3.5 rounded-xl border flex items-center justify-between text-xs font-medium animate-in fade-in duration-150 ${
+              actionNotice.type === 'success'
+                ? 'bg-green-50 text-green-800 border-green-200'
+                : actionNotice.type === 'error'
+                ? 'bg-red-50 text-red-800 border-red-200'
+                : 'bg-neutral-100 text-neutral-800 border-neutral-300'
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              {actionNotice.type === 'success' ? (
+                <CheckCircle2 className="w-4 h-4 text-green-600 shrink-0" />
+              ) : (
+                <AlertCircle className="w-4 h-4 text-neutral-600 shrink-0" />
+              )}
+              <span>{actionNotice.message}</span>
+            </div>
+            <button
+              onClick={() => setActionNotice(null)}
+              className="p-1 text-neutral-400 hover:text-black rounded"
+              aria-label="Dismiss notice"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+
+        {/* Global / Partial Service Error Banner */}
+        {(examsError || questionsError || coursesError) && (
+          <div className="p-4 rounded-xl bg-red-50 border border-red-200 text-xs text-red-700 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-start gap-2">
+              <AlertCircle className="w-4 h-4 shrink-0 text-red-600 mt-0.5" />
+              <div className="space-y-0.5">
+                <span className="font-semibold block">Some data could not be synchronized from the server:</span>
+                {examsError && <div>• Examinations: {examsError}</div>}
+                {questionsError && <div>• Questions: {questionsError}</div>}
+                {coursesError && <div>• Curriculum Courses: {coursesError}</div>}
+              </div>
+            </div>
+            <Button onClick={loadPageData} variant="outline" size="sm" className="self-start sm:self-auto shrink-0">
+              <RefreshCw className="w-3.5 h-3.5" /> Retry Sync
+            </Button>
+          </div>
+        )}
+
+        {/* Metric Row */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-6">
           <div className="bg-white p-5 sm:p-6 rounded-xl border border-neutral-200 shadow-card flex flex-col justify-between h-full">
-            <span className="text-xs font-semibold text-neutral-500 uppercase tracking-wider block">Scheduled Exams</span>
-            <div className="text-2xl font-bold text-black mt-2">{exams.length}</div>
+            <span className="text-xs font-semibold text-neutral-500 uppercase tracking-wider block">
+              Scheduled Exams
+            </span>
+            <div className="text-2xl font-bold text-black mt-2">
+              {loading && exams.length === 0 ? '—' : exams.length}
+            </div>
             <span className="text-xs text-neutral-500 mt-1 block">Active blueprints</span>
           </div>
 
           <div className="bg-white p-5 sm:p-6 rounded-xl border border-neutral-200 shadow-card flex flex-col justify-between h-full">
-            <span className="text-xs font-semibold text-neutral-500 uppercase tracking-wider block">Question Bank</span>
-            <div className="text-2xl font-bold text-black mt-2">{questions.length}</div>
+            <span className="text-xs font-semibold text-neutral-500 uppercase tracking-wider block">
+              Question Bank
+            </span>
+            <div className="text-2xl font-bold text-black mt-2">
+              {loading && questions.length === 0 ? '—' : questions.length}
+            </div>
             <span className="text-xs text-neutral-500 mt-1 block">
               {questions.filter((q) => q.status === 'APPROVED').length} approved items
             </span>
           </div>
 
           <div className="bg-white p-5 sm:p-6 rounded-xl border border-neutral-200 shadow-card flex flex-col justify-between h-full">
-            <span className="text-xs font-semibold text-neutral-500 uppercase tracking-wider block">Class Average</span>
-            <div className="text-2xl font-bold text-black mt-2">90.0%</div>
-            <span className="text-xs text-[#CC6B00] mt-1 block font-medium">100% pass rate appeared</span>
+            <span className="text-xs font-semibold text-neutral-500 uppercase tracking-wider block">
+              Class Average
+            </span>
+            <div className="text-2xl font-bold text-black mt-2">
+              {loading && candidates.length === 0 ? '—' : classAverage}
+            </div>
+            <span className="text-xs text-[#CC6B00] mt-1 block font-medium">{passRate}</span>
           </div>
 
           <div className="bg-white p-5 sm:p-6 rounded-xl border border-neutral-200 shadow-card flex flex-col justify-between h-full">
-            <span className="text-xs font-semibold text-neutral-500 uppercase tracking-wider block">Local AI Engine</span>
-            <div className="text-base font-bold text-black mt-2">Ollama (qwen2.5)</div>
-            <span className="text-xs text-neutral-500 mt-1 block">100% On-Premise Privacy</span>
+            <span className="text-xs font-semibold text-neutral-500 uppercase tracking-wider block">
+              Local AI Engine
+            </span>
+            <div className="text-base font-bold text-black mt-2">Ollama (Draft Synthesizer)</div>
+            <span className="text-xs text-neutral-500 mt-1 block">Template Synthesizer Ready</span>
           </div>
         </div>
 
@@ -344,221 +641,440 @@ export default function ExaminationsPage() {
           </div>
         </div>
 
+        {/* Loading Spinner Indicator */}
+        {loading && exams.length === 0 && questions.length === 0 && (
+          <div className="p-12 text-center bg-white rounded-xl border border-neutral-200">
+            <Loader2 className="w-6 h-6 animate-spin text-[#FF8500] mx-auto mb-2" />
+            <p className="text-xs text-neutral-500 font-medium">Connecting to examination services...</p>
+          </div>
+        )}
+
         {/* TAB 1: EXAMINATIONS */}
         {activeTab === 'exams' && (
           <div className="bg-white rounded-xl border border-neutral-200 shadow-card overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm text-black">
-                <thead className="bg-neutral-50 border-b border-neutral-200 text-neutral-600 font-semibold text-xs uppercase tracking-wider">
-                  <tr>
-                    <th className="px-6 py-3.5">Examination Title</th>
-                    <th className="px-6 py-3.5">Class / Batch</th>
-                    <th className="px-6 py-3.5">Subject</th>
-                    <th className="px-6 py-3.5">Date</th>
-                    <th className="px-6 py-3.5">Duration</th>
-                    <th className="px-6 py-3.5">Marks (Total / Pass)</th>
-                    <th className="px-6 py-3.5">Status</th>
-                    <th className="px-6 py-3.5 text-right">Paper Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-neutral-100">
-                  {exams.map((ex) => (
-                    <tr key={ex.id} className="hover:bg-neutral-50/60 transition-colors">
-                      <td className="px-6 py-4 font-semibold text-black">
-                        {ex.title}
-                        {ex.isPublished && (
-                          <span className="ml-2 text-[10px] font-mono bg-neutral-100 text-neutral-800 px-1.5 py-0.5 rounded border border-neutral-200">
-                            v{ex.paperVersion}
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-6 py-4 text-xs text-neutral-700">
-                        {ex.className} • <strong>{ex.batchName}</strong>
-                      </td>
-                      <td className="px-6 py-4 font-medium text-black">{ex.subjectName}</td>
-                      <td className="px-6 py-4 text-xs font-mono text-neutral-600">{ex.date}</td>
-                      <td className="px-6 py-4 text-xs text-neutral-700">{ex.durationMinutes} mins</td>
-                      <td className="px-6 py-4 font-semibold text-black">
-                        {ex.totalMarks} <span className="text-xs text-neutral-500 font-normal">/ {ex.passMarks}</span>
-                      </td>
-                      <td className="px-6 py-4">
-                        <Badge variant={ex.status === 'PUBLISHED' ? 'primary' : 'neutral'} size="sm">
-                          {ex.status}
-                        </Badge>
-                      </td>
-                      <td className="px-6 py-4 text-right">
-                        <button
-                          onClick={() => {
-                            setSelectedExam(ex);
-                            setShowPaperPreviewModal(true);
-                          }}
-                          className="inline-flex items-center gap-1 px-3 py-1 bg-neutral-100 hover:bg-neutral-200 text-black rounded text-xs font-medium transition-colors"
-                        >
-                          <FileText className="w-3.5 h-3.5" />
-                          View Paper
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-
-        {/* TAB 2: QUESTION BANK */}
-        {activeTab === 'questions' && (
-          <div className="bg-white rounded-xl border border-neutral-200 shadow-card overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm text-black">
-                <thead className="bg-neutral-50 border-b border-neutral-200 text-neutral-600 font-semibold text-xs uppercase tracking-wider">
-                  <tr>
-                    <th className="px-6 py-3.5">Topic & Question</th>
-                    <th className="px-6 py-3.5">Type</th>
-                    <th className="px-6 py-3.5">Difficulty</th>
-                    <th className="px-6 py-3.5 text-right">Marks</th>
-                    <th className="px-6 py-3.5">Status</th>
-                    <th className="px-6 py-3.5">Model Answer / Key</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-neutral-100">
-                  {questions.map((q) => (
-                    <tr key={q.id} className="hover:bg-neutral-50/60 transition-colors">
-                      <td className="px-6 py-4 max-w-md">
-                        <div className="font-semibold text-[#CC6B00] text-xs">{q.topic}</div>
-                        <div className="text-black font-medium text-sm mt-0.5">{q.content}</div>
-                      </td>
-                      <td className="px-6 py-4">
-                        <Badge variant="outline" size="sm">
-                          {q.questionType}
-                        </Badge>
-                      </td>
-                      <td className="px-6 py-4">
-                        <Badge variant="neutral" size="sm">
-                          {q.difficulty}
-                        </Badge>
-                      </td>
-                      <td className="px-6 py-4 font-bold text-black text-right">{q.maxMarks}M</td>
-                      <td className="px-6 py-4">
-                        <Badge variant={q.status === 'APPROVED' ? 'primary' : 'neutral'} size="sm">
-                          {q.status}
-                        </Badge>
-                      </td>
-                      <td className="px-6 py-4 text-xs text-neutral-600 font-mono max-w-xs truncate">
-                        {q.answerKeyText || 'N/A'}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-
-        {/* TAB 3: MARKS ENTRY */}
-        {activeTab === 'marks' && (
-          <div className="space-y-4">
-            <div className="bg-white p-5 rounded-xl border border-neutral-200 shadow-card flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-              <div>
-                <h4 className="font-bold text-black text-base">{exams[0].title}</h4>
-                <p className="text-xs text-neutral-500">
-                  Class: Grade 10 • Section A | Total Marks: 50 | Pass Marks: 17.5
+            {examsError && exams.length === 0 ? (
+              <div className="p-12 text-center">
+                <AlertCircle className="w-8 h-8 text-red-500 mx-auto mb-2" />
+                <h4 className="text-sm font-semibold text-black">Failed to load examinations</h4>
+                <p className="text-xs text-neutral-500 mt-1 max-w-sm mx-auto">{examsError}</p>
+                <Button onClick={loadPageData} variant="outline" size="sm" className="mt-4">
+                  <RefreshCw className="w-3.5 h-3.5" /> Try Again
+                </Button>
+              </div>
+            ) : exams.length === 0 && !loading ? (
+              <div className="p-12 text-center">
+                <BookOpen className="w-8 h-8 text-neutral-300 mx-auto mb-2" />
+                <h4 className="text-sm font-semibold text-black">No examinations scheduled yet</h4>
+                <p className="text-xs text-neutral-500 mt-1 max-w-sm mx-auto">
+                  The database currently has 0 examination blueprints. Click &apos;New Examination&apos; to schedule an assessment.
                 </p>
               </div>
-              <Button onClick={() => setActiveTab('results')} variant="primary" size="sm">
-                Finalize & Publish Results
-              </Button>
-            </div>
-
-            <div className="bg-white rounded-xl border border-neutral-200 shadow-card overflow-hidden">
+            ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-sm text-black">
                   <thead className="bg-neutral-50 border-b border-neutral-200 text-neutral-600 font-semibold text-xs uppercase tracking-wider">
                     <tr>
-                      <th className="px-6 py-3.5">Student Code</th>
-                      <th className="px-6 py-3.5">Candidate Name</th>
-                      <th className="px-6 py-3.5">Attendance</th>
-                      <th className="px-6 py-3.5 text-right">Marks (/50)</th>
-                      <th className="px-6 py-3.5 text-right">Percentage</th>
-                      <th className="px-6 py-3.5 text-center">Grade</th>
+                      <th className="px-6 py-3.5">Examination Title</th>
+                      <th className="px-6 py-3.5">Class / Batch</th>
+                      <th className="px-6 py-3.5">Subject</th>
+                      <th className="px-6 py-3.5">Date</th>
+                      <th className="px-6 py-3.5">Duration</th>
+                      <th className="px-6 py-3.5">Marks (Total / Pass)</th>
+                      <th className="px-6 py-3.5">Status</th>
+                      <th className="px-6 py-3.5 text-right">Paper Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-neutral-100">
-                    {candidates.map((c) => (
-                      <tr key={c.studentId} className="hover:bg-neutral-50/60">
-                        <td className="px-6 py-4 font-mono font-semibold text-black">{c.studentCode}</td>
-                        <td className="px-6 py-4 font-medium text-black">{c.studentName}</td>
+                    {exams.map((ex) => (
+                      <tr key={ex.id} className="hover:bg-neutral-50/60 transition-colors">
+                        <td className="px-6 py-4 font-semibold text-black">
+                          {ex.title}
+                          {ex.isPublished && (
+                            <span className="ml-2 text-[10px] font-mono bg-neutral-100 text-neutral-800 px-1.5 py-0.5 rounded border border-neutral-200">
+                              v{ex.paperVersion}
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-6 py-4 text-xs text-neutral-700">
+                          {ex.className} • <strong>{ex.batchName}</strong>
+                        </td>
+                        <td className="px-6 py-4 font-medium text-black">{ex.subjectName}</td>
+                        <td className="px-6 py-4 text-xs font-mono text-neutral-600">{ex.date}</td>
+                        <td className="px-6 py-4 text-xs text-neutral-700">{ex.durationMinutes} mins</td>
+                        <td className="px-6 py-4 font-semibold text-black">
+                          {ex.totalMarks}{' '}
+                          <span className="text-xs text-neutral-500 font-normal">/ {ex.passMarks}</span>
+                        </td>
                         <td className="px-6 py-4">
-                          <Badge variant={c.attendanceStatus === 'PRESENT' ? 'primary' : 'neutral'} size="sm">
-                            {c.attendanceStatus}
+                          <Badge variant={ex.status === 'PUBLISHED' ? 'primary' : 'neutral'} size="sm">
+                            {ex.status}
                           </Badge>
                         </td>
-                        <td className="px-6 py-4 font-bold text-black text-right">{c.marks}</td>
-                        <td className="px-6 py-4 font-medium text-neutral-800 text-right">{c.percentage}%</td>
-                        <td className="px-6 py-4 text-center">
-                          <Badge variant="dark" size="sm">
-                            {c.grade}
-                          </Badge>
+                        <td className="px-6 py-4 text-right">
+                          <button
+                            onClick={() => {
+                              setSelectedExam(ex);
+                              setShowPaperPreviewModal(true);
+                            }}
+                            className="inline-flex items-center gap-1 px-3 py-1 bg-neutral-100 hover:bg-neutral-200 text-black rounded text-xs font-medium transition-colors cursor-pointer"
+                          >
+                            <FileText className="w-3.5 h-3.5" />
+                            View Paper
+                          </button>
                         </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
-            </div>
+            )}
+          </div>
+        )}
+
+        {/* TAB 2: QUESTION BANK */}
+        {activeTab === 'questions' && (
+          <div className="bg-white rounded-xl border border-neutral-200 shadow-card overflow-hidden">
+            {questionsError && questions.length === 0 ? (
+              <div className="p-12 text-center">
+                <AlertCircle className="w-8 h-8 text-red-500 mx-auto mb-2" />
+                <h4 className="text-sm font-semibold text-black">Failed to load question bank</h4>
+                <p className="text-xs text-neutral-500 mt-1 max-w-sm mx-auto">{questionsError}</p>
+                <Button onClick={loadPageData} variant="outline" size="sm" className="mt-4">
+                  <RefreshCw className="w-3.5 h-3.5" /> Try Again
+                </Button>
+              </div>
+            ) : questions.length === 0 && !loading ? (
+              <div className="p-12 text-center">
+                <FileText className="w-8 h-8 text-neutral-300 mx-auto mb-2" />
+                <h4 className="text-sm font-semibold text-black">Question Bank is empty</h4>
+                <p className="text-xs text-neutral-500 mt-1 max-w-sm mx-auto">
+                  No questions exist in the repository. Use the &apos;AI Question Generator&apos; to draft curriculum items into the question bank.
+                </p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm text-black">
+                  <thead className="bg-neutral-50 border-b border-neutral-200 text-neutral-600 font-semibold text-xs uppercase tracking-wider">
+                    <tr>
+                      <th className="px-6 py-3.5">Topic & Question</th>
+                      <th className="px-6 py-3.5">Type</th>
+                      <th className="px-6 py-3.5">Difficulty</th>
+                      <th className="px-6 py-3.5 text-right">Marks</th>
+                      <th className="px-6 py-3.5">Status</th>
+                      <th className="px-6 py-3.5">Model Answer / Key</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-neutral-100">
+                    {questions.map((q) => (
+                      <tr key={q.id} className="hover:bg-neutral-50/60 transition-colors">
+                        <td className="px-6 py-4 max-w-md">
+                          <div className="font-semibold text-[#CC6B00] text-xs">{q.topic}</div>
+                          <div className="text-black font-medium text-sm mt-0.5">{q.content}</div>
+                        </td>
+                        <td className="px-6 py-4">
+                          <Badge variant="outline" size="sm">
+                            {q.questionType}
+                          </Badge>
+                        </td>
+                        <td className="px-6 py-4">
+                          <Badge variant="neutral" size="sm">
+                            {q.difficulty}
+                          </Badge>
+                        </td>
+                        <td className="px-6 py-4 font-bold text-black text-right">{q.maxMarks}M</td>
+                        <td className="px-6 py-4">
+                          <Badge variant={q.status === 'APPROVED' ? 'primary' : 'neutral'} size="sm">
+                            {q.status}
+                          </Badge>
+                        </td>
+                        <td className="px-6 py-4 text-xs text-neutral-600 font-mono max-w-xs truncate">
+                          {q.answerKeyText || 'N/A'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* TAB 3: MARKS ENTRY */}
+        {activeTab === 'marks' && (
+          <div className="space-y-4">
+            {exams.length === 0 ? (
+              <div className="bg-white p-12 text-center rounded-xl border border-neutral-200">
+                <BookOpen className="w-8 h-8 text-neutral-300 mx-auto mb-2" />
+                <h4 className="text-sm font-semibold text-black">No examinations available</h4>
+                <p className="text-xs text-neutral-500 mt-1">
+                  Create an examination blueprint before recording candidate marks.
+                </p>
+              </div>
+            ) : (
+              <>
+                <div className="bg-white p-5 rounded-xl border border-neutral-200 shadow-card flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                  <div className="flex-1">
+                    <label className="text-xs font-semibold text-neutral-500 uppercase tracking-wider block mb-1">
+                      Active Examination
+                    </label>
+                    <select
+                      value={selectedExamId}
+                      onChange={(e) => setSelectedExamId(e.target.value)}
+                      className="px-3 py-1.5 border border-neutral-300 rounded-lg text-sm font-bold text-black bg-white focus:outline-none focus:ring-2 focus:ring-[#FF8500]"
+                    >
+                      {exams.map((ex) => (
+                        <option key={ex.id} value={ex.id}>
+                          {ex.title} ({ex.className} • {ex.batchName} • {ex.subjectName})
+                        </option>
+                      ))}
+                    </select>
+                    {selectedExam && (
+                      <p className="text-xs text-neutral-500 mt-1.5">
+                        Total Marks: {selectedExam.totalMarks} | Pass Marks: {selectedExam.passMarks} | Date:{' '}
+                        {selectedExam.date}
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <Button
+                      onClick={handleSaveMarks}
+                      disabled={savingMarks || candidates.length === 0}
+                      variant="outline"
+                      size="sm"
+                    >
+                      {savingMarks ? 'Saving...' : 'Save Entered Marks'}
+                    </Button>
+                    <Button
+                      onClick={handleFinalizeResults}
+                      disabled={finalizingResults || candidates.length === 0}
+                      variant="primary"
+                      size="sm"
+                    >
+                      {finalizingResults ? 'Finalizing...' : 'Finalize & Publish Results'}
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="bg-white rounded-xl border border-neutral-200 shadow-card overflow-hidden">
+                  {candidatesLoading ? (
+                    <div className="p-8 text-center text-xs text-neutral-500">
+                      <Loader2 className="w-5 h-5 animate-spin mx-auto mb-2 text-[#FF8500]" />
+                      Loading candidate roster...
+                    </div>
+                  ) : candidatesError && candidates.length === 0 ? (
+                    <div className="p-8 text-center text-xs text-red-600 bg-red-50/50">
+                      <AlertCircle className="w-6 h-6 mx-auto mb-1 text-red-500" />
+                      <p className="font-medium">{candidatesError}</p>
+                      <Button
+                        onClick={() => loadCandidates(selectedExamId)}
+                        variant="outline"
+                        size="sm"
+                        className="mt-2"
+                      >
+                        <RefreshCw className="w-3.5 h-3.5" /> Retry Candidate Roster
+                      </Button>
+                    </div>
+                  ) : candidates.length === 0 ? (
+                    <div className="p-8 text-center">
+                      <Award className="w-7 h-7 text-neutral-300 mx-auto mb-1" />
+                      <p className="text-xs text-neutral-500">
+                        No enrolled students found for this examination class and batch.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-sm text-black">
+                        <thead className="bg-neutral-50 border-b border-neutral-200 text-neutral-600 font-semibold text-xs uppercase tracking-wider">
+                          <tr>
+                            <th className="px-6 py-3.5">Student Code</th>
+                            <th className="px-6 py-3.5">Candidate Name</th>
+                            <th className="px-6 py-3.5">Attendance</th>
+                            <th className="px-6 py-3.5 text-right">Marks (/{selectedExam?.totalMarks || 100})</th>
+                            <th className="px-6 py-3.5 text-right">Percentage</th>
+                            <th className="px-6 py-3.5 text-center">Grade</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-neutral-100">
+                          {candidates.map((c) => (
+                            <tr key={c.studentId} className="hover:bg-neutral-50/60">
+                              <td className="px-6 py-4 font-mono font-semibold text-black">{c.studentCode}</td>
+                              <td className="px-6 py-4 font-medium text-black">{c.studentName}</td>
+                              <td className="px-6 py-4">
+                                <Badge variant={c.attendanceStatus === 'PRESENT' ? 'primary' : 'neutral'} size="sm">
+                                  {c.attendanceStatus}
+                                </Badge>
+                              </td>
+                              <td className="px-6 py-4 text-right">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  max={selectedExam?.totalMarks || 100}
+                                  value={editableMarks[c.studentId] !== undefined ? editableMarks[c.studentId] : c.marks}
+                                  onChange={(e) =>
+                                    setEditableMarks({
+                                      ...editableMarks,
+                                      [c.studentId]: Number(e.target.value),
+                                    })
+                                  }
+                                  className="w-20 px-2 py-1 text-sm font-bold text-center border border-neutral-300 rounded-lg text-black focus:outline-none focus:ring-2 focus:ring-[#FF8500]"
+                                />
+                              </td>
+                              <td className="px-6 py-4 font-medium text-neutral-800 text-right">
+                                {selectedExam?.totalMarks
+                                  ? (
+                                      ((editableMarks[c.studentId] !== undefined
+                                        ? editableMarks[c.studentId]
+                                        : c.marks) /
+                                        selectedExam.totalMarks) *
+                                      100
+                                    ).toFixed(1)
+                                  : '0.0'}
+                                %
+                              </td>
+                              <td className="px-6 py-4 text-center">
+                                <Badge variant="dark" size="sm">
+                                  {c.grade}
+                                </Badge>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
           </div>
         )}
 
         {/* TAB 4: RESULTS & AUDITED CORRECTIONS */}
         {activeTab === 'results' && (
-          <div className="bg-white rounded-xl border border-neutral-200 shadow-card overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm text-black">
-                <thead className="bg-neutral-50 border-b border-neutral-200 text-neutral-600 font-semibold text-xs uppercase tracking-wider">
-                  <tr>
-                    <th className="px-6 py-3.5">Rank</th>
-                    <th className="px-6 py-3.5">Candidate</th>
-                    <th className="px-6 py-3.5 text-right">Marks (/50)</th>
-                    <th className="px-6 py-3.5 text-right">Percentage</th>
-                    <th className="px-6 py-3.5 text-center">Grade</th>
-                    <th className="px-6 py-3.5">Audited Correction Note</th>
-                    <th className="px-6 py-3.5 text-right">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-neutral-100">
-                  {candidates.map((c) => (
-                    <tr key={c.studentId} className="hover:bg-neutral-50/60">
-                      <td className="px-6 py-4 font-bold text-black">{c.rank ? `#${c.rank}` : '-'}</td>
-                      <td className="px-6 py-4 font-medium text-black">
-                        {c.studentName} <span className="text-xs text-neutral-500 font-mono">({c.studentCode})</span>
-                      </td>
-                      <td className="px-6 py-4 font-bold text-black text-right">{c.marks}</td>
-                      <td className="px-6 py-4 font-medium text-neutral-800 text-right">{c.percentage}%</td>
-                      <td className="px-6 py-4 text-center">
-                        <Badge variant="dark" size="sm">
-                          {c.grade}
-                        </Badge>
-                      </td>
-                      <td className="px-6 py-4 text-xs text-neutral-600 max-w-xs">
-                        {c.correctionReason || 'None (Standard Evaluation)'}
-                      </td>
-                      <td className="px-6 py-4 text-right">
-                        <button
-                          onClick={() => {
-                            setSelectedCandidate(c);
-                            setCorrectionMarks(c.marks);
-                            setShowCorrectionModal(true);
-                          }}
-                          className="inline-flex items-center gap-1 px-2.5 py-1 bg-neutral-100 hover:bg-neutral-200 text-black rounded text-xs font-medium"
-                        >
-                          <Edit3 className="w-3.5 h-3.5" /> Correction
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+          <div className="space-y-4">
+            {exams.length === 0 ? (
+              <div className="bg-white p-12 text-center rounded-xl border border-neutral-200">
+                <p className="text-xs text-neutral-500">No examination blueprints exist.</p>
+              </div>
+            ) : (
+              <>
+                <div className="bg-white p-4 rounded-xl border border-neutral-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs font-semibold text-neutral-500 uppercase tracking-wider">Exam:</span>
+                    <select
+                      value={selectedExamId}
+                      onChange={(e) => setSelectedExamId(e.target.value)}
+                      className="px-3 py-1.5 border border-neutral-300 rounded-lg text-xs font-bold text-black bg-white focus:outline-none focus:ring-2 focus:ring-[#FF8500]"
+                    >
+                      {exams.map((ex) => (
+                        <option key={ex.id} value={ex.id}>
+                          {ex.title}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="flex items-center gap-3 text-xs text-neutral-500">
+                    {selectedExam && (
+                      <span>
+                        Status: <strong>{selectedExam.status}</strong>
+                      </span>
+                    )}
+                    {!canCorrectResults && (
+                      <span className="inline-flex items-center gap-1 text-[11px] text-amber-700 bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
+                        <ShieldAlert className="w-3.5 h-3.5 text-amber-600" />
+                        Correction requires Admin
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="bg-white rounded-xl border border-neutral-200 shadow-card overflow-hidden">
+                  {candidatesLoading ? (
+                    <div className="p-8 text-center text-xs text-neutral-500">
+                      <Loader2 className="w-5 h-5 animate-spin mx-auto mb-2 text-[#FF8500]" />
+                      Loading candidate results...
+                    </div>
+                  ) : candidatesError && candidates.length === 0 ? (
+                    <div className="p-8 text-center text-xs text-red-600 bg-red-50/50">
+                      <AlertCircle className="w-6 h-6 mx-auto mb-1 text-red-500" />
+                      <p className="font-medium">{candidatesError}</p>
+                      <Button
+                        onClick={() => loadCandidates(selectedExamId)}
+                        variant="outline"
+                        size="sm"
+                        className="mt-2"
+                      >
+                        <RefreshCw className="w-3.5 h-3.5" /> Retry Results
+                      </Button>
+                    </div>
+                  ) : candidates.length === 0 ? (
+                    <div className="p-8 text-center">
+                      <Award className="w-7 h-7 text-neutral-300 mx-auto mb-1" />
+                      <p className="text-xs text-neutral-500">No candidate results available for this examination.</p>
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-sm text-black">
+                        <thead className="bg-neutral-50 border-b border-neutral-200 text-neutral-600 font-semibold text-xs uppercase tracking-wider">
+                          <tr>
+                            <th className="px-6 py-3.5">Rank</th>
+                            <th className="px-6 py-3.5">Candidate</th>
+                            <th className="px-6 py-3.5 text-right">Marks (/{selectedExam?.totalMarks || 100})</th>
+                            <th className="px-6 py-3.5 text-right">Percentage</th>
+                            <th className="px-6 py-3.5 text-center">Grade</th>
+                            <th className="px-6 py-3.5">Audited Correction Note</th>
+                            <th className="px-6 py-3.5 text-right">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-neutral-100">
+                          {candidates.map((c) => (
+                            <tr key={c.studentId} className="hover:bg-neutral-50/60">
+                              <td className="px-6 py-4 font-bold text-black">{c.rank ? `#${c.rank}` : '—'}</td>
+                              <td className="px-6 py-4 font-medium text-black">
+                                {c.studentName}{' '}
+                                <span className="text-xs text-neutral-500 font-mono">({c.studentCode})</span>
+                              </td>
+                              <td className="px-6 py-4 font-bold text-black text-right">{c.marks}</td>
+                              <td className="px-6 py-4 font-medium text-neutral-800 text-right">{c.percentage}%</td>
+                              <td className="px-6 py-4 text-center">
+                                <Badge variant="dark" size="sm">
+                                  {c.grade}
+                                </Badge>
+                              </td>
+                              <td className="px-6 py-4 text-xs text-neutral-600 max-w-xs">
+                                {c.correctionReason || 'None (Standard Evaluation)'}
+                              </td>
+                              <td className="px-6 py-4 text-right">
+                                {canCorrectResults ? (
+                                  <button
+                                    onClick={() => {
+                                      setSelectedCandidate(c);
+                                      setCorrectionMarks(c.marks);
+                                      setCorrectionReason(c.correctionReason || '');
+                                      setShowCorrectionModal(true);
+                                    }}
+                                    className="inline-flex items-center gap-1 px-2.5 py-1 bg-neutral-100 hover:bg-neutral-200 text-black rounded text-xs font-medium cursor-pointer"
+                                  >
+                                    <Edit3 className="w-3.5 h-3.5" /> Correction
+                                  </button>
+                                ) : (
+                                  <span
+                                    className="text-[11px] text-neutral-400 font-medium px-2 py-1"
+                                    title="Only SUPER_ADMIN and ACADEMY_ADMIN can apply mark corrections"
+                                  >
+                                    Admin only
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
           </div>
         )}
       </ResponsivePageContainer>
@@ -577,7 +1093,7 @@ export default function ExaminationsPage() {
             <input
               type="text"
               required
-              placeholder="e.g. Unit Test 2 - Thermodynamics"
+              placeholder="e.g. Unit Test 1 - Mechanics & Optics"
               value={newExamTitle}
               onChange={(e) => setNewExamTitle(e.target.value)}
               className="w-full px-3 py-2 border border-neutral-300 rounded-lg text-sm text-black focus:outline-none focus:ring-2 focus:ring-[#FF8500]"
@@ -586,18 +1102,74 @@ export default function ExaminationsPage() {
 
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="text-xs font-semibold text-black block mb-1">Subject</label>
+              <label className="text-xs font-semibold text-black block mb-1">Class / Course *</label>
               <select
-                value={newExamSubject}
-                onChange={(e) => setNewExamSubject(e.target.value)}
+                required
+                value={newExamClassId}
+                onChange={(e) => {
+                  setNewExamClassId(e.target.value);
+                  const selectedCourse = coursesList.find((c) => c.id === e.target.value);
+                  if (selectedCourse?.batches && selectedCourse.batches.length > 0) {
+                    setNewExamBatchId(selectedCourse.batches[0].id);
+                  } else {
+                    setNewExamBatchId('');
+                  }
+                  if (selectedCourse?.subjects && selectedCourse.subjects.length > 0) {
+                    setNewExamSubjectId(selectedCourse.subjects[0].id);
+                  }
+                }}
                 className="w-full px-3 py-2 border border-neutral-300 rounded-lg text-sm text-black bg-white focus:outline-none focus:ring-2 focus:ring-[#FF8500]"
               >
-                <option value="Physics">Physics</option>
-                <option value="Chemistry">Chemistry</option>
-                <option value="Mathematics">Mathematics</option>
-                <option value="Biology">Biology</option>
+                {coursesList.length === 0 ? (
+                  <option value="">No courses configured</option>
+                ) : (
+                  coursesList.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))
+                )}
               </select>
             </div>
+
+            <div>
+              <label className="text-xs font-semibold text-black block mb-1">Batch (Optional)</label>
+              <select
+                value={newExamBatchId}
+                onChange={(e) => setNewExamBatchId(e.target.value)}
+                className="w-full px-3 py-2 border border-neutral-300 rounded-lg text-sm text-black bg-white focus:outline-none focus:ring-2 focus:ring-[#FF8500]"
+              >
+                <option value="">All Batches</option>
+                {coursesList
+                  .find((c) => c.id === newExamClassId)
+                  ?.batches?.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.name}
+                    </option>
+                  ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs font-semibold text-black block mb-1">Subject *</label>
+              <select
+                required
+                value={newExamSubjectId}
+                onChange={(e) => setNewExamSubjectId(e.target.value)}
+                className="w-full px-3 py-2 border border-neutral-300 rounded-lg text-sm text-black bg-white focus:outline-none focus:ring-2 focus:ring-[#FF8500]"
+              >
+                {coursesList
+                  .find((c) => c.id === newExamClassId)
+                  ?.subjects?.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  )) || <option value="">No subjects found</option>}
+              </select>
+            </div>
+
             <div>
               <label className="text-xs font-semibold text-black block mb-1">Exam Date *</label>
               <input
@@ -637,7 +1209,7 @@ export default function ExaminationsPage() {
               <label className="text-xs font-semibold text-black block mb-1">Pass Marks</label>
               <input
                 type="number"
-                min="1"
+                min="0"
                 required
                 value={newExamPassMarks}
                 onChange={(e) => setNewExamPassMarks(Number(e.target.value))}
@@ -647,11 +1219,11 @@ export default function ExaminationsPage() {
           </div>
 
           <div className="flex justify-end gap-3 pt-3 border-t border-neutral-100">
-            <Button variant="outline" onClick={() => setShowNewExamModal(false)}>
+            <Button variant="outline" onClick={() => setShowNewExamModal(false)} type="button">
               Cancel
             </Button>
-            <Button variant="primary" type="submit">
-              Save Blueprint
+            <Button variant="primary" type="submit" disabled={submittingExam}>
+              {submittingExam ? 'Saving...' : 'Save Blueprint'}
             </Button>
           </div>
         </form>
@@ -662,15 +1234,36 @@ export default function ExaminationsPage() {
         isOpen={showAiModal}
         onClose={() => setShowAiModal(false)}
         title="Local AI Question Synthesis"
-        description="Generates curriculum questions and answer rubrics locally using Ollama (qwen2.5:3b)."
+        description="Generates curriculum questions and answer rubrics locally using on-premise template synthesis."
         maxWidth="md"
       >
         <form onSubmit={handleGenerateAi} className="space-y-4">
+          <div>
+            <label className="text-xs font-semibold text-black block mb-1">Target Subject *</label>
+            <select
+              required
+              value={aiSubjectId}
+              onChange={(e) => setAiSubjectId(e.target.value)}
+              className="w-full px-3 py-2 border border-neutral-300 rounded-lg text-sm text-black bg-white focus:outline-none focus:ring-2 focus:ring-[#FF8500]"
+            >
+              {coursesList.flatMap((c) => c.subjects || []).length === 0 ? (
+                <option value="">No subjects found</option>
+              ) : (
+                coursesList.flatMap((c) => c.subjects || []).map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                  </option>
+                ))
+              )}
+            </select>
+          </div>
+
           <div>
             <label className="text-xs font-semibold text-black block mb-1">Curriculum Topic *</label>
             <input
               type="text"
               required
+              placeholder="e.g. Electromagnetic Induction, Photosynthesis, Quadratic Equations..."
               value={aiTopic}
               onChange={(e) => setAiTopic(e.target.value)}
               className="w-full px-3 py-2 border border-neutral-300 rounded-lg text-sm text-black focus:outline-none focus:ring-2 focus:ring-[#FF8500]"
@@ -704,8 +1297,13 @@ export default function ExaminationsPage() {
             </div>
           </div>
 
+          <div className="p-3 rounded-lg bg-neutral-50 border border-neutral-200 text-[11px] text-neutral-600">
+            <strong>Engine Note:</strong> Questions are synthesized using backend curriculum heuristics and tagged as
+            draft items. Live background queue dispatch to Ollama (qwen2.5) will execute when worker is connected.
+          </div>
+
           <div className="flex justify-end gap-3 pt-3 border-t border-neutral-100">
-            <Button variant="outline" onClick={() => setShowAiModal(false)}>
+            <Button variant="outline" onClick={() => setShowAiModal(false)} type="button">
               Cancel
             </Button>
             <Button variant="primary" type="submit" disabled={generating}>
@@ -742,24 +1340,24 @@ export default function ExaminationsPage() {
 
             <div className="space-y-4">
               <div className="font-bold text-xs text-neutral-500 uppercase tracking-wider border-b border-neutral-100 pb-1">
-                Section A — Core Examination Questions
+                Section A — Curriculum Questions
               </div>
-              {questions.map((q, idx) => (
-                <div key={q.id} className="text-sm space-y-1">
-                  <div className="flex justify-between font-medium text-black">
-                    <span>Q{idx + 1}. {q.content}</span>
-                    <span className="font-bold text-neutral-700 ml-4 shrink-0">[{q.maxMarks}M]</span>
-                  </div>
-                  {q.questionType === 'MCQ' && (
-                    <div className="grid grid-cols-2 gap-2 text-xs text-neutral-600 pl-4 pt-1">
-                      <div>A. Option 1</div>
-                      <div>B. Option 2</div>
-                      <div>C. Option 3</div>
-                      <div>D. Option 4</div>
+              {questions.length === 0 ? (
+                <p className="text-xs text-neutral-500 italic py-4">
+                  No questions currently linked to this examination blueprint.
+                </p>
+              ) : (
+                questions.map((q, idx) => (
+                  <div key={q.id} className="text-sm space-y-1">
+                    <div className="flex justify-between font-medium text-black">
+                      <span>
+                        Q{idx + 1}. {q.content}
+                      </span>
+                      <span className="font-bold text-neutral-700 ml-4 shrink-0">[{q.maxMarks}M]</span>
                     </div>
-                  )}
-                </div>
-              ))}
+                  </div>
+                ))
+              )}
             </div>
           </div>
 
@@ -791,11 +1389,13 @@ export default function ExaminationsPage() {
             </div>
 
             <div>
-              <label className="text-xs font-semibold text-black block mb-1">Corrected Marks (/50) *</label>
+              <label className="text-xs font-semibold text-black block mb-1">
+                Corrected Marks (/{selectedExam?.totalMarks || 100}) *
+              </label>
               <input
                 type="number"
                 min="0"
-                max="50"
+                max={selectedExam?.totalMarks || 100}
                 required
                 value={correctionMarks}
                 onChange={(e) => setCorrectionMarks(Number(e.target.value))}
@@ -804,11 +1404,11 @@ export default function ExaminationsPage() {
             </div>
 
             <div>
-              <label className="text-xs font-semibold text-black block mb-1">Mandatory Reason *</label>
+              <label className="text-xs font-semibold text-black block mb-1">Mandatory Audit Reason *</label>
               <textarea
                 required
                 rows={3}
-                placeholder="Reason for audited correction (e.g. Recounting, re-evaluation approved by Dean)..."
+                placeholder="Reason for audited correction (e.g. Recounting error, teacher re-evaluation approved)..."
                 value={correctionReason}
                 onChange={(e) => setCorrectionReason(e.target.value)}
                 className="w-full px-3 py-2 border border-neutral-300 rounded-lg text-sm text-black focus:outline-none focus:ring-2 focus:ring-[#FF8500]"
@@ -816,11 +1416,15 @@ export default function ExaminationsPage() {
             </div>
 
             <div className="flex justify-end gap-3 pt-3 border-t border-neutral-100">
-              <Button variant="outline" onClick={() => setShowCorrectionModal(false)}>
+              <Button variant="outline" onClick={() => setShowCorrectionModal(false)} type="button">
                 Cancel
               </Button>
-              <Button variant="primary" onClick={handleApplyCorrection}>
-                Record Audited Correction
+              <Button
+                variant="primary"
+                onClick={handleApplyCorrection}
+                disabled={submittingCorrection}
+              >
+                {submittingCorrection ? 'Recording...' : 'Record Audited Correction'}
               </Button>
             </div>
           </div>

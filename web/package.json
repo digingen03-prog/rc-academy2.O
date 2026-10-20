@@ -8,7 +8,7 @@
     "build": "next build",
     "start": "next start -p 3000",
     "lint": "next lint",
-    "test": "node --experimental-strip-types --test test/frontend-auth.test.mjs"
+    "test": "node --experimental-strip-types --test test/frontend-auth.test.mjs test/phase1-integrations.test.mjs"
   },
   "dependencies": {
     "lucide-react": "^0.473.0",
