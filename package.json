@@ -1,0 +1,28 @@
+{
+  "name": "rc-academy-2.0",
+  "version": "2.0.0",
+  "private": true,
+  "description": "RC Academy 2.0 - Complete Academy Management System & Local AI Exam Engine",
+  "workspaces": [
+    "api",
+    "web",
+    "worker",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm --prefix api run dev\" \"npm --prefix web run dev\" \"npm --prefix worker run dev\" \"py ai/app/main.py\"",
+    "dev:api": "npm --prefix api run dev",
+    "dev:web": "npm --prefix web run dev",
+    "dev:worker": "npm --prefix worker run dev",
+    "dev:ai": "py ai/app/main.py",
+    "build": "npm --prefix api run build && npm --prefix web run build && npm --prefix worker run build",
+    "test": "npm --prefix api test && npm --prefix web test && npm --prefix worker test",
+    "lint": "npm --prefix api run lint && npm --prefix web run lint",
+    "db:migrate": "npm --prefix api run prisma:migrate",
+    "db:seed": "npm --prefix api run prisma:seed",
+    "health:check": "node scripts/health-check.js"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

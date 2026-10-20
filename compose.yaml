@@ -1,0 +1,47 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: rca2-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: rca_admin
+      POSTGRES_PASSWORD: rca_dev_password_change_me
+      POSTGRES_DB: rca2_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rca_admin -d rca2_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: rca2-redis
+    restart: unless-stopped
+    command: redis-server --requirepass rca_redis_dev_secret
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "rca_redis_dev_secret", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: rca2-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+
+volumes:
+  postgres_data:
+  redis_data:
+  ollama_models:
