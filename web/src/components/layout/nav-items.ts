@@ -97,7 +97,9 @@ export const ALL_NAV_ITEMS: NavItem[] = [
 /**
  * Returns the 4 primary bottom navigation items for a given role (the 5th is always "More")
  */
-export function getPrimaryBottomNav(role: UserRole): NavItem[] {
+export function getPrimaryBottomNav(role?: UserRole | null): NavItem[] {
+  if (!role) return [];
+
   if (role === 'TEACHER') {
     return [
       ALL_NAV_ITEMS.find((i) => i.id === 'dashboard')!,
@@ -137,7 +139,8 @@ export function getPrimaryBottomNav(role: UserRole): NavItem[] {
 /**
  * Returns the secondary navigation items for the "More" bottom sheet based on role
  */
-export function getSecondaryNav(role: UserRole): NavItem[] {
+export function getSecondaryNav(role?: UserRole | null): NavItem[] {
+  if (!role) return [];
   const primaryIds = new Set(getPrimaryBottomNav(role).map((i) => i.id));
   return ALL_NAV_ITEMS.filter((item) => {
     if (primaryIds.has(item.id)) return false;

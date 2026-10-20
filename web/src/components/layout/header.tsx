@@ -27,7 +27,9 @@ export function Header({ title, subtitle, children }: HeaderProps) {
   };
 
   const formattedRole =
-    role === 'SUPER_ADMIN'
+    !role
+      ? 'Guest'
+      : role === 'SUPER_ADMIN'
       ? 'Super Admin'
       : role === 'ACADEMY_ADMIN'
       ? 'Academy Admin'

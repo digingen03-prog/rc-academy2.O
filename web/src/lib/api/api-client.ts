@@ -2,7 +2,6 @@ const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/a
 
 export class ApiClient {
   private static token: string | null = null;
-  private static isAutoAuthenticating = false;
 
   static setToken(token: string) {
     this.token = token;
@@ -38,43 +37,8 @@ export class ApiClient {
     }
   }
 
-  static async autoLogin(): Promise<string | null> {
-    if (this.isAutoAuthenticating) return null;
-    this.isAutoAuthenticating = true;
-
-    try {
-      const res = await fetch(`${API_BASE_URL}/auth/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          email: 'admin@rcacademy.com',
-          password: 'Admin@RCA2026',
-        }),
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        const token = data.data?.accessToken;
-        if (token) {
-          this.setToken(token);
-          return token;
-        }
-      }
-    } catch (_) {
-      // Backend may be offline or starting up
-    } finally {
-      this.isAutoAuthenticating = false;
-    }
-    return null;
-  }
-
   static async fetch<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
-    let token = this.getToken();
-
-    // Auto-login on first browser load if token is missing
-    if (!token && typeof window !== 'undefined') {
-      token = await this.autoLogin();
-    }
+    const token = this.getToken();
 
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -90,19 +54,15 @@ export class ApiClient {
         headers,
       });
 
-      // If token expired (401), try one auto-login renewal
-      if (response.status === 401 && typeof window !== 'undefined') {
-        const renewedToken = await this.autoLogin();
-        if (renewedToken) {
-          const retryHeaders = {
-            ...headers,
-            Authorization: `Bearer ${renewedToken}`,
-          };
-          const retryRes = await fetch(url, { ...options, headers: retryHeaders });
-          if (retryRes.ok) {
-            const data = await retryRes.json();
-            return data.data !== undefined ? data.data : data;
-          }
+      // On a 401 from a protected authenticated request, clear the invalid session
+      // and redirect to /login without creating redirect loops.
+      // Do not globally redirect on an invalid password submitted to /auth/login.
+      // Do not treat a 403 Forbidden response as an expired login session.
+      const isAuthLoginEndpoint = endpoint.includes('/auth/login');
+      if (response.status === 401 && !isAuthLoginEndpoint) {
+        this.clearToken();
+        if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
+          window.location.href = '/login';
         }
       }
 

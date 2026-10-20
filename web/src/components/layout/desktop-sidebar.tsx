@@ -12,6 +12,7 @@ export function DesktopSidebar() {
   const { role } = useAuthUser();
 
   const authorizedItems = ALL_NAV_ITEMS.filter((item) => {
+    if (!role) return false;
     if (!item.roles) return true;
     if (role === 'SUPER_ADMIN' || role === 'ACADEMY_ADMIN') return true;
     return item.roles.includes(role);

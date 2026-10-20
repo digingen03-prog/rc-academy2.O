@@ -14,7 +14,9 @@ export function MobileTopBar({ title, actions }: MobileTopBarProps) {
   const { user, role } = useAuthUser();
 
   const formattedRole =
-    role === 'SUPER_ADMIN'
+    !role
+      ? 'Guest'
+      : role === 'SUPER_ADMIN'
       ? 'Admin'
       : role === 'ACADEMY_ADMIN'
       ? 'Academy'

@@ -77,10 +77,10 @@ export function MobileMoreMenu({ isOpen, onClose }: MobileMoreMenuProps) {
               </div>
               <div className="flex items-center gap-2 mt-0.5">
                 <span className="text-[10px] font-mono px-1.5 py-0.2 bg-neutral-100 text-neutral-600 rounded">
-                  {role}
+                  {role || 'Guest'}
                 </span>
                 <span className="text-[11px] text-neutral-400 truncate max-w-[150px]">
-                  {user?.email || 'admin@rcacademy.com'}
+                  {user?.email || ''}
                 </span>
               </div>
             </div>

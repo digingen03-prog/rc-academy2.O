@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { ApiClient } from '@/lib/api/api-client';
+import { ApiClient } from '../api/api-client';
 
 export type UserRole = 'SUPER_ADMIN' | 'ACADEMY_ADMIN' | 'TEACHER' | 'ACCOUNTANT' | 'STAFF';
 
@@ -33,7 +33,7 @@ export function parseJwtPayload(token: string): any {
 
 export function useAuthUser(): {
   user: UserProfile | null;
-  role: UserRole;
+  role: UserRole | null;
   isAuthorized: (route: string) => boolean;
   loading: boolean;
 } {
@@ -46,11 +46,11 @@ export function useAuthUser(): {
       if (token) {
         const payload = parseJwtPayload(token);
         if (payload) {
-          const roles = payload.roles || ['SUPER_ADMIN'];
+          const roles = (payload.roles as UserRole[]) || [];
           setUser({
-            id: payload.sub || 'user-1',
-            email: payload.email || 'admin@rcacademy.com',
-            firstName: payload.firstName || 'Administrator',
+            id: payload.sub || '',
+            email: payload.email || '',
+            firstName: payload.firstName || '',
             lastName: payload.lastName || '',
             roles,
             permissions: payload.permissions || [],
@@ -59,31 +59,18 @@ export function useAuthUser(): {
           return;
         }
       }
-      // Fallback default
-      setUser({
-        id: 'admin-default',
-        email: 'admin@rcacademy.com',
-        firstName: 'Administrator',
-        lastName: 'RCA',
-        roles: ['SUPER_ADMIN'],
-      });
+      setUser(null);
     } catch {
-      setUser({
-        id: 'admin-default',
-        email: 'admin@rcacademy.com',
-        firstName: 'Administrator',
-        lastName: 'RCA',
-        roles: ['SUPER_ADMIN'],
-      });
+      setUser(null);
     } finally {
       setLoading(false);
     }
   }, []);
 
-  const primaryRole: UserRole = user?.roles?.[0] || 'SUPER_ADMIN';
+  const primaryRole: UserRole | null = (user && user.roles.length > 0) ? user.roles[0] : null;
 
   const isAuthorized = (route: string): boolean => {
-    if (!user) return true;
+    if (!user || !user.roles || user.roles.length === 0) return false;
     if (user.roles.includes('SUPER_ADMIN') || user.roles.includes('ACADEMY_ADMIN')) {
       return true;
     }
@@ -106,7 +93,7 @@ export function useAuthUser(): {
       );
     }
 
-    return true;
+    return false;
   };
 
   return { user, role: primaryRole, isAuthorized, loading };

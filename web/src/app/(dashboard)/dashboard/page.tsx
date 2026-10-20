@@ -46,26 +46,21 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    async function loadData() {
-      try {
-        setError(null);
-        const data = await ApiClient.fetch<Metrics>('/dashboard/metrics');
-        setMetrics(data);
-      } catch (e: any) {
-        setError(e.message || 'Unable to connect to live metrics API.');
-        // Graceful dev fallback if backend is starting
-        setMetrics({
-          activeStudents: 1,
-          todayAttendance: { present: 1, total: 1, rate: 100 },
-          finance: { totalOutstanding: 15000, pendingInvoicesCount: 1 },
-          academics: { upcomingExams: 2, pendingTeacherReviews: 0 },
-          systemHealth: { apiStatus: 'ONLINE', aiServiceStatus: 'ONLINE', lastUpdated: new Date().toISOString() },
-        });
-      } finally {
-        setLoading(false);
-      }
+  const loadData = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      const data = await ApiClient.fetch<Metrics>('/dashboard/metrics');
+      setMetrics(data);
+    } catch (e: any) {
+      setError(e.message || 'Unable to connect to live metrics API.');
+      setMetrics(null);
+    } finally {
+      setLoading(false);
     }
+  };
+
+  useEffect(() => {
     loadData();
   }, []);
 
@@ -78,14 +73,14 @@ export default function DashboardPage() {
 
       <ResponsivePageContainer>
         {error && (
-          <div className="p-4 rounded-xl bg-neutral-50 border border-neutral-300 text-neutral-800 text-xs flex items-center justify-between">
+          <div className="p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center justify-between">
             <div>
-              <span className="font-semibold text-black">Notice: </span>
-              {error} (Displaying cached session data)
+              <span className="font-semibold text-rose-900">Metrics Unavailable: </span>
+              {error}
             </div>
             <button
-              onClick={() => window.location.reload()}
-              className="text-xs font-semibold text-[#CC6B00] hover:underline"
+              onClick={loadData}
+              className="text-xs font-semibold text-rose-700 hover:underline cursor-pointer"
             >
               Retry
             </button>
@@ -106,9 +101,11 @@ export default function DashboardPage() {
             </div>
             <div className="mt-3">
               <div className="text-2xl sm:text-3xl font-bold text-black tracking-tight leading-none">
-                {loading ? '—' : (metrics?.activeStudents ?? 0)}
+                {loading ? '—' : error ? '—' : (metrics?.activeStudents ?? 0)}
               </div>
-              <div className="text-xs text-neutral-500 mt-1.5">Verified enrollments</div>
+              <div className="text-xs text-neutral-500 mt-1.5">
+                {loading ? 'Loading records...' : error ? 'Data unavailable' : 'Verified enrollments'}
+              </div>
             </div>
           </div>
 
@@ -124,10 +121,10 @@ export default function DashboardPage() {
             </div>
             <div className="mt-3">
               <div className="text-2xl sm:text-3xl font-bold text-black tracking-tight leading-none">
-                {loading ? '—' : `${metrics?.todayAttendance.rate ?? 0}%`}
+                {loading ? '—' : error ? '—' : `${metrics?.todayAttendance?.rate ?? 0}%`}
               </div>
               <div className="text-xs text-neutral-500 mt-1.5">
-                {metrics?.todayAttendance.present ?? 0} marked present today
+                {loading ? 'Loading records...' : error ? 'Attendance data unavailable' : `${metrics?.todayAttendance?.present ?? 0} marked present today`}
               </div>
             </div>
           </div>
@@ -144,10 +141,10 @@ export default function DashboardPage() {
             </div>
             <div className="mt-3">
               <div className="text-2xl sm:text-3xl font-bold text-black tracking-tight leading-none">
-                {loading ? '—' : `₹${(metrics?.finance.totalOutstanding ?? 0).toLocaleString('en-IN')}`}
+                {loading ? '—' : error ? '—' : `₹${(metrics?.finance?.totalOutstanding ?? 0).toLocaleString('en-IN')}`}
               </div>
               <div className="text-xs text-neutral-500 mt-1.5">
-                {metrics?.finance.pendingInvoicesCount ?? 0} open invoice(s)
+                {loading ? 'Loading records...' : error ? 'Invoice data unavailable' : `${metrics?.finance?.pendingInvoicesCount ?? 0} open invoice(s)`}
               </div>
             </div>
           </div>
@@ -164,9 +161,11 @@ export default function DashboardPage() {
             </div>
             <div className="mt-3">
               <div className="text-2xl sm:text-3xl font-bold text-black tracking-tight leading-none">
-                {loading ? '—' : (metrics?.academics.pendingTeacherReviews ?? 0)}
+                {loading ? '—' : error ? '—' : (metrics?.academics?.pendingTeacherReviews ?? 0)}
               </div>
-              <div className="text-xs text-neutral-500 mt-1.5">Pending teacher sign-offs</div>
+              <div className="text-xs text-neutral-500 mt-1.5">
+                {loading ? 'Loading records...' : error ? 'Review queue unavailable' : 'Pending teacher sign-offs'}
+              </div>
             </div>
           </div>
         </div>
@@ -264,18 +263,22 @@ export default function DashboardPage() {
                 <div className="flex items-center justify-between py-2 border-b border-neutral-100">
                   <span className="text-neutral-500 text-xs">NestJS API</span>
                   <span className="font-medium text-xs text-black flex items-center gap-1.5">
-                    <span className="w-1.5 h-1.5 rounded-full bg-[#FF8500]" /> Online
+                    <span className={`w-1.5 h-1.5 rounded-full ${metrics?.systemHealth?.apiStatus === 'ONLINE' ? 'bg-emerald-500' : 'bg-neutral-400'}`} />
+                    {metrics?.systemHealth?.apiStatus || (loading ? 'Checking...' : 'Unavailable')}
                   </span>
                 </div>
                 <div className="flex items-center justify-between py-2 border-b border-neutral-100">
                   <span className="text-neutral-500 text-xs">Ollama Inference</span>
                   <span className="font-medium text-xs text-black flex items-center gap-1.5">
-                    <span className="w-1.5 h-1.5 rounded-full bg-[#FF8500]" /> Online
+                    <span className={`w-1.5 h-1.5 rounded-full ${metrics?.systemHealth?.aiServiceStatus === 'ONLINE' ? 'bg-emerald-500' : 'bg-neutral-400'}`} />
+                    {metrics?.systemHealth?.aiServiceStatus || (loading ? 'Checking...' : 'Unavailable')}
                   </span>
                 </div>
                 <div className="flex items-center justify-between py-2">
                   <span className="text-neutral-500 text-xs">Active Local Model</span>
-                  <span className="font-mono text-xs font-medium text-neutral-800">qwen2.5:3b</span>
+                  <span className="font-mono text-xs font-medium text-neutral-800">
+                    {metrics ? 'qwen2.5:3b' : (loading ? 'Checking...' : 'Unavailable')}
+                  </span>
                 </div>
               </div>
             </div>

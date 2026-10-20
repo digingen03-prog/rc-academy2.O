@@ -1,17 +1,24 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { ApiClient } from '@/lib/api/api-client';
 import { GraduationCap, Lock, Mail, ArrowRight, Eye, EyeOff } from 'lucide-react';
 
 export default function LoginPage() {
   const router = useRouter();
-  const [email, setEmail] = useState('admin@rcacademy.com');
-  const [password, setPassword] = useState('Admin@RCA2026');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const token = ApiClient.getToken();
+    if (token) {
+      router.replace('/dashboard');
+    }
+  }, [router]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -34,18 +41,13 @@ export default function LoginPage() {
       const token = data.data?.accessToken;
       if (token) {
         ApiClient.setToken(token);
-        router.push('/dashboard');
+        router.replace('/dashboard');
       }
     } catch (err: any) {
       setError(err.message || 'Login failed. Please verify credentials.');
     } finally {
       setLoading(false);
     }
-  };
-
-  const handleQuickLogin = (roleEmail: string) => {
-    setEmail(roleEmail);
-    setPassword('Admin@RCA2026');
   };
 
   return (
@@ -119,23 +121,6 @@ export default function LoginPage() {
               <ArrowRight className="w-4 h-4" />
             </button>
           </form>
-
-          {/* Quick Role Presets for Local Testing */}
-          <div className="pt-4 border-t border-neutral-100 space-y-2">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-neutral-500 block">
-              Quick Role Switch (Local Dev)
-            </span>
-            <div className="grid grid-cols-1 gap-2">
-              <button
-                type="button"
-                onClick={() => handleQuickLogin('admin@rcacademy.com')}
-                className="flex items-center justify-between p-2.5 rounded-lg bg-neutral-50 border border-neutral-200 hover:border-neutral-400 text-left text-xs text-neutral-800 transition-colors"
-              >
-                <span className="font-medium">Super Administrator</span>
-                <span className="text-[11px] font-mono text-[#CC6B00]">admin@rcacademy.com</span>
-              </button>
-            </div>
-          </div>
         </div>
       </div>
     </div>
