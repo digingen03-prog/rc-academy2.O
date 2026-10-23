@@ -60,7 +60,7 @@ import { Modal } from '@/components/ui/modal';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ApiClient } from '@/lib/api/api-client';
-import { processPaymentProofFile, formatBytes } from '@/lib/utils/image-compression';
+import { processPaymentProofFile, formatBytes } from '@/utils/image-compression';
 
 // ----------------------------------------------------
 // Interfaces
