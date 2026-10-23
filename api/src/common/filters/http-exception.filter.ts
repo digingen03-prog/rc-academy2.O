@@ -41,12 +41,13 @@ export class HttpExceptionFilter implements ExceptionFilter {
         message = 'Validation failed';
       }
     } else if (exception instanceof Error) {
-      message = exception.message;
+      const isProduction = process.env.NODE_ENV === 'production';
+      message = isProduction && status >= 500 ? 'An unexpected internal error occurred' : exception.message;
     }
 
     if (status >= 500) {
       this.logger.error(
-        `[${request.method}] ${request.url} - ${status} - ${message}`,
+        `[${request.method}] ${request.url} - ${status} - ${exception instanceof Error ? exception.message : message}`,
         exception instanceof Error ? exception.stack : undefined,
       );
     }

@@ -24,7 +24,17 @@ import {
   DifficultyLevel,
   ExamAttendanceStatus,
   StudentStatus,
+  InvigilatorAssignmentStatus,
+  WhatsAppShareStatus,
 } from '@prisma/client';
+import {
+  ScheduleExamDto,
+  AssignInvigilatorDto,
+  AcknowledgeInvigilatorDto,
+  UpdateConductStatusDto,
+  RecordAnnouncementShareDto,
+  TestConductQueryDto,
+} from './dto/test-conduct.dto';
 import { Decimal } from '@prisma/client/runtime/library';
 
 @Injectable()
@@ -205,6 +215,17 @@ export class ExaminationsService {
         batch: true,
         subject: true,
         academicYear: true,
+        invigilator: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+            phone: true,
+            attendanceCode: true,
+            designation: true,
+          },
+        },
         _count: {
           select: { questions: true, submissions: true, results: true },
         },
@@ -220,6 +241,17 @@ export class ExaminationsService {
         batch: true,
         subject: true,
         academicYear: true,
+        invigilator: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+            phone: true,
+            attendanceCode: true,
+            designation: true,
+          },
+        },
         questions: {
           orderBy: { orderNumber: 'asc' },
           include: {
@@ -1098,4 +1130,633 @@ export class ExaminationsService {
       })),
     };
   }
+
+  // ====================================================
+  // 7. TEST CONDUCT, INVIGILATOR & WHATSAPP ANNOUNCEMENTS
+  // ====================================================
+
+  async getTestConductOverview(query: TestConductQueryDto) {
+    const where: any = {};
+
+    if (query.classId) where.classId = query.classId;
+    if (query.batchId) where.batchId = query.batchId;
+    if (query.subjectId) where.subjectId = query.subjectId;
+    if (query.status) where.status = query.status;
+    if (query.invigilatorStatus) where.invigilatorStatus = query.invigilatorStatus;
+    if (query.announcementStatus) where.announcementStatus = query.announcementStatus;
+
+    if (query.date) {
+      const d = new Date(query.date);
+      if (!isNaN(d.getTime())) {
+        const startOfDay = new Date(d);
+        startOfDay.setUTCHours(0, 0, 0, 0);
+        const endOfDay = new Date(d);
+        endOfDay.setUTCHours(23, 59, 59, 999);
+        where.date = { gte: startOfDay, lte: endOfDay };
+      }
+    }
+
+    if (query.search) {
+      where.OR = [
+        { title: { contains: query.search, mode: 'insensitive' } },
+        { class: { name: { contains: query.search, mode: 'insensitive' } } },
+        { subject: { name: { contains: query.search, mode: 'insensitive' } } },
+        { invigilator: { firstName: { contains: query.search, mode: 'insensitive' } } },
+        { invigilator: { lastName: { contains: query.search, mode: 'insensitive' } } },
+      ];
+    }
+
+    const examinations = await this.prisma.examination.findMany({
+      where,
+      orderBy: [{ date: 'asc' }, { startTime: 'asc' }],
+      include: {
+        class: true,
+        batch: true,
+        subject: true,
+        invigilator: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+            phone: true,
+            attendanceCode: true,
+            designation: true,
+          },
+        },
+      },
+    });
+
+    // Compute operational metrics
+    const now = new Date();
+    const todayStart = new Date(now);
+    todayStart.setUTCHours(0, 0, 0, 0);
+    const todayEnd = new Date(now);
+    todayEnd.setUTCHours(23, 59, 59, 999);
+
+    const allActiveExams = await this.prisma.examination.findMany({
+      where: {
+        status: { notIn: [ExaminationStatus.DRAFT] },
+      },
+      select: {
+        id: true,
+        date: true,
+        status: true,
+        invigilatorStatus: true,
+        announcementStatus: true,
+      },
+    });
+
+    const upcomingTests = allActiveExams.filter(
+      (e) => e.date >= todayStart && e.status === ExaminationStatus.SCHEDULED,
+    ).length;
+
+    const todayTests = allActiveExams.filter(
+      (e) => e.date >= todayStart && e.date <= todayEnd,
+    ).length;
+
+    const unassignedInvigilators = allActiveExams.filter(
+      (e) =>
+        e.date >= todayStart &&
+        e.status === ExaminationStatus.SCHEDULED &&
+        e.invigilatorStatus === InvigilatorAssignmentStatus.NOT_ASSIGNED,
+    ).length;
+
+    const awaitingAnnouncements = allActiveExams.filter(
+      (e) =>
+        e.date >= todayStart &&
+        e.status === ExaminationStatus.SCHEDULED &&
+        (e.announcementStatus === WhatsAppShareStatus.DRAFT ||
+          e.announcementStatus === WhatsAppShareStatus.READY_TO_SHARE),
+    ).length;
+
+    const completedTests = await this.prisma.examination.count({
+      where: { status: ExaminationStatus.COMPLETED },
+    });
+
+    return {
+      metrics: {
+        upcomingTests,
+        todayTests,
+        unassignedInvigilators,
+        awaitingAnnouncements,
+        completedTests,
+      },
+      examinations,
+    };
+  }
+
+  async scheduleExam(id: string, dto: ScheduleExamDto, actorId: string) {
+    const exam = await this.findOne(id);
+
+    if (exam.status === ExaminationStatus.COMPLETED || exam.status === ExaminationStatus.PUBLISHED) {
+      throw new BadRequestException('Cannot reschedule a completed or published examination');
+    }
+
+    const examDate = new Date(dto.date);
+    if (isNaN(examDate.getTime())) {
+      throw new BadRequestException('Invalid examination date provided');
+    }
+
+    const startTime = dto.startTime.trim();
+    const durationMinutes = dto.durationMinutes;
+    const endTime = calculateEndTime(startTime, durationMinutes);
+
+    // Conflict Check 1: Check if the same batch has another exam with overlapping time on the same date
+    if (exam.batchId) {
+      const startOfDay = new Date(examDate);
+      startOfDay.setUTCHours(0, 0, 0, 0);
+      const endOfDay = new Date(examDate);
+      endOfDay.setUTCHours(23, 59, 59, 999);
+
+      const batchExams = await this.prisma.examination.findMany({
+        where: {
+          id: { not: id },
+          batchId: exam.batchId,
+          date: { gte: startOfDay, lte: endOfDay },
+          status: { not: ExaminationStatus.DRAFT },
+        },
+      });
+
+      for (const other of batchExams) {
+        if (other.startTime && other.endTime) {
+          if (hasIntervalOverlap(startTime, endTime, other.startTime, other.endTime)) {
+            throw new BadRequestException(
+              `Schedule conflict: Batch already has an examination ("${other.title}") scheduled between ${other.startTime} and ${other.endTime} on ${dto.date}`,
+            );
+          }
+        }
+      }
+    }
+
+    // Conflict Check 2: If invigilator specified, validate staff eligibility and conflicting assignments
+    const invigilatorId = dto.invigilatorId || exam.invigilatorId;
+    let invigilatorStatus = exam.invigilatorStatus;
+
+    if (dto.invigilatorId) {
+      await this.validateInvigilatorEligibility(dto.invigilatorId);
+      await this.checkInvigilatorConflict(dto.invigilatorId, id, examDate, startTime, endTime);
+      invigilatorStatus = InvigilatorAssignmentStatus.ASSIGNED;
+    } else if (invigilatorId) {
+      await this.checkInvigilatorConflict(invigilatorId, id, examDate, startTime, endTime);
+    }
+
+    let announcementStatus = exam.announcementStatus;
+    if (exam.announcementStatus === WhatsAppShareStatus.CONFIRMED_SHARED) {
+      announcementStatus = WhatsAppShareStatus.READY_TO_SHARE;
+    } else if (exam.announcementStatus === WhatsAppShareStatus.DRAFT) {
+      announcementStatus = WhatsAppShareStatus.READY_TO_SHARE;
+    }
+
+    const updated = await this.prisma.examination.update({
+      where: { id },
+      data: {
+        date: examDate,
+        startTime,
+        endTime,
+        durationMinutes,
+        venue: dto.venue !== undefined ? dto.venue : exam.venue,
+        instructions: dto.instructions !== undefined ? dto.instructions : exam.instructions,
+        invigilatorInstructions:
+          dto.invigilatorInstructions !== undefined
+            ? dto.invigilatorInstructions
+            : exam.invigilatorInstructions,
+        status: exam.status === ExaminationStatus.DRAFT ? ExaminationStatus.SCHEDULED : exam.status,
+        ...(dto.invigilatorId && {
+          invigilatorId: dto.invigilatorId,
+          invigilatorStatus,
+        }),
+        announcementStatus,
+      },
+      include: {
+        class: true,
+        batch: true,
+        subject: true,
+        invigilator: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+            phone: true,
+            attendanceCode: true,
+            designation: true,
+          },
+        },
+      },
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        actorId,
+        action: 'EXAMINATION_SCHEDULED',
+        entityType: 'Examination',
+        entityId: id,
+        details: {
+          examTitle: exam.title,
+          date: dto.date,
+          startTime,
+          endTime,
+          durationMinutes,
+          venue: updated.venue,
+          invigilatorId: updated.invigilatorId,
+        },
+      },
+    });
+
+    return updated;
+  }
+
+  async assignInvigilator(id: string, dto: AssignInvigilatorDto, actorId: string) {
+    const exam = await this.findOne(id);
+
+    if (exam.status === ExaminationStatus.COMPLETED || exam.status === ExaminationStatus.PUBLISHED) {
+      throw new BadRequestException('Cannot modify invigilator for a completed examination');
+    }
+
+    await this.validateInvigilatorEligibility(dto.invigilatorId);
+
+    if (exam.startTime && exam.endTime) {
+      await this.checkInvigilatorConflict(
+        dto.invigilatorId,
+        id,
+        exam.date,
+        exam.startTime,
+        exam.endTime,
+      );
+    }
+
+    const previousInvigilatorId = exam.invigilatorId;
+    const invigilatorStatus =
+      dto.invigilatorStatus ||
+      (exam.invigilatorId === dto.invigilatorId
+        ? exam.invigilatorStatus
+        : InvigilatorAssignmentStatus.ASSIGNED);
+
+    const updated = await this.prisma.examination.update({
+      where: { id },
+      data: {
+        invigilatorId: dto.invigilatorId,
+        invigilatorStatus,
+        ...(dto.invigilatorNotes !== undefined && { invigilatorNotes: dto.invigilatorNotes }),
+        ...(dto.invigilatorInstructions !== undefined && {
+          invigilatorInstructions: dto.invigilatorInstructions,
+        }),
+        invigilatorAcknowledgedAt:
+          invigilatorStatus === InvigilatorAssignmentStatus.ACKNOWLEDGED
+            ? exam.invigilatorAcknowledgedAt || new Date()
+            : null,
+      },
+      include: {
+        class: true,
+        batch: true,
+        subject: true,
+        invigilator: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+            phone: true,
+            attendanceCode: true,
+            designation: true,
+          },
+        },
+      },
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        actorId,
+        action:
+          previousInvigilatorId && previousInvigilatorId !== dto.invigilatorId
+            ? 'EXAMINATION_INVIGILATOR_REASSIGN'
+            : 'EXAMINATION_INVIGILATOR_ASSIGN',
+        entityType: 'Examination',
+        entityId: id,
+        details: {
+          examTitle: exam.title,
+          previousInvigilatorId,
+          newInvigilatorId: dto.invigilatorId,
+          invigilatorStatus,
+        },
+      },
+    });
+
+    return updated;
+  }
+
+  async acknowledgeInvigilator(id: string, dto: AcknowledgeInvigilatorDto, actorId: string) {
+    const exam = await this.findOne(id);
+
+    if (!exam.invigilatorId) {
+      throw new BadRequestException('No invigilator assigned to acknowledge');
+    }
+
+    const updated = await this.prisma.examination.update({
+      where: { id },
+      data: {
+        invigilatorStatus: InvigilatorAssignmentStatus.ACKNOWLEDGED,
+        invigilatorAcknowledgedAt: new Date(),
+        ...(dto.notes && { invigilatorNotes: dto.notes }),
+      },
+      include: {
+        class: true,
+        batch: true,
+        subject: true,
+        invigilator: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+            phone: true,
+            attendanceCode: true,
+            designation: true,
+          },
+        },
+      },
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        actorId,
+        action: 'EXAMINATION_INVIGILATOR_ACKNOWLEDGED',
+        entityType: 'Examination',
+        entityId: id,
+        details: {
+          examTitle: exam.title,
+          invigilatorId: exam.invigilatorId,
+          notes: dto.notes,
+        },
+      },
+    });
+
+    return updated;
+  }
+
+  async generateExamAnnouncement(id: string) {
+    const exam = await this.findOne(id);
+
+    const config = await this.prisma.academyScheduleConfig.findFirst();
+    const academyName = config?.academyName || 'RC Academy';
+
+    const formattedDate = new Date(exam.date).toLocaleDateString('en-IN', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      timeZone: 'UTC',
+    });
+
+    const startTime = exam.startTime || '09:30';
+    const endTime = exam.endTime || calculateEndTime(startTime, exam.durationMinutes);
+    const venue = exam.venue || 'Main Examination Hall';
+    const invigilatorName = exam.invigilator
+      ? `${exam.invigilator.firstName} ${exam.invigilator.lastName}${
+          exam.invigilator.attendanceCode ? ` (Staff Code: ${exam.invigilator.attendanceCode})` : ''
+        }`
+      : 'To be assigned';
+
+    const batchText = exam.batch?.name ? exam.batch.name : 'All Batches';
+    const instructionsText =
+      exam.instructions?.trim() ||
+      'Please arrive at least 15 minutes prior to the exam with your admit card and required writing stationery. Electronic gadgets are strictly prohibited.';
+
+    const message = `*${academyName} – Examination Announcement*
+📅 *Date:* ${formattedDate}
+
+Dear Students & Staff,
+
+Please take note of the scheduled examination details:
+
+📝 *Examination:* ${exam.title}
+📚 *Class:* ${exam.class.name}
+👥 *Batch:* ${batchText}
+📘 *Subject:* ${exam.subject.name}
+🕘 *Time:* ${startTime} – ${endTime} (${exam.durationMinutes} minutes)
+📍 *Venue:* ${venue}
+👨‍🏫 *Invigilator:* ${invigilatorName}
+
+📌 *Instructions for Candidates:*
+${instructionsText}
+
+Good luck with your examination!
+— *${academyName}*`;
+
+    const whatsappUrl = `https://api.whatsapp.com/send?text=${encodeURIComponent(message)}`;
+
+    return {
+      examination: {
+        id: exam.id,
+        title: exam.title,
+        date: exam.date,
+        startTime,
+        endTime,
+        durationMinutes: exam.durationMinutes,
+        venue,
+        className: exam.class.name,
+        batchName: batchText,
+        subjectName: exam.subject.name,
+        invigilatorName,
+        instructions: instructionsText,
+        announcementStatus: exam.announcementStatus,
+        announcementSharedAt: exam.announcementSharedAt,
+      },
+      academyName,
+      message,
+      whatsappUrl,
+    };
+  }
+
+  async recordAnnouncementShareStatus(id: string, dto: RecordAnnouncementShareDto, actorId: string) {
+    const exam = await this.findOne(id);
+
+    const isConfirmed = dto.status === WhatsAppShareStatus.CONFIRMED_SHARED;
+
+    const updated = await this.prisma.examination.update({
+      where: { id },
+      data: {
+        announcementStatus: dto.status,
+        ...(isConfirmed && {
+          announcementSharedAt: new Date(),
+          announcementSharedById: actorId,
+        }),
+        ...(dto.messageSnapshot && {
+          announcementMessageSnapshot: dto.messageSnapshot,
+        }),
+        ...(dto.notes && { announcementNotes: dto.notes }),
+      },
+      include: {
+        class: true,
+        batch: true,
+        subject: true,
+        invigilator: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+            phone: true,
+            attendanceCode: true,
+            designation: true,
+          },
+        },
+      },
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        actorId,
+        action: 'EXAMINATION_ANNOUNCEMENT_SHARED',
+        entityType: 'Examination',
+        entityId: id,
+        details: {
+          examTitle: exam.title,
+          shareStatus: dto.status,
+          sharedAt: isConfirmed ? new Date() : null,
+          hasSnapshot: Boolean(dto.messageSnapshot),
+          notes: dto.notes,
+        },
+      },
+    });
+
+    return updated;
+  }
+
+  async updateConductStatus(id: string, dto: UpdateConductStatusDto, actorId: string) {
+    const exam = await this.findOne(id);
+
+    const updated = await this.prisma.examination.update({
+      where: { id },
+      data: { status: dto.status },
+      include: {
+        class: true,
+        batch: true,
+        subject: true,
+        invigilator: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+            phone: true,
+            attendanceCode: true,
+            designation: true,
+          },
+        },
+      },
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        actorId,
+        action: 'EXAMINATION_CONDUCT_STATUS_CHANGE',
+        entityType: 'Examination',
+        entityId: id,
+        details: {
+          examTitle: exam.title,
+          previousStatus: exam.status,
+          newStatus: dto.status,
+          notes: dto.notes,
+        },
+      },
+    });
+
+    return updated;
+  }
+
+  private async validateInvigilatorEligibility(staffId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: staffId },
+      include: { userRoles: { include: { role: true } } },
+    });
+
+    if (!user) {
+      throw new NotFoundException(`Staff member ${staffId} not found`);
+    }
+
+    if (user.status !== 'ACTIVE') {
+      throw new BadRequestException(
+        `Cannot assign inactive staff (${user.firstName} ${user.lastName}) as an invigilator`,
+      );
+    }
+
+    const roles = user.userRoles.map((ur) => ur.role.name);
+    const eligibleRoles = ['TEACHER', 'STAFF', 'ACADEMY_ADMIN', 'SUPER_ADMIN'];
+    const isEligible = roles.some((r) => eligibleRoles.includes(r as any));
+
+    if (!isEligible) {
+      throw new BadRequestException(
+        `Staff member (${user.firstName} ${user.lastName}) does not possess an eligible invigilation role (Eligible: ${eligibleRoles.join(', ')})`,
+      );
+    }
+
+    return user;
+  }
+
+  private async checkInvigilatorConflict(
+    invigilatorId: string,
+    currentExamId: string,
+    date: Date,
+    startTime: string,
+    endTime: string,
+  ) {
+    const startOfDay = new Date(date);
+    startOfDay.setUTCHours(0, 0, 0, 0);
+    const endOfDay = new Date(date);
+    endOfDay.setUTCHours(23, 59, 59, 999);
+
+    const conflicts = await this.prisma.examination.findMany({
+      where: {
+        id: { not: currentExamId },
+        invigilatorId,
+        date: { gte: startOfDay, lte: endOfDay },
+        status: { notIn: [ExaminationStatus.DRAFT, ExaminationStatus.COMPLETED] },
+      },
+    });
+
+    for (const other of conflicts) {
+      if (other.startTime && other.endTime) {
+        if (hasIntervalOverlap(startTime, endTime, other.startTime, other.endTime)) {
+          throw new BadRequestException(
+            `Invigilator conflict: Staff member is already assigned to examination "${other.title}" between ${other.startTime} and ${other.endTime} on this date`,
+          );
+        }
+      }
+    }
+  }
+}
+
+function parseTimeToMinutes(timeStr: string): number {
+  const parts = timeStr.trim().split(':');
+  if (parts.length < 2) return 0;
+  const hours = parseInt(parts[0], 10);
+  const minutes = parseInt(parts[1], 10);
+  return (isNaN(hours) ? 0 : hours) * 60 + (isNaN(minutes) ? 0 : minutes);
+}
+
+function formatMinutesToTime(totalMinutes: number): string {
+  const normalized = Math.max(0, totalMinutes);
+  const hours = Math.floor(normalized / 60) % 24;
+  const minutes = normalized % 60;
+  return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
+}
+
+function calculateEndTime(startTime: string, durationMinutes: number): string {
+  const startMins = parseTimeToMinutes(startTime);
+  return formatMinutesToTime(startMins + durationMinutes);
+}
+
+function hasIntervalOverlap(
+  start1: string,
+  end1: string,
+  start2: string,
+  end2: string,
+): boolean {
+  const s1 = parseTimeToMinutes(start1);
+  const e1 = parseTimeToMinutes(end1);
+  const s2 = parseTimeToMinutes(start2);
+  const e2 = parseTimeToMinutes(end2);
+  return s1 < e2 && s2 < e1;
 }

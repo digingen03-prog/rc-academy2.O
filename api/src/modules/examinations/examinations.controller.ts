@@ -21,6 +21,14 @@ import {
   SubmitMarksDto,
   CorrectResultDto,
 } from './dto/create-exam.dto';
+import {
+  ScheduleExamDto,
+  AssignInvigilatorDto,
+  AcknowledgeInvigilatorDto,
+  UpdateConductStatusDto,
+  RecordAnnouncementShareDto,
+  TestConductQueryDto,
+} from './dto/test-conduct.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -106,6 +114,12 @@ export class ExaminationsController {
       status,
       academicYearId,
     });
+  }
+
+  @Get('conduct')
+  @Roles(UserRoleType.SUPER_ADMIN, UserRoleType.ACADEMY_ADMIN, UserRoleType.TEACHER, UserRoleType.STAFF)
+  async getTestConductOverview(@Query() query: TestConductQueryDto) {
+    return this.examinationsService.getTestConductOverview(query);
   }
 
   @Get(':id')
@@ -229,6 +243,66 @@ export class ExaminationsController {
   @Roles(UserRoleType.SUPER_ADMIN, UserRoleType.ACADEMY_ADMIN, UserRoleType.TEACHER, UserRoleType.ACCOUNTANT)
   async getResults(@Param('id') id: string) {
     return this.examinationsService.getResults(id);
+  }
+
+  // ----------------------------------------------------
+  // 7. TEST CONDUCT, INVIGILATOR & ANNOUNCEMENTS
+  // ----------------------------------------------------
+
+  @Post(':id/schedule')
+  @Roles(UserRoleType.SUPER_ADMIN, UserRoleType.ACADEMY_ADMIN)
+  async scheduleExam(
+    @Param('id') id: string,
+    @Body() dto: ScheduleExamDto,
+    @CurrentUser('id') actorId: string,
+  ) {
+    return this.examinationsService.scheduleExam(id, dto, actorId);
+  }
+
+  @Patch(':id/invigilator')
+  @Roles(UserRoleType.SUPER_ADMIN, UserRoleType.ACADEMY_ADMIN)
+  async assignInvigilator(
+    @Param('id') id: string,
+    @Body() dto: AssignInvigilatorDto,
+    @CurrentUser('id') actorId: string,
+  ) {
+    return this.examinationsService.assignInvigilator(id, dto, actorId);
+  }
+
+  @Patch(':id/invigilator/acknowledge')
+  @Roles(UserRoleType.SUPER_ADMIN, UserRoleType.ACADEMY_ADMIN, UserRoleType.TEACHER, UserRoleType.STAFF)
+  async acknowledgeInvigilator(
+    @Param('id') id: string,
+    @Body() dto: AcknowledgeInvigilatorDto,
+    @CurrentUser('id') actorId: string,
+  ) {
+    return this.examinationsService.acknowledgeInvigilator(id, dto, actorId);
+  }
+
+  @Get(':id/announcement')
+  @Roles(UserRoleType.SUPER_ADMIN, UserRoleType.ACADEMY_ADMIN, UserRoleType.TEACHER, UserRoleType.STAFF)
+  async generateAnnouncement(@Param('id') id: string) {
+    return this.examinationsService.generateExamAnnouncement(id);
+  }
+
+  @Post(':id/announcement/share-status')
+  @Roles(UserRoleType.SUPER_ADMIN, UserRoleType.ACADEMY_ADMIN, UserRoleType.TEACHER, UserRoleType.STAFF)
+  async recordAnnouncementShareStatus(
+    @Param('id') id: string,
+    @Body() dto: RecordAnnouncementShareDto,
+    @CurrentUser('id') actorId: string,
+  ) {
+    return this.examinationsService.recordAnnouncementShareStatus(id, dto, actorId);
+  }
+
+  @Patch(':id/conduct-status')
+  @Roles(UserRoleType.SUPER_ADMIN, UserRoleType.ACADEMY_ADMIN, UserRoleType.TEACHER)
+  async updateConductStatus(
+    @Param('id') id: string,
+    @Body() dto: UpdateConductStatusDto,
+    @CurrentUser('id') actorId: string,
+  ) {
+    return this.examinationsService.updateConductStatus(id, dto, actorId);
   }
 }
 

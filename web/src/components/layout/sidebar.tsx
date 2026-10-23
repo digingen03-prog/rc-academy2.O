@@ -14,7 +14,9 @@ import {
   Layers,
   UserCheck,
   Calendar,
-  X
+  X,
+  FileText,
+  CalendarClock,
 } from 'lucide-react';
 import { useSidebar } from './sidebar-context';
 
@@ -26,7 +28,8 @@ const navigation = [
   { name: 'Students', href: '/students', icon: Users },
   { name: 'Smart Attendance', href: '/attendance', icon: QrCode },
   { name: 'Fees & Finance', href: '/fees', icon: CreditCard },
-  { name: 'Examinations', href: '/examinations', icon: BookOpen },
+  { name: 'Question Papers', href: '/examinations', icon: FileText },
+  { name: 'Test Conduct', href: '/test-conduct', icon: CalendarClock },
   { name: 'AI Evaluation', href: '/answer-evaluation', icon: FileCheck2 },
 ];
 

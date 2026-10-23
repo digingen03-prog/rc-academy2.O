@@ -66,6 +66,23 @@ export class CreateCourseFeeConfigDto {
   allowedDiscounts?: any[];
 
   @IsOptional()
+  @IsNumber()
+  @Min(0)
+  discountAmount?: number;
+
+  @IsOptional()
+  @IsString()
+  subjectTier?: string;
+
+  @IsOptional()
+  @IsNumber()
+  targetSubjectCount?: number;
+
+  @IsOptional()
+  @IsArray()
+  selectedSubjectIds?: string[];
+
+  @IsOptional()
   @IsString()
   effectiveStartDate?: string;
 
@@ -128,6 +145,23 @@ export class UpdateCourseFeeConfigDto {
   @IsOptional()
   @IsArray()
   allowedDiscounts?: any[];
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  discountAmount?: number;
+
+  @IsOptional()
+  @IsString()
+  subjectTier?: string;
+
+  @IsOptional()
+  @IsNumber()
+  targetSubjectCount?: number;
+
+  @IsOptional()
+  @IsArray()
+  selectedSubjectIds?: string[];
 
   @IsOptional()
   @IsString()

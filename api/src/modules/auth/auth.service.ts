@@ -34,15 +34,53 @@ export class AuthService {
     });
 
     if (!user) {
+      // Prevent timing attacks by executing a dummy bcrypt compare
+      await bcrypt.compare(loginDto.password, '$2b$10$e7Z1w7N8y6a4a1s8b2n9qub1o8v0v2y7s5l4g8k2h9d7s6j5k4l3m');
+      try {
+        await this.prisma.auditLog.create({
+          data: {
+            actorId: null,
+            action: 'AUTH_LOGIN_FAILED',
+            entityType: 'User',
+            entityId: null,
+            details: { email: loginDto.email, reason: 'USER_NOT_FOUND' },
+            ipAddress,
+          },
+        });
+      } catch (_) {}
       throw new UnauthorizedException('Invalid credentials');
     }
 
     if (user.status !== 'ACTIVE') {
+      try {
+        await this.prisma.auditLog.create({
+          data: {
+            actorId: user.id,
+            action: 'AUTH_LOGIN_FAILED',
+            entityType: 'User',
+            entityId: user.id,
+            details: { email: user.email, reason: 'ACCOUNT_INACTIVE' },
+            ipAddress,
+          },
+        });
+      } catch (_) {}
       throw new UnauthorizedException('Account is not active. Please contact administration.');
     }
 
     const isMatch = await bcrypt.compare(loginDto.password, user.passwordHash);
     if (!isMatch) {
+      try {
+        await this.prisma.auditLog.create({
+          data: {
+            actorId: user.id,
+            action: 'AUTH_LOGIN_FAILED',
+            entityType: 'User',
+            entityId: user.id,
+            details: { email: user.email, reason: 'INVALID_PASSWORD' },
+            ipAddress,
+          },
+        });
+      } catch (_) {}
       throw new UnauthorizedException('Invalid credentials');
     }
 

@@ -76,6 +76,8 @@ model User {
   classSchedules         ClassSchedule[]
   scheduleExceptions     DailyScheduleException[]
   authorizedAdjustments  FeeAdjustment[]
+  invigilatedExams       Examination[]           @relation("ExamInvigilator")
+  sharedExamAnnouncements Examination[]          @relation("ExamAnnouncementSharedBy")
 
   @@map("users")
 }
@@ -666,6 +668,13 @@ model Payment {
   reversedById   String?
   reversalReason String?
 
+  // Private S3 Payment Proof Document Metadata
+  proofObjectKey  String?
+  proofFileName   String?
+  proofFileSize   Int?
+  proofMimeType   String?
+  proofUploadedAt DateTime?
+
   student           Student                   @relation(fields: [studentId], references: [id], onDelete: Cascade)
   recordedBy        User                      @relation(fields: [recordedById], references: [id])
   allocations       PaymentAllocation[]
@@ -675,6 +684,7 @@ model Payment {
   @@index([studentId])
   @@index([receiptNumber])
   @@index([idempotencyKey])
+  @@index([proofObjectKey])
   @@map("payments")
 }
 
@@ -864,6 +874,21 @@ enum ExamAttendanceStatus {
   EXEMPT
 }
 
+enum InvigilatorAssignmentStatus {
+  NOT_ASSIGNED
+  ASSIGNED
+  ACKNOWLEDGEMENT_PENDING
+  ACKNOWLEDGED
+}
+
+enum WhatsAppShareStatus {
+  DRAFT
+  READY_TO_SHARE
+  OPENED_FOR_SHARING
+  CONFIRMED_SHARED
+  CANCELLED
+}
+
 model Question {
   id                String          @id @default(uuid())
   subjectId         String
@@ -905,6 +930,28 @@ model Examination {
   status          ExaminationStatus @default(DRAFT)
   isPublished     Boolean           @default(false)
   paperVersion    Int               @default(1)
+
+  // Test Conduct & Scheduling
+  startTime                    String?                      // e.g. "09:30"
+  endTime                      String?                      // e.g. "11:00"
+  venue                        String?                      // e.g. "Main Exam Hall A", "Room 204"
+  invigilatorInstructions      String?                      @db.Text
+
+  // Invigilator Assignment
+  invigilatorId                String?
+  invigilatorStatus            InvigilatorAssignmentStatus  @default(NOT_ASSIGNED)
+  invigilatorNotes             String?
+  invigilatorAcknowledgedAt    DateTime?
+  invigilator                  User?                        @relation("ExamInvigilator", fields: [invigilatorId], references: [id], onDelete: SetNull)
+
+  // WhatsApp Group Announcement Tracking
+  announcementStatus           WhatsAppShareStatus          @default(DRAFT)
+  announcementSharedAt         DateTime?
+  announcementSharedById       String?
+  announcementMessageSnapshot  String?                      @db.Text
+  announcementNotes            String?
+  announcementSharedBy         User?                        @relation("ExamAnnouncementSharedBy", fields: [announcementSharedById], references: [id], onDelete: SetNull)
+
   createdAt       DateTime          @default(now())
   updatedAt       DateTime          @updatedAt
 
@@ -916,6 +963,9 @@ model Examination {
   submissions  StudentSubmission[]
   results      Result[]
 
+  @@index([date])
+  @@index([invigilatorId])
+  @@index([announcementStatus])
   @@map("examinations")
 }
 

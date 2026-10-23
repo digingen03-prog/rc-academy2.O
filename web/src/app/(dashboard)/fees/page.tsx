@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Header } from '@/components/layout/header';
 import { ResponsivePageContainer } from '@/components/layout/responsive-container';
 import {
@@ -30,6 +30,7 @@ import {
   Eye,
   Filter,
   Check,
+  Copy,
   AlertTriangle,
   Clock,
   Pencil,
@@ -42,11 +43,24 @@ import {
   ArrowLeftRight,
   ArrowRight,
   Zap,
+  Percent,
+  Sparkles,
+  Tag,
+  ExternalLink,
+  Loader2,
+  Shield,
+  Download,
+  ZoomIn,
+  ZoomOut,
+  RotateCw,
+  Sun,
+  Moon,
 } from 'lucide-react';
 import { Modal } from '@/components/ui/modal';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ApiClient } from '@/lib/api/api-client';
+import { processPaymentProofFile, formatBytes } from '@/lib/utils/image-compression';
 
 // ----------------------------------------------------
 // Interfaces
@@ -132,6 +146,36 @@ interface CourseFeeDetail {
   }[];
 }
 
+interface StudentPaymentHistoryItem {
+  id: string;
+  receiptNumber: string;
+  amount: number;
+  paymentMethod: string;
+  reference?: string | null;
+  notes?: string | null;
+  cycle?: string | null;
+  proofName?: string | null;
+  proofSize?: string | null;
+  proofObjectKey?: string | null;
+  proofFileName?: string | null;
+  proofFileSize?: number | null;
+  hasRealProof?: boolean;
+  proofMimeType?: string | null;
+  paidAt: string;
+  status: string;
+  recordedBy: string;
+  allocations: {
+    allocationId: string;
+    invoiceId: string;
+    invoiceNumber?: string;
+    allocatedAmount: number;
+    courseName?: string;
+    subjectName?: string;
+    batchName?: string;
+    isReversed: boolean;
+  }[];
+}
+
 interface StudentDetailedAccount {
   student: {
     id: string;
@@ -154,6 +198,7 @@ interface StudentDetailedAccount {
     startDate: string;
   }[];
   courseFees: CourseFeeDetail[];
+  payments?: StudentPaymentHistoryItem[];
   consolidatedAccount: {
     totalCoursesEnrolled: number;
     consolidatedTotalBilled: number;
@@ -179,6 +224,7 @@ interface CourseFeeConfigItem {
   effectiveEndDate?: string | null;
   isActive: boolean;
   description?: string | null;
+  allowedDiscounts?: any[] | null;
   _count?: { invoices: number };
 }
 
@@ -219,11 +265,37 @@ interface PaymentRowItem {
       id: string;
       invoiceNumber: string;
       class?: { name: string } | null;
-      batch?: { name: string } | null;
       subject?: { name: string } | null;
       balanceAmount: number;
     };
   }[];
+  proofObjectKey?: string | null;
+  proofFileName?: string | null;
+  proofFileSize?: number | null;
+  proofMimeType?: string | null;
+  proofUploadedAt?: string | null;
+}
+
+interface ProofViewerState {
+  isOpen: boolean;
+  paymentId: string;
+  receiptNumber?: string;
+  fileName: string;
+  fileSize?: string | number | null;
+  mimeType?: string | null;
+  downloadUrl?: string | null;
+  expiresIn?: number | null;
+  uploadedAt?: string | Date | null;
+  loading: boolean;
+  error?: string | null;
+}
+
+interface AttachProofModalState {
+  isOpen: boolean;
+  paymentId: string;
+  receiptNumber: string;
+  studentName: string;
+  amount: number;
 }
 
 interface OfficialReceiptData {
@@ -243,6 +315,7 @@ interface OfficialReceiptData {
     enrolledCourses: { courseName: string; batchName: string; subjectName?: string | null }[];
   };
   payment: {
+    id?: string;
     amount: number;
     paymentMethod: string;
     reference?: string | null;
@@ -251,6 +324,11 @@ interface OfficialReceiptData {
     reversedAt?: string | null;
     reversalReason?: string | null;
     recordedBy: string;
+    proofObjectKey?: string | null;
+    proofFileName?: string | null;
+    proofFileSize?: number | null;
+    proofMimeType?: string | null;
+    hasProofAttachment?: boolean;
   };
   allocations: {
     invoiceNumber: string;
@@ -276,7 +354,13 @@ export default function FeesPage() {
   // Filter & Search states
   const [searchQuery, setSearchQuery] = useState('');
   const [filterCourseId, setFilterCourseId] = useState('');
+  const [filterSubjectId, setFilterSubjectId] = useState('');
+  const [filterBillingCycle, setFilterBillingCycle] = useState('');
   const [filterStatus, setFilterStatus] = useState('');
+
+  // Student Detail Modal state
+  const [studentModalTab, setStudentModalTab] = useState<'payments' | 'courses'>('payments');
+  const [copiedRefId, setCopiedRefId] = useState<string | null>(null);
 
   // Overview Data
   const [dashboardKpis, setDashboardKpis] = useState<DashboardKpis | null>(null);
@@ -315,12 +399,16 @@ export default function FeesPage() {
     classId: '',
     batchId: '',
     subjectId: '',
+    subjectMode: 'ALL' as 'ALL' | 'SELECT' | 'SINGLE',
+    subjectTier: 'ALL' as 'ALL' | 'TWO_SUBJECTS' | 'SINGLE_SUBJECT' | 'CUSTOM',
+    selectedSubjectIds: [] as string[],
     amount: 3500,
+    discountAmount: 0,
     billingPeriod: 'MONTHLY',
     installmentCount: 1,
     description: '',
     isActive: true,
-    replicateToStudents: true,
+    replicateToStudents: false,
   });
 
   // Form States - Payment
@@ -344,6 +432,45 @@ export default function FeesPage() {
   const [paymentProofName, setPaymentProofName] = useState<string>('');
   const [paymentProofSize, setPaymentProofSize] = useState<string>('');
   const [proofError, setProofError] = useState<string | null>(null);
+  const [compressingProof, setCompressingProof] = useState<boolean>(false);
+  const [proofCompressionInfo, setProofCompressionInfo] = useState<{
+    originalSize: string;
+    compressedSize: string;
+    isCompressed: boolean;
+    ratio: number;
+    note: string;
+  } | null>(null);
+  const [loadingProofUrl, setLoadingProofUrl] = useState<string | null>(null);
+
+  // Proof Viewer Modal States (AWS S3 short-lived presigned document access)
+  const [proofViewer, setProofViewer] = useState<ProofViewerState>({
+    isOpen: false,
+    paymentId: '',
+    fileName: '',
+    loading: false,
+  });
+  const [proofViewerZoom, setProofViewerZoom] = useState<number>(100);
+  const [proofViewerRotation, setProofViewerRotation] = useState<number>(0);
+  const [proofViewerDarkBg, setProofViewerDarkBg] = useState<boolean>(false);
+
+  // Modal State for Attaching / Updating Proof to Existing Payment
+  const [attachProofModal, setAttachProofModal] = useState<AttachProofModalState | null>(null);
+  const [existingProofFile, setExistingProofFile] = useState<File | null>(null);
+  const [existingProofPreview, setExistingProofPreview] = useState<string | null>(null);
+  const [existingProofCompression, setExistingProofCompression] = useState<{
+    originalSize: string;
+    compressedSize: string;
+    isCompressed: boolean;
+    ratio: number;
+    note: string;
+  } | null>(null);
+  const [uploadingExistingProof, setUploadingExistingProof] = useState<boolean>(false);
+  const [existingProofError, setExistingProofError] = useState<string | null>(null);
+
+  // Payment Instant Fee Discount States
+  const [paymentDiscount, setPaymentDiscount] = useState<number | ''>('');
+  const [paymentDiscountReason, setPaymentDiscountReason] = useState<string>('');
+  const [discountError, setDiscountError] = useState<string | null>(null);
 
   // Form States - Adjustment
   const [adjustmentInvoice, setAdjustmentInvoice] = useState<InvoiceRowItem | null>(null);
@@ -386,6 +513,8 @@ export default function FeesPage() {
       const params = new URLSearchParams();
       if (searchQuery) params.append('search', searchQuery);
       if (filterCourseId) params.append('classId', filterCourseId);
+      if (filterSubjectId) params.append('subjectId', filterSubjectId);
+      if (filterBillingCycle) params.append('billingCycle', filterBillingCycle);
       if (filterStatus) params.append('status', filterStatus);
 
       const data: any = await ApiClient.fetch(`/fees/student-accounts?${params.toString()}`);
@@ -499,7 +628,7 @@ export default function FeesPage() {
     } else if (activeTab === 'revenue_salary') {
       fetchSalaryRevenueData();
     }
-  }, [activeTab, searchQuery, filterCourseId, filterStatus]);
+  }, [activeTab, searchQuery, filterCourseId, filterSubjectId, filterBillingCycle, filterStatus]);
 
   // Load detailed student account drilldown
   const handleOpenStudentDetail = async (studentId: string) => {
@@ -525,6 +654,9 @@ export default function FeesPage() {
     setPaymentProofName('');
     setPaymentProofSize('');
     setProofError(null);
+    setPaymentDiscount('');
+    setPaymentDiscountReason('');
+    setDiscountError(null);
     setPaymentMethodMode('UPI');
     setPaymentMethod('UPI');
 
@@ -586,30 +718,35 @@ export default function FeesPage() {
     }
   };
 
-  // Proof of payment file handlers
-  const handleProofChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Proof of payment file handlers with adaptive client-side compression
+  const handleProofChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    if (file.size > 10 * 1024 * 1024) {
-      setProofError('File size must be under 10MB');
-      return;
-    }
-
-    setProofError(null);
-    setPaymentProofFile(file);
-    setPaymentProofName(file.name);
-    const sizeKB = (file.size / 1024).toFixed(1);
-    setPaymentProofSize(`${sizeKB} KB`);
-
-    if (file.type.startsWith('image/')) {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        setPaymentProofPreview(event.target?.result as string);
-      };
-      reader.readAsDataURL(file);
-    } else {
+    try {
+      setCompressingProof(true);
+      setProofError(null);
+      const result = await processPaymentProofFile(file);
+      setPaymentProofFile(result.file);
+      setPaymentProofName(result.file.name);
+      setPaymentProofSize(formatBytes(result.compressedSize));
+      setPaymentProofPreview(result.previewUrl);
+      setProofCompressionInfo({
+        originalSize: formatBytes(result.originalSize),
+        compressedSize: formatBytes(result.compressedSize),
+        isCompressed: result.isCompressed,
+        ratio: result.compressionRatioPercent,
+        note: result.note,
+      });
+    } catch (err: any) {
+      setProofError(err.message || 'Invalid proof document');
+      setPaymentProofFile(null);
+      setPaymentProofName('');
+      setPaymentProofSize('');
       setPaymentProofPreview(null);
+      setProofCompressionInfo(null);
+    } finally {
+      setCompressingProof(false);
     }
   };
 
@@ -619,6 +756,132 @@ export default function FeesPage() {
     setPaymentProofName('');
     setPaymentProofSize('');
     setProofError(null);
+    setProofCompressionInfo(null);
+  };
+
+  const handleOpenProofDocument = async (
+    paymentId: string,
+    meta?: { receiptNumber?: string; fileName?: string; fileSize?: string | number; mimeType?: string },
+  ) => {
+    setProofViewer({
+      isOpen: true,
+      paymentId,
+      receiptNumber: meta?.receiptNumber,
+      fileName: meta?.fileName || 'Payment Proof Document',
+      fileSize: meta?.fileSize,
+      mimeType: meta?.mimeType,
+      downloadUrl: null,
+      loading: true,
+      error: null,
+    });
+    setProofViewerZoom(100);
+    setProofViewerRotation(0);
+    setLoadingProofUrl(paymentId);
+
+    try {
+      const res: any = await ApiClient.fetch(`/fees/payments/${paymentId}/proof-url`);
+      if (res?.downloadUrl) {
+        setProofViewer((prev) => ({
+          ...prev,
+          downloadUrl: res.downloadUrl,
+          fileName: res.fileName || prev.fileName,
+          fileSize: res.fileSize ? formatBytes(res.fileSize) : prev.fileSize,
+          mimeType: res.mimeType || prev.mimeType,
+          expiresIn: res.expiresIn || 900,
+          uploadedAt: res.uploadedAt,
+          loading: false,
+        }));
+      } else {
+        throw new Error('Server returned empty download URL');
+      }
+    } catch (err: any) {
+      setProofViewer((prev) => ({
+        ...prev,
+        loading: false,
+        error: err.message || 'Could not retrieve secure download URL from AWS S3',
+      }));
+    } finally {
+      setLoadingProofUrl(null);
+    }
+  };
+
+  const handleOpenAttachProof = (payment: {
+    id: string;
+    receiptNumber: string;
+    studentName: string;
+    amount: number;
+  }) => {
+    setAttachProofModal({
+      isOpen: true,
+      paymentId: payment.id,
+      receiptNumber: payment.receiptNumber,
+      studentName: payment.studentName,
+      amount: payment.amount,
+    });
+    setExistingProofFile(null);
+    setExistingProofPreview(null);
+    setExistingProofCompression(null);
+    setExistingProofError(null);
+  };
+
+  const handleExistingProofChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      setExistingProofError(null);
+      const result = await processPaymentProofFile(file);
+      setExistingProofFile(result.file);
+      setExistingProofPreview(result.previewUrl);
+      setExistingProofCompression({
+        originalSize: formatBytes(result.originalSize),
+        compressedSize: formatBytes(result.compressedSize),
+        isCompressed: result.isCompressed,
+        ratio: result.compressionRatioPercent,
+        note: result.note,
+      });
+    } catch (err: any) {
+      setExistingProofError(err.message || 'Invalid proof document');
+      setExistingProofFile(null);
+      setExistingProofPreview(null);
+      setExistingProofCompression(null);
+    }
+  };
+
+  const handleSubmitAttachProof = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!attachProofModal || !existingProofFile) {
+      setExistingProofError('Please choose a proof document to upload');
+      return;
+    }
+    try {
+      setUploadingExistingProof(true);
+      setExistingProofError(null);
+
+      const formData = new FormData();
+      formData.append('file', existingProofFile);
+
+      const res: any = await ApiClient.fetch(`/fees/payments/${attachProofModal.paymentId}/proof`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (res?.success) {
+        setSuccessMsg(
+          `Proof document attached to receipt ${attachProofModal.receiptNumber} successfully! Stored in private Amazon S3.`,
+        );
+        setAttachProofModal(null);
+        await reloadAll();
+        if (selectedStudentDetail) {
+          await handleOpenStudentDetail(selectedStudentDetail.student.id);
+        }
+      } else {
+        throw new Error('Upload response did not confirm success');
+      }
+    } catch (err: any) {
+      setExistingProofError(err.message || 'Failed to upload proof document');
+    } finally {
+      setUploadingExistingProof(false);
+    }
   };
 
   // Submit Payment Collection
@@ -637,10 +900,23 @@ export default function FeesPage() {
       return;
     }
 
+    const appliedDisc = Math.max(0, Number(paymentDiscount) || 0);
+    if (appliedDisc > 0) {
+      if (!paymentDiscountReason.trim()) {
+        setDiscountError('Discount reason is mandatory when an instant fee discount is applied');
+        return;
+      }
+      if (appliedDisc > modalTargetBalance) {
+        setDiscountError(`Discount amount (₹${appliedDisc.toLocaleString()}) cannot exceed the total due fee (₹${modalTargetBalance.toLocaleString()})`);
+        return;
+      }
+    }
+
     try {
       setLoading(true);
       setErrorMsg(null);
       setProofError(null);
+      setDiscountError(null);
 
       const monthPrefix = collectionMonth ? `[Cycle: ${collectionMonth}]` : '';
 
@@ -678,6 +954,11 @@ export default function FeesPage() {
         idempotencyKey: `PAY-UI-${Date.now()}-${Math.floor(Math.random() * 10000)}`,
       };
 
+      if (appliedDisc > 0) {
+        payload.discountAmount = appliedDisc;
+        payload.discountReason = paymentDiscountReason.trim();
+      }
+
       if (paymentMode === 'MULTI') {
         const allocArray = Object.entries(multiAllocations)
           .filter(([_, amt]) => Number(amt) > 0)
@@ -703,8 +984,46 @@ export default function FeesPage() {
         body: JSON.stringify(payload),
       });
 
-      setSuccessMsg(`Payment of ₹${paymentAmount.toLocaleString()} recorded successfully for ${collectionMonth} (Receipt: ${res.receiptNumber})! Proof: ${paymentProofName}`);
+      // Distinguish payment-record creation from S3 proof upload
+      let proofUploadSuccess = false;
+      let proofUploadError: string | null = null;
+
+      if (paymentProofFile && res?.payment?.id) {
+        try {
+          const formData = new FormData();
+          formData.append('file', paymentProofFile);
+
+          const uploadRes: any = await ApiClient.fetch(`/fees/payments/${res.payment.id}/proof`, {
+            method: 'POST',
+            body: formData,
+          });
+
+          if (uploadRes?.success) {
+            proofUploadSuccess = true;
+          }
+        } catch (uploadErr: any) {
+          proofUploadError = uploadErr.message || 'Proof document failed to upload to private S3 bucket';
+        }
+      }
+
+      const discMsg = appliedDisc > 0 ? ` (with ₹${appliedDisc.toLocaleString()} discount: "${paymentDiscountReason.trim()}")` : '';
+
+      if (paymentProofFile && !proofUploadSuccess) {
+        setErrorMsg(
+          `Payment registered (${res.receiptNumber}), but payment proof upload FAILED: ${proofUploadError}. Please open payment details to retry proof upload.`,
+        );
+      } else {
+        const proofSuffix = paymentProofFile ? ' • Proof verified & encrypted in private S3' : '';
+        setSuccessMsg(
+          `Payment of ₹${Number(paymentAmount).toLocaleString()} recorded successfully${discMsg} for ${collectionMonth} (Receipt: ${res.receiptNumber})!${proofSuffix}`,
+        );
+      }
+
       setShowPaymentModal(false);
+      setPaymentDiscount('');
+      setPaymentDiscountReason('');
+      setDiscountError(null);
+      handleRemoveProof();
 
       // Auto-load receipt
       if (res.payment?.id) {
@@ -730,12 +1049,16 @@ export default function FeesPage() {
       classId: '',
       batchId: '',
       subjectId: '',
+      subjectMode: 'ALL',
+      subjectTier: 'ALL',
+      selectedSubjectIds: [],
       amount: 3500,
+      discountAmount: 0,
       billingPeriod: 'MONTHLY',
       installmentCount: 1,
       description: '',
       isActive: true,
-      replicateToStudents: true,
+      replicateToStudents: false,
     });
     setShowConfigModal(true);
   };
@@ -743,12 +1066,46 @@ export default function FeesPage() {
   // Open Edit Fee Rule Modal
   const handleOpenEditConfig = (cfg: CourseFeeConfigItem) => {
     setEditingConfigId(cfg.id);
+    const bundleDiscount = (cfg.allowedDiscounts as any[])?.find(
+      (d: any) =>
+        d &&
+        (d.tier ||
+          d.type === 'ALL_SUBJECTS_BUNDLE' ||
+          d.type === 'TWO_SUBJECTS_BUNDLE' ||
+          d.type === 'SELECTED_SUBJECTS_BUNDLE' ||
+          d.type === 'SINGLE_SUBJECT' ||
+          d.type === 'BUNDLE_OFFER' ||
+          d.name?.includes('Discount') ||
+          d.name?.includes('Offer') ||
+          Number(d.amount) > 0),
+    );
+    const existingSelectedIds: string[] = Array.isArray(bundleDiscount?.selectedSubjectIds) && bundleDiscount.selectedSubjectIds.length > 0
+      ? bundleDiscount.selectedSubjectIds
+      : cfg.subject?.id
+      ? [cfg.subject.id]
+      : [];
+
+    let detectedTier: 'ALL' | 'TWO_SUBJECTS' | 'SINGLE_SUBJECT' | 'CUSTOM' = 'ALL';
+    if (bundleDiscount?.tier) {
+      detectedTier = bundleDiscount.tier;
+    } else if (cfg.subject?.id || existingSelectedIds.length === 1 || cfg.name?.toLowerCase().includes('1 subject')) {
+      detectedTier = 'SINGLE_SUBJECT';
+    } else if (existingSelectedIds.length === 2 || cfg.name?.toLowerCase().includes('2 subject')) {
+      detectedTier = 'TWO_SUBJECTS';
+    } else if (existingSelectedIds.length > 0) {
+      detectedTier = 'CUSTOM';
+    }
+
     setConfigForm({
       name: cfg.name,
       classId: cfg.class.id,
       batchId: cfg.batch?.id || '',
-      subjectId: cfg.subject?.id || '',
+      subjectId: cfg.subject?.id || existingSelectedIds[0] || '',
+      subjectMode: detectedTier === 'ALL' ? 'ALL' : 'SELECT',
+      subjectTier: detectedTier,
+      selectedSubjectIds: existingSelectedIds,
       amount: cfg.amount,
+      discountAmount: bundleDiscount?.amount ? Number(bundleDiscount.amount) : 0,
       billingPeriod: cfg.billingPeriod || 'MONTHLY',
       installmentCount: cfg.installmentCount || 1,
       description: cfg.description || '',
@@ -803,11 +1160,59 @@ export default function FeesPage() {
 
       const resolvedAcademicYearId = selectedCourse?.academicYear?.id || selectedCourse?.academicYearId;
 
+      const isSelectMode = configForm.subjectTier !== 'ALL';
+      const targetSelectedSubjectIds =
+        !isSelectMode
+          ? []
+          : configForm.selectedSubjectIds.length > 0
+          ? configForm.selectedSubjectIds
+          : configForm.subjectId
+          ? [configForm.subjectId]
+          : [];
+
+      const targetCount =
+        configForm.subjectTier === 'TWO_SUBJECTS'
+          ? 2
+          : configForm.subjectTier === 'SINGLE_SUBJECT'
+          ? 1
+          : null;
+
+      const bundleDiscounts = [
+        {
+          tier: configForm.subjectTier,
+          targetSubjectCount: targetCount,
+          name:
+            configForm.subjectTier === 'ALL'
+              ? 'All Subjects Standard Fixed Fee'
+              : configForm.subjectTier === 'TWO_SUBJECTS'
+              ? '2-Subjects Package Fee'
+              : configForm.subjectTier === 'SINGLE_SUBJECT'
+              ? 'Single Subject Fee'
+              : 'Selected Subjects Package Fee',
+          amount: Number(configForm.discountAmount) || 0,
+          type:
+            configForm.subjectTier === 'ALL'
+              ? 'ALL_SUBJECTS_BUNDLE'
+              : configForm.subjectTier === 'TWO_SUBJECTS'
+              ? 'TWO_SUBJECTS_BUNDLE'
+              : configForm.subjectTier === 'SINGLE_SUBJECT'
+              ? 'SINGLE_SUBJECT'
+              : 'SELECTED_SUBJECTS_BUNDLE',
+          selectedSubjectIds: targetSelectedSubjectIds,
+          fixedAmount: Math.max(0, (Number(configForm.amount) || 0) - (Number(configForm.discountAmount) || 0)),
+        },
+      ];
+
       if (editingConfigId) {
         // Update existing configuration via PATCH
         const updatePayload: Record<string, any> = {
           name: resolvedName,
           amount: Number(configForm.amount),
+          discountAmount: Number(configForm.discountAmount) || 0,
+          allowedDiscounts: bundleDiscounts,
+          subjectTier: configForm.subjectTier,
+          targetSubjectCount: targetCount,
+          selectedSubjectIds: targetSelectedSubjectIds,
           billingPeriod: configForm.billingPeriod,
           installmentCount: Number(configForm.installmentCount),
           isActive: configForm.isActive,
@@ -820,9 +1225,7 @@ export default function FeesPage() {
         if (configForm.batchId) {
           updatePayload.batchId = configForm.batchId;
         }
-        if (configForm.subjectId) {
-          updatePayload.subjectId = configForm.subjectId;
-        }
+        updatePayload.subjectId = isSelectMode && targetSelectedSubjectIds.length === 1 ? targetSelectedSubjectIds[0] : null;
         if (resolvedAcademicYearId && resolvedAcademicYearId !== 'any') {
           updatePayload.academicYearId = resolvedAcademicYearId;
         }
@@ -848,6 +1251,11 @@ export default function FeesPage() {
           name: resolvedName,
           classId: configForm.classId,
           amount: Number(configForm.amount),
+          discountAmount: Number(configForm.discountAmount) || 0,
+          allowedDiscounts: bundleDiscounts,
+          subjectTier: configForm.subjectTier,
+          targetSubjectCount: targetCount,
+          selectedSubjectIds: targetSelectedSubjectIds,
           billingPeriod: configForm.billingPeriod,
           installmentCount: Number(configForm.installmentCount),
           replicateToStudents: configForm.replicateToStudents,
@@ -856,8 +1264,8 @@ export default function FeesPage() {
         if (configForm.batchId) {
           createPayload.batchId = configForm.batchId;
         }
-        if (configForm.subjectId) {
-          createPayload.subjectId = configForm.subjectId;
+        if (isSelectMode && targetSelectedSubjectIds.length === 1) {
+          createPayload.subjectId = targetSelectedSubjectIds[0];
         }
         if (resolvedAcademicYearId && resolvedAcademicYearId !== 'any') {
           createPayload.academicYearId = resolvedAcademicYearId;
@@ -889,8 +1297,12 @@ export default function FeesPage() {
         classId: '',
         batchId: '',
         subjectId: '',
-        amount: 35000,
-        billingPeriod: 'ANNUAL',
+        subjectMode: 'ALL',
+        subjectTier: 'ALL',
+        selectedSubjectIds: [],
+        amount: 3500,
+        discountAmount: 0,
+        billingPeriod: 'MONTHLY',
         installmentCount: 1,
         description: '',
         isActive: true,
@@ -974,6 +1386,74 @@ export default function FeesPage() {
     }
   };
 
+  // Clear All Invoices
+  const handleClearAllInvoices = async () => {
+    if (!window.confirm('Are you sure you want to clear ALL fee invoices? This will delete all generated invoice records and cannot be undone.')) {
+      return;
+    }
+
+    try {
+      setLoading(true);
+      const res: any = await ApiClient.fetch('/fees/invoices/clear-all', {
+        method: 'DELETE',
+      });
+      setSuccessMsg(res?.message || 'All invoices have been cleared successfully.');
+      await reloadAll();
+      if (selectedStudentDetail) {
+        await handleOpenStudentDetail(selectedStudentDetail.student.id);
+      }
+    } catch (err: any) {
+      alert(`Failed to clear invoices: ${err.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Delete Single Invoice
+  const handleDeleteSingleInvoice = async (invoiceId: string, invoiceNumber: string) => {
+    if (!window.confirm(`Are you sure you want to delete invoice "${invoiceNumber}"?`)) {
+      return;
+    }
+
+    try {
+      setLoading(true);
+      const res: any = await ApiClient.fetch(`/fees/invoices/${invoiceId}`, {
+        method: 'DELETE',
+      });
+      setSuccessMsg(res?.message || `Invoice ${invoiceNumber} deleted.`);
+      await reloadAll();
+      if (selectedStudentDetail) {
+        await handleOpenStudentDetail(selectedStudentDetail.student.id);
+      }
+    } catch (err: any) {
+      alert(`Failed to delete invoice: ${err.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Delete Course Fee Rule
+  const handleDeleteFeeConfig = async (configId: string, configName: string) => {
+    if (!window.confirm(`Are you sure you want to delete fee rule "${configName}"? This action cannot be undone.`)) {
+      return;
+    }
+
+    try {
+      setLoading(true);
+      const res: any = await ApiClient.fetch(`/fees/course-configs/${configId}`, {
+        method: 'DELETE',
+      });
+      setSuccessMsg(res?.message || `Fee rule "${configName}" was deleted successfully.`);
+      setShowConfigModal(false);
+      setEditingConfigId(null);
+      await reloadAll();
+    } catch (err: any) {
+      alert(`Failed to delete fee rule: ${err.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   // View Printable Official Receipt
   const handleViewReceipt = async (paymentId: string) => {
     try {
@@ -1011,24 +1491,93 @@ export default function FeesPage() {
   const selectedConfigCourse = availableCourses.find((c) => c.id === configForm.classId);
   const selectedConfigBatch = selectedConfigCourse?.batches?.find((b: any) => b.id === configForm.batchId);
   const selectedConfigSubject = selectedConfigCourse?.subjects?.find((s: any) => s.id === configForm.subjectId);
+  const totalClassSubjectsCount = selectedConfigCourse?.subjects?.length || 0;
 
-  // Live count of students enrolled in the selected course/batch/subject for fee replication
-  const selectedCourseStudentsCount = configForm.classId
-    ? studentAccounts.filter((sa) =>
-        sa.enrolledCourses?.some((ec) => {
-          if (ec.courseId !== configForm.classId) return false;
-          if (configForm.batchId) {
-            const selectedBatch = selectedConfigCourse?.batches?.find((b: any) => b.id === configForm.batchId);
-            if (selectedBatch && ec.batchName !== selectedBatch.name) return false;
+  // Real-time student counts strictly segregated by enrollment tier for the selected class/batch
+  const {
+    allSubjectsCount,
+    twoSubjectsCount,
+    oneSubjectCount,
+    customCount,
+    selectedTierStudentsCount,
+  } = React.useMemo(() => {
+    if (!configForm.classId) {
+      return {
+        allSubjectsCount: 0,
+        twoSubjectsCount: 0,
+        oneSubjectCount: 0,
+        customCount: 0,
+        selectedTierStudentsCount: 0,
+      };
+    }
+
+    let allCount = 0;
+    let twoCount = 0;
+    let oneCount = 0;
+    let customMatches = 0;
+
+    for (const sa of studentAccounts) {
+      const classEnrollments = (sa.enrolledCourses || []).filter((ec: any) => {
+        if (ec.courseId !== configForm.classId) return false;
+        if (configForm.batchId) {
+          const selectedBatch = selectedConfigCourse?.batches?.find((b: any) => b.id === configForm.batchId);
+          if (selectedBatch && ec.batchName !== selectedBatch.name && ec.batchId !== configForm.batchId) return false;
+        }
+        return true;
+      });
+
+      const subCount = classEnrollments.length;
+      if (subCount === 0) continue;
+
+      if (totalClassSubjectsCount > 0 && subCount >= totalClassSubjectsCount) {
+        allCount++;
+      } else if (totalClassSubjectsCount === 0 && subCount >= 1) {
+        allCount++;
+      }
+
+      if (subCount === 2) {
+        twoCount++;
+      }
+
+      if (subCount === 1) {
+        if (configForm.subjectId) {
+          const selectedSub = selectedConfigCourse?.subjects?.find((s: any) => s.id === configForm.subjectId);
+          if (selectedSub && classEnrollments.some((e: any) => e.subjectName === selectedSub.name || e.subjectId === selectedSub.id)) {
+            oneCount++;
           }
-          if (configForm.subjectId) {
-            const selectedSub = selectedConfigCourse?.subjects?.find((s: any) => s.id === configForm.subjectId);
-            if (selectedSub && ec.subjectName && ec.subjectName !== selectedSub.name) return false;
-          }
-          return true;
-        })
-      ).length || (courseBreakdown.find((cb) => cb.courseId === configForm.classId)?.enrolledStudentsCount || 0)
-    : 0;
+        } else {
+          oneCount++;
+        }
+      }
+
+      if (configForm.selectedSubjectIds.length > 0) {
+        const matchesAll = configForm.selectedSubjectIds.every((sId) => {
+          const subObj = selectedConfigCourse?.subjects?.find((s: any) => s.id === sId);
+          return classEnrollments.some((e: any) => e.subjectId === sId || (subObj && e.subjectName === subObj.name));
+        });
+        if (matchesAll) customMatches++;
+      }
+    }
+
+    const tierCount =
+      configForm.subjectTier === 'ALL'
+        ? allCount
+        : configForm.subjectTier === 'TWO_SUBJECTS'
+        ? twoCount
+        : configForm.subjectTier === 'SINGLE_SUBJECT'
+        ? oneCount
+        : customMatches;
+
+    return {
+      allSubjectsCount: allCount,
+      twoSubjectsCount: twoCount,
+      oneSubjectCount: oneCount,
+      customCount: customMatches,
+      selectedTierStudentsCount: tierCount,
+    };
+  }, [configForm.classId, configForm.batchId, configForm.subjectId, configForm.subjectTier, configForm.selectedSubjectIds, studentAccounts, totalClassSubjectsCount, selectedConfigCourse]);
+
+  const selectedCourseStudentsCount = selectedTierStudentsCount;
 
   // Course breakdown aggregate totals for single-view ledger footer
   const totalCourses = courseBreakdown.length;
@@ -1044,10 +1593,83 @@ export default function FeesPage() {
   const modalTargetBalance = paymentMode === 'SINGLE'
     ? (currentSelectedInvoice?.balanceAmount || 0)
     : studentOpenInvoices.reduce((sum, inv) => sum + inv.balanceAmount, 0);
-  const modalRemainingBalance = Math.max(0, modalTargetBalance - (Number(paymentAmount) || 0));
-  const isPartialPayment = Number(paymentAmount) > 0 && Number(paymentAmount) < modalTargetBalance;
-  const isFullPayment = Number(paymentAmount) >= modalTargetBalance && modalTargetBalance > 0;
-  const isExcessPayment = Number(paymentAmount) > modalTargetBalance && modalTargetBalance > 0;
+  const appliedPaymentDiscount = Math.max(0, Number(paymentDiscount) || 0);
+  const modalNetPayable = Math.max(0, modalTargetBalance - appliedPaymentDiscount);
+  const modalRemainingBalance = Math.max(0, modalNetPayable - (Number(paymentAmount) || 0));
+  const isPartialPayment = Number(paymentAmount) > 0 && Number(paymentAmount) < modalNetPayable;
+  const isFullPayment = Number(paymentAmount) >= modalNetPayable && modalNetPayable > 0;
+  const isExcessPayment = Number(paymentAmount) > modalNetPayable && modalNetPayable > 0;
+
+  // Filter available subjects dynamically from the courses
+  const availableSubjectsForFilter: { id: string; name: string }[] = useMemo(() => {
+    if (filterCourseId) {
+      const course = availableCourses.find((c) => c.id === filterCourseId);
+      return (course?.subjects || []) as { id: string; name: string }[];
+    }
+    const subjectMap = new Map<string, { id: string; name: string }>();
+    availableCourses.forEach((c) => {
+      (c.subjects || []).forEach((s: any) => {
+        if (s && s.id && !subjectMap.has(s.id)) {
+          subjectMap.set(s.id, { id: s.id, name: s.name });
+        }
+      });
+    });
+    return Array.from(subjectMap.values());
+  }, [filterCourseId, availableCourses]);
+
+  // Client-side instant filter on student accounts
+  const filteredStudentAccounts = useMemo(() => {
+    return studentAccounts.filter((account) => {
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase().trim();
+        const matchesName = account.name.toLowerCase().includes(q);
+        const matchesCode = account.studentCode.toLowerCase().includes(q);
+        const matchesAdm = account.admissionNumber?.toLowerCase().includes(q);
+        if (!matchesName && !matchesCode && !matchesAdm) return false;
+      }
+
+      if (filterCourseId) {
+        const selectedCourse = availableCourses.find((c) => c.id === filterCourseId);
+        const hasCourse = account.enrolledCourses.some(
+          (c: any) =>
+            c.courseId === filterCourseId ||
+            (selectedCourse && c.courseName?.toLowerCase() === selectedCourse.name?.toLowerCase()),
+        );
+        if (!hasCourse) return false;
+      }
+
+      if (filterSubjectId) {
+        const selectedSubject = availableSubjectsForFilter.find((s) => s.id === filterSubjectId);
+        const hasSubject = account.enrolledCourses.some(
+          (c: any) =>
+            c.subjectId === filterSubjectId ||
+            (selectedSubject && c.subjectName?.toLowerCase() === selectedSubject.name?.toLowerCase()),
+        );
+        if (!hasSubject) return false;
+      }
+
+      if (filterStatus) {
+        if (account.overallStatus !== filterStatus) return false;
+      }
+
+      return true;
+    });
+  }, [
+    studentAccounts,
+    searchQuery,
+    filterCourseId,
+    filterSubjectId,
+    filterStatus,
+    availableCourses,
+    availableSubjectsForFilter,
+  ]);
+
+  const handleCopyReference = (refText: string, paymentId: string) => {
+    if (!refText) return;
+    navigator.clipboard.writeText(refText);
+    setCopiedRefId(paymentId);
+    setTimeout(() => setCopiedRefId(null), 2500);
+  };
 
   return (
     <>
@@ -1402,9 +2024,9 @@ export default function FeesPage() {
         {activeTab === 'accounts' && (
           <div className="space-y-4">
             {/* Search & Filter Toolbar */}
-            <div className="bg-white p-4 rounded-xl border border-neutral-200 shadow-card flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
-              <div className="flex items-center gap-2 flex-1">
-                <div className="relative flex-1 max-w-md">
+            <div className="bg-white p-4 rounded-xl border border-neutral-200 shadow-card flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center gap-2 flex-1">
+                <div className="relative flex-1 min-w-[220px] max-w-sm">
                   <Search className="w-4 h-4 absolute left-3 top-2.5 text-neutral-400" />
                   <input
                     type="text"
@@ -1415,12 +2037,17 @@ export default function FeesPage() {
                   />
                 </div>
 
+                {/* Class / Course Filter */}
                 <select
                   value={filterCourseId}
-                  onChange={(e) => setFilterCourseId(e.target.value)}
-                  className="px-3 py-1.5 bg-white border border-neutral-200 rounded-lg text-xs text-black focus:outline-none focus:ring-2 focus:ring-[#FF8500]"
+                  onChange={(e) => {
+                    setFilterCourseId(e.target.value);
+                    setFilterSubjectId('');
+                  }}
+                  className="px-3 py-1.5 bg-white border border-neutral-200 rounded-lg text-xs text-black font-medium focus:outline-none focus:ring-2 focus:ring-[#FF8500]"
+                  title="Filter by Class / Course"
                 >
-                  <option value="">All Courses</option>
+                  <option value="">All Classes / Courses</option>
                   {availableCourses.map((c) => (
                     <option key={c.id} value={c.id}>
                       {c.name}
@@ -1428,10 +2055,44 @@ export default function FeesPage() {
                   ))}
                 </select>
 
+                {/* Subject-Wise Filter */}
+                <select
+                  value={filterSubjectId}
+                  onChange={(e) => setFilterSubjectId(e.target.value)}
+                  className="px-3 py-1.5 bg-white border border-neutral-200 rounded-lg text-xs text-black font-medium focus:outline-none focus:ring-2 focus:ring-[#FF8500]"
+                  title="Filter by Enrolled Subject"
+                >
+                  <option value="">All Subjects</option>
+                  {availableSubjectsForFilter.map((s: { id: string; name: string }) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+                </select>
+
+                {/* Monthly Payment Cycle Filter */}
+                <select
+                  value={filterBillingCycle}
+                  onChange={(e) => setFilterBillingCycle(e.target.value)}
+                  className="px-3 py-1.5 bg-white border border-neutral-200 rounded-lg text-xs text-black font-medium focus:outline-none focus:ring-2 focus:ring-[#FF8500]"
+                  title="Filter by Payment / Billing Cycle"
+                >
+                  <option value="">All Monthly Payment Cycles</option>
+                  <option value="October 2026">October 2026</option>
+                  <option value="November 2026">November 2026</option>
+                  <option value="December 2026">December 2026</option>
+                  <option value="January 2027">January 2027</option>
+                  <option value="February 2027">February 2027</option>
+                  <option value="March 2027">March 2027</option>
+                  <option value="ANNUAL">Annual Tuition</option>
+                  <option value="MONTHLY">Monthly Tuition</option>
+                </select>
+
+                {/* Status Filter */}
                 <select
                   value={filterStatus}
                   onChange={(e) => setFilterStatus(e.target.value)}
-                  className="px-3 py-1.5 bg-white border border-neutral-200 rounded-lg text-xs text-black focus:outline-none focus:ring-2 focus:ring-[#FF8500]"
+                  className="px-3 py-1.5 bg-white border border-neutral-200 rounded-lg text-xs text-black font-medium focus:outline-none focus:ring-2 focus:ring-[#FF8500]"
                 >
                   <option value="">All Statuses</option>
                   <option value="PAID">Fully Paid</option>
@@ -1439,10 +2100,28 @@ export default function FeesPage() {
                   <option value="UNPAID">Unpaid</option>
                   <option value="OVERDUE">Overdue</option>
                 </select>
+
+                {/* Reset Filters Button */}
+                {(searchQuery || filterCourseId || filterSubjectId || filterBillingCycle || filterStatus) && (
+                  <button
+                    onClick={() => {
+                      setSearchQuery('');
+                      setFilterCourseId('');
+                      setFilterSubjectId('');
+                      setFilterBillingCycle('');
+                      setFilterStatus('');
+                    }}
+                    className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-neutral-200 hover:bg-neutral-100 text-neutral-600 text-xs font-semibold transition cursor-pointer"
+                    title="Clear all active filters"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5 text-neutral-500" />
+                    <span>Reset</span>
+                  </button>
+                )}
               </div>
 
-              <div className="text-xs text-neutral-500 self-end sm:self-auto font-medium">
-                {studentAccounts.length} Student Accounts
+              <div className="text-xs text-neutral-500 self-end lg:self-auto font-medium whitespace-nowrap">
+                <span className="font-bold text-black">{filteredStudentAccounts.length}</span> of {studentAccounts.length} Students
               </div>
             </div>
 
@@ -1462,14 +2141,14 @@ export default function FeesPage() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-neutral-100 text-neutral-800">
-                    {studentAccounts.length === 0 ? (
+                    {filteredStudentAccounts.length === 0 ? (
                       <tr>
                         <td colSpan={7} className="py-8 text-center text-neutral-400">
                           No student accounts found matching filter criteria.
                         </td>
                       </tr>
                     ) : (
-                      studentAccounts.map((account) => (
+                      filteredStudentAccounts.map((account) => (
                         <tr key={account.id} className="hover:bg-neutral-50/70 transition-colors">
                           <td className="py-3.5 px-4">
                             <div className="font-bold text-black text-sm">{account.name}</div>
@@ -1615,20 +2294,73 @@ export default function FeesPage() {
                             <span className="text-neutral-400 font-mono text-[11px]"> ({cfg.class.code})</span>
                           </td>
                           <td className="py-3.5 px-4">
-                            {cfg.batch ? (
-                              <span className="px-2 py-0.5 rounded bg-neutral-100 text-neutral-700 font-medium">
-                                Batch: {cfg.batch.name}
-                              </span>
-                            ) : cfg.subject ? (
-                              <span className="px-2 py-0.5 rounded bg-blue-50 text-blue-700 font-medium">
-                                Subject: {cfg.subject.name}
-                              </span>
-                            ) : (
-                              <span className="text-neutral-400 italic">Course-Wide (All Batches)</span>
-                            )}
+                            <div className="flex flex-col gap-1 items-start">
+                              {cfg.batch ? (
+                                <span className="px-2 py-0.5 rounded bg-neutral-100 text-neutral-700 font-medium text-xs">
+                                  Batch: {cfg.batch.name}
+                                </span>
+                              ) : (
+                                <span className="text-neutral-400 text-xs">All Batches</span>
+                              )}
+                              {(() => {
+                                const tierConfig = (cfg.allowedDiscounts as any[])?.find(
+                                  (d: any) =>
+                                    d &&
+                                    (d.tier ||
+                                      d.type === 'TWO_SUBJECTS_BUNDLE' ||
+                                      d.type === 'SINGLE_SUBJECT' ||
+                                      d.type === 'ALL_SUBJECTS_BUNDLE'),
+                                );
+                                const tier =
+                                  tierConfig?.tier ||
+                                  (cfg.subject
+                                    ? 'SINGLE_SUBJECT'
+                                    : cfg.name?.toLowerCase().includes('2 subject') || cfg.name?.toLowerCase().includes('2 course')
+                                    ? 'TWO_SUBJECTS'
+                                    : cfg.name?.toLowerCase().includes('1 subject') || cfg.name?.toLowerCase().includes('1 course')
+                                    ? 'SINGLE_SUBJECT'
+                                    : 'ALL');
+
+                                if (tier === 'TWO_SUBJECTS') {
+                                  return (
+                                    <span className="px-2 py-0.5 rounded bg-amber-50 text-amber-800 font-bold text-xs border border-amber-200 flex items-center gap-1">
+                                      <span>✌️ 2 Subjects Package</span>
+                                    </span>
+                                  );
+                                }
+                                if (tier === 'SINGLE_SUBJECT' || cfg.subject) {
+                                  return (
+                                    <span className="px-2 py-0.5 rounded bg-purple-50 text-purple-700 font-semibold text-xs border border-purple-200 flex items-center gap-1">
+                                      <span>🎯 Single Subject{cfg.subject ? `: ${cfg.subject.name}` : ''}</span>
+                                    </span>
+                                  );
+                                }
+                                return (
+                                  <span className="px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 font-semibold text-xs border border-emerald-200 flex items-center gap-1">
+                                    <span>🌟 All Subjects Package</span>
+                                  </span>
+                                );
+                              })()}
+                            </div>
                           </td>
-                          <td className="py-3.5 px-4 text-right font-mono font-bold text-base text-black">
-                            ₹{cfg.amount.toLocaleString()}
+                          <td className="py-3.5 px-4 text-right font-mono">
+                            <div className="font-bold text-base text-black">
+                              ₹{cfg.amount.toLocaleString()}
+                            </div>
+                            {(() => {
+                              const bundleDiscount = (cfg.allowedDiscounts as any[])?.find(
+                                (d: any) => d.type === 'ALL_SUBJECTS_BUNDLE' || d.name?.includes('Discount') || Number(d.amount) > 0,
+                              );
+                              if (bundleDiscount?.amount) {
+                                const net = Math.max(0, cfg.amount - Number(bundleDiscount.amount));
+                                return (
+                                  <div className="text-[11px] text-emerald-600 font-semibold">
+                                    -₹{Number(bundleDiscount.amount).toLocaleString()} disc → ₹{net.toLocaleString()} net
+                                  </div>
+                                );
+                              }
+                              return null;
+                            })()}
                           </td>
                           <td className="py-3.5 px-4 font-medium text-neutral-700">
                             {cfg.billingPeriod}
@@ -1672,6 +2404,15 @@ export default function FeesPage() {
                                 <Pencil className="w-3.5 h-3.5 text-[#FF8500]" />
                                 <span>Edit</span>
                               </button>
+
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteFeeConfig(cfg.id, cfg.name)}
+                                className="p-1.5 text-neutral-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition cursor-pointer"
+                                title={`Delete fee rule ${cfg.name}`}
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
                             </div>
                           </td>
                         </tr>
@@ -1696,6 +2437,17 @@ export default function FeesPage() {
                   Individual enrollment billing records, balance tracking, and authorized scholarship adjustments
                 </p>
               </div>
+              {invoicesList.length > 0 && (
+                <button
+                  type="button"
+                  onClick={handleClearAllInvoices}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border border-red-200 text-red-600 bg-red-50 hover:bg-red-100 transition cursor-pointer"
+                  title="Clear all generated fee invoices"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Clear All Invoices</span>
+                </button>
+              )}
             </div>
 
             <div className="bg-white rounded-2xl border border-neutral-200 shadow-card overflow-hidden">
@@ -1783,6 +2535,16 @@ export default function FeesPage() {
                                 >
                                   Collect
                                 </Button>
+                              )}
+                              {inv.paidAmount === 0 && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteSingleInvoice(inv.id, inv.invoiceNumber)}
+                                  className="p-1.5 text-neutral-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition cursor-pointer"
+                                  title={`Delete invoice ${inv.invoiceNumber}`}
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
                               )}
                             </div>
                           </td>
@@ -1900,6 +2662,44 @@ export default function FeesPage() {
                           </td>
                           <td className="py-3.5 px-4 text-right">
                             <div className="flex items-center justify-end gap-1.5">
+                              {pay.proofObjectKey || pay.proofFileName ? (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() =>
+                                    handleOpenProofDocument(pay.id, {
+                                      receiptNumber: pay.receiptNumber,
+                                      fileName: pay.proofFileName || 'Payment Proof Document',
+                                      fileSize: pay.proofFileSize || undefined,
+                                      mimeType: pay.proofMimeType || undefined,
+                                    })
+                                  }
+                                  className="text-blue-700 hover:text-blue-800 hover:bg-blue-50 border-blue-200"
+                                  title="View verified proof document stored in private AWS S3"
+                                >
+                                  <ExternalLink className="w-3.5 h-3.5 text-blue-600" />
+                                  Proof
+                                </Button>
+                              ) : (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() =>
+                                    handleOpenAttachProof({
+                                      id: pay.id,
+                                      receiptNumber: pay.receiptNumber,
+                                      studentName: `${pay.student.firstName} ${pay.student.lastName}`,
+                                      amount: pay.amount,
+                                    })
+                                  }
+                                  className="text-neutral-500 hover:text-neutral-700"
+                                  title="Upload and attach payment proof slip to AWS S3"
+                                >
+                                  <Upload className="w-3.5 h-3.5" />
+                                  Attach
+                                </Button>
+                              )}
+
                               <Button
                                 size="sm"
                                 variant="outline"
@@ -2097,10 +2897,10 @@ export default function FeesPage() {
           onClose={() => setSelectedStudentDetail(null)}
           title={`Student Consolidated Account: ${selectedStudentDetail?.student.name || ''}`}
           description={`Student Code: ${selectedStudentDetail?.student.studentCode || ''} • Admission: ${selectedStudentDetail?.student.admissionNumber || ''}`}
-          maxWidth="2xl"
+          maxWidth="5xl"
         >
           {selectedStudentDetail && (
-            <div className="space-y-6 max-h-[75vh] overflow-y-auto pr-1">
+            <div className="space-y-5 max-h-[80vh] overflow-y-auto pr-1">
               {/* Consolidated Metrics Bar */}
               <div className="bg-[#FFF4E5] border border-[#FFD199] p-4 rounded-xl grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
                 <div>
@@ -2129,121 +2929,383 @@ export default function FeesPage() {
                 </div>
               </div>
 
-              {/* Course-Wise Breakdown Cards */}
-              <div className="space-y-4">
-                <h4 className="text-sm font-bold text-black flex items-center gap-2">
-                  <BookOpen className="w-4 h-4 text-[#FF8500]" />
-                  Enrolled Course Obligations & Payment History
-                </h4>
+              {/* Sub-Tabs: Payment History vs Course Obligations */}
+              <div className="flex items-center gap-2 border-b border-neutral-200 pb-2">
+                <button
+                  type="button"
+                  onClick={() => setStudentModalTab('payments')}
+                  className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                    studentModalTab === 'payments'
+                      ? 'bg-[#FF8500] text-white shadow-sm'
+                      : 'bg-neutral-100 hover:bg-neutral-200 text-neutral-600'
+                  }`}
+                >
+                  <Receipt className="w-3.5 h-3.5" />
+                  <span>Payment History & Proofs</span>
+                  <span
+                    className={`px-1.5 py-0.2 rounded-full text-[10px] ${
+                      studentModalTab === 'payments' ? 'bg-white/20 text-white' : 'bg-neutral-200 text-neutral-700'
+                    }`}
+                  >
+                    {selectedStudentDetail.payments?.length || 0}
+                  </span>
+                </button>
 
-                {selectedStudentDetail.courseFees.length === 0 ? (
-                  <div className="p-6 text-center text-neutral-400 bg-neutral-50 rounded-xl border border-neutral-200">
-                    No course invoices generated for this student yet.
-                  </div>
-                ) : (
-                  selectedStudentDetail.courseFees.map((course) => (
-                    <div
-                      key={course.invoiceId}
-                      className="bg-white p-4 rounded-xl border border-neutral-200 shadow-subtle space-y-3"
-                    >
-                      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 border-b border-neutral-100 pb-2">
-                        <div>
-                          <div className="font-bold text-black text-sm flex items-center gap-2">
-                            <span>{course.courseName}</span>
-                            {course.subjectName && (
-                              <Badge variant="neutral" className="text-[10px]">
-                                {course.subjectName}
-                              </Badge>
+                <button
+                  type="button"
+                  onClick={() => setStudentModalTab('courses')}
+                  className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                    studentModalTab === 'courses'
+                      ? 'bg-[#FF8500] text-white shadow-sm'
+                      : 'bg-neutral-100 hover:bg-neutral-200 text-neutral-600'
+                  }`}
+                >
+                  <BookOpen className="w-3.5 h-3.5" />
+                  <span>Course Invoices & Obligations</span>
+                  <span
+                    className={`px-1.5 py-0.2 rounded-full text-[10px] ${
+                      studentModalTab === 'courses' ? 'bg-white/20 text-white' : 'bg-neutral-200 text-neutral-700'
+                    }`}
+                  >
+                    {selectedStudentDetail.courseFees.length}
+                  </span>
+                </button>
+              </div>
+
+              {/* TAB 1: FULL PAYMENT HISTORY & PROOFS */}
+              {studentModalTab === 'payments' && (
+                <div className="space-y-3">
+                  {!selectedStudentDetail.payments || selectedStudentDetail.payments.length === 0 ? (
+                    <div className="p-8 text-center text-neutral-400 bg-neutral-50 rounded-xl border border-neutral-200">
+                      <Receipt className="w-8 h-8 text-neutral-300 mx-auto mb-2" />
+                      <p className="font-semibold text-neutral-600">No payment records found for this student yet.</p>
+                      <p className="text-xs text-neutral-400 mt-1">
+                        Payments recorded via &apos;Collect Payment&apos; will display here with full receipt, transaction UTR, and uploaded verification proof.
+                      </p>
+                    </div>
+                  ) : (
+                    selectedStudentDetail.payments.map((p) => (
+                      <div
+                        key={p.id}
+                        className="bg-white p-4 rounded-xl border border-neutral-200 shadow-subtle hover:border-[#FF8500]/40 transition space-y-3"
+                      >
+                        {/* Payment Card Header */}
+                        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 border-b border-neutral-100 pb-2.5">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <button
+                              onClick={() => handleViewReceipt(p.id)}
+                              className="font-mono font-bold text-xs text-[#CC6B00] hover:text-[#995000] bg-[#FFF4E5] px-2.5 py-1 rounded-lg border border-[#FFD199] hover:underline flex items-center gap-1.5 transition cursor-pointer"
+                              title="Click to view and print official receipt"
+                            >
+                              <Receipt className="w-3.5 h-3.5 text-[#FF8500]" />
+                              <span>{p.receiptNumber}</span>
+                            </button>
+
+                            <span className="text-neutral-300 text-xs">•</span>
+
+                            <div className="flex items-center gap-1 text-xs text-neutral-500 font-mono">
+                              <Clock className="w-3.5 h-3.5 text-neutral-400" />
+                              <span>{new Date(p.paidAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}</span>
+                            </div>
+
+                            {p.cycle && (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-blue-50 text-blue-700 border border-blue-200">
+                                <Calendar className="w-3 h-3 text-blue-500" />
+                                {p.cycle}
+                              </span>
                             )}
-                            <span className="text-xs text-neutral-400 font-mono">({course.batchName})</span>
                           </div>
-                          <div className="text-[11px] text-neutral-400 font-mono mt-0.5">
-                            Invoice: {course.invoiceNumber} • Period: {course.billingPeriod} • Due: {course.dueDate}
+
+                          <div className="flex items-center gap-2 self-end sm:self-auto">
+                            <span className="text-sm font-bold font-mono text-emerald-700">
+                              ₹{p.amount.toLocaleString()}
+                            </span>
+
+                            <span
+                              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold ${
+                                p.paymentMethod === 'UPI'
+                                  ? 'bg-purple-50 text-purple-700 border border-purple-200'
+                                  : p.paymentMethod === 'CASH'
+                                  ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                  : 'bg-indigo-50 text-indigo-700 border border-indigo-200'
+                              }`}
+                            >
+                              {p.paymentMethod === 'UPI' && <Smartphone className="w-3 h-3 text-purple-600" />}
+                              {p.paymentMethod === 'CASH' && <Banknote className="w-3 h-3 text-emerald-600" />}
+                              {p.paymentMethod}
+                            </span>
+
+                            <Badge variant={p.status === 'COMPLETED' ? 'success' : 'error'}>
+                              {p.status}
+                            </Badge>
                           </div>
                         </div>
 
-                        <div className="flex items-center gap-2 self-end sm:self-auto">
-                          <Badge
-                            variant={
-                              course.status === 'PAID'
-                                ? 'success'
-                                : course.status === 'PARTIAL'
-                                ? 'warning'
-                                : 'error'
-                            }
-                          >
-                            {course.status}
-                          </Badge>
+                        {/* Transaction Reference & Proof Details Grid */}
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                          {/* Box 1: Transaction Number / Reference with 1-Click Copy */}
+                          <div className="p-2.5 rounded-lg bg-neutral-50 border border-neutral-200/80 space-y-1">
+                            <span className="text-[10px] font-bold text-neutral-500 uppercase tracking-wider block">
+                              Transaction Number / UTR Reference
+                            </span>
+                            {p.reference ? (
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="font-mono text-xs font-semibold text-neutral-800 break-all select-all">
+                                  {p.reference}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => handleCopyReference(p.reference || '', p.id)}
+                                  className="shrink-0 p-1.5 rounded hover:bg-neutral-200 text-neutral-500 hover:text-black transition cursor-pointer"
+                                  title="Copy transaction number / reference"
+                                >
+                                  {copiedRefId === p.id ? (
+                                    <span className="text-[10px] text-green-600 font-bold flex items-center gap-0.5">
+                                      <Check className="w-3 h-3 text-green-600" /> Copied!
+                                    </span>
+                                  ) : (
+                                    <Copy className="w-3.5 h-3.5" />
+                                  )}
+                                </button>
+                              </div>
+                            ) : (
+                              <span className="text-neutral-400 italic">No reference / UTR provided (Direct Collection)</span>
+                            )}
+                          </div>
 
-                          {course.balanceAmount > 0 && (
-                            <Button
-                              size="sm"
-                              variant="primary"
-                              onClick={() => {
-                                handleOpenPaymentModalForStudent(
-                                  selectedStudentDetail.student.id,
-                                  course.invoiceId,
-                                );
-                              }}
-                            >
-                              Pay This Course
-                            </Button>
+                          {/* Box 2: Payment Proof Attachment */}
+                          <div className="p-2.5 rounded-lg bg-neutral-50 border border-neutral-200/80 space-y-1.5">
+                            <div className="flex items-center justify-between">
+                              <span className="text-[10px] font-bold text-neutral-500 uppercase tracking-wider block">
+                                Payment Proof Document
+                              </span>
+                              {p.hasRealProof && (
+                                <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded text-[9px] font-extrabold bg-blue-50 text-blue-700 border border-blue-200">
+                                  <Shield className="w-3 h-3 text-blue-600" /> S3 Encrypted
+                                </span>
+                              )}
+                            </div>
+                            {p.proofName ? (
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="flex items-center gap-1.5 min-w-0">
+                                  <Paperclip className="w-3.5 h-3.5 text-neutral-600 shrink-0" />
+                                  <span className="font-medium text-neutral-800 truncate text-xs" title={p.proofName}>
+                                    {p.proofName}
+                                  </span>
+                                  {p.proofSize && (
+                                    <span className="text-[10px] text-neutral-400 font-mono shrink-0">
+                                      ({p.proofSize})
+                                    </span>
+                                  )}
+                                </div>
+                                {p.hasRealProof || p.proofObjectKey ? (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      handleOpenProofDocument(p.id, {
+                                        receiptNumber: p.receiptNumber,
+                                        fileName: p.proofName || p.proofFileName || 'Payment Proof Document',
+                                        fileSize: p.proofSize || undefined,
+                                        mimeType: p.proofMimeType || undefined,
+                                      })
+                                    }
+                                    disabled={loadingProofUrl === p.id}
+                                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-bold bg-[#FF8500] hover:bg-[#e07500] text-white shadow-2xs transition cursor-pointer shrink-0 disabled:opacity-50"
+                                    title="Open secure verified proof file from AWS S3"
+                                  >
+                                    {loadingProofUrl === p.id ? (
+                                      <Loader2 className="w-3 h-3 animate-spin" />
+                                    ) : (
+                                      <ExternalLink className="w-3 h-3" />
+                                    )}
+                                    <span>View Proof</span>
+                                  </button>
+                                ) : (
+                                  <div className="flex items-center gap-1.5 shrink-0">
+                                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-neutral-100 text-neutral-600 border border-neutral-200">
+                                      Legacy Note
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        handleOpenAttachProof({
+                                          id: p.id,
+                                          receiptNumber: p.receiptNumber,
+                                          studentName: selectedStudentDetail.student.name,
+                                          amount: p.amount,
+                                        })
+                                      }
+                                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-neutral-50 hover:bg-neutral-100 text-neutral-700 border border-neutral-300 transition cursor-pointer"
+                                      title="Upload and encrypt proof file in AWS S3"
+                                    >
+                                      <Upload className="w-3 h-3" />
+                                      <span>Upload Proof</span>
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            ) : (
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="text-neutral-400 italic text-xs">No proof file attached</span>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    handleOpenAttachProof({
+                                      id: p.id,
+                                      receiptNumber: p.receiptNumber,
+                                      studentName: selectedStudentDetail.student.name,
+                                      amount: p.amount,
+                                    })
+                                  }
+                                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-neutral-50 hover:bg-neutral-100 text-neutral-700 border border-neutral-300 transition cursor-pointer shrink-0"
+                                  title="Attach proof file to S3"
+                                >
+                                  <Upload className="w-3 h-3" />
+                                  <span>Attach Proof</span>
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Staff & Allocations Row */}
+                        <div className="pt-2 border-t border-neutral-100 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 text-[11px] text-neutral-500">
+                          <div>
+                            Recorded by: <span className="font-semibold text-neutral-700">{p.recordedBy}</span>
+                          </div>
+
+                          {p.allocations && p.allocations.length > 0 && (
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="text-neutral-400">Allocated to:</span>
+                              {p.allocations.map((alloc) => (
+                                <span
+                                  key={alloc.allocationId}
+                                  className="px-2 py-0.5 rounded bg-neutral-100 text-neutral-700 font-mono text-[10px] border border-neutral-200"
+                                >
+                                  {alloc.courseName || 'Course'}{alloc.subjectName ? ` (${alloc.subjectName})` : ''}: <strong>₹{alloc.allocatedAmount.toLocaleString()}</strong>
+                                </span>
+                              ))}
+                            </div>
                           )}
                         </div>
                       </div>
+                    ))
+                  )}
+                </div>
+              )}
 
-                      {/* Course financial row */}
-                      <div className="grid grid-cols-3 gap-2 text-xs bg-neutral-50 p-2.5 rounded-lg font-mono">
-                        <div>
-                          <span className="text-neutral-500 text-[10px] uppercase block">Course Fee</span>
-                          <strong className="text-black">₹{course.totalAmount.toLocaleString()}</strong>
-                        </div>
-                        <div>
-                          <span className="text-neutral-500 text-[10px] uppercase block">Paid So Far</span>
-                          <strong className="text-green-700">₹{course.paidAmount.toLocaleString()}</strong>
-                        </div>
-                        <div>
-                          <span className="text-neutral-500 text-[10px] uppercase block">Outstanding</span>
-                          <strong className="text-[#CC6B00]">₹{course.balanceAmount.toLocaleString()}</strong>
-                        </div>
-                      </div>
+              {/* TAB 2: COURSE OBLIGATIONS & INVOICES */}
+              {studentModalTab === 'courses' && (
+                <div className="space-y-4">
+                  {selectedStudentDetail.courseFees.length === 0 ? (
+                    <div className="p-6 text-center text-neutral-400 bg-neutral-50 rounded-xl border border-neutral-200">
+                      No course invoices generated for this student yet.
+                    </div>
+                  ) : (
+                    selectedStudentDetail.courseFees.map((course) => (
+                      <div
+                        key={course.invoiceId}
+                        className="bg-white p-4 rounded-xl border border-neutral-200 shadow-subtle space-y-3"
+                      >
+                        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 border-b border-neutral-100 pb-2">
+                          <div>
+                            <div className="font-bold text-black text-sm flex items-center gap-2">
+                              <span>{course.courseName}</span>
+                              {course.subjectName && (
+                                <Badge variant="neutral" className="text-[10px]">
+                                  {course.subjectName}
+                                </Badge>
+                              )}
+                              <span className="text-xs text-neutral-400 font-mono">({course.batchName})</span>
+                            </div>
+                            <div className="text-[11px] text-neutral-400 font-mono mt-0.5">
+                              Invoice: {course.invoiceNumber} • Period: {course.billingPeriod} • Due: {course.dueDate}
+                            </div>
+                          </div>
 
-                      {/* Course Allocations History */}
-                      {course.allocations.length > 0 && (
-                        <div className="mt-2 text-xs">
-                          <span className="text-[11px] font-semibold text-neutral-600 block mb-1">
-                            Recorded Collections:
-                          </span>
-                          <div className="space-y-1">
-                            {course.allocations.map((alloc) => (
-                              <div
-                                key={alloc.allocationId}
-                                className="flex items-center justify-between py-1 px-2 rounded bg-neutral-50 border border-neutral-100 text-[11px]"
+                          <div className="flex items-center gap-2 self-end sm:self-auto">
+                            <Badge
+                              variant={
+                                course.status === 'PAID'
+                                  ? 'success'
+                                  : course.status === 'PARTIAL'
+                                  ? 'warning'
+                                  : 'error'
+                              }
+                            >
+                              {course.status}
+                            </Badge>
+
+                            {course.balanceAmount > 0 && (
+                              <Button
+                                size="sm"
+                                variant="primary"
+                                onClick={() => {
+                                  handleOpenPaymentModalForStudent(
+                                    selectedStudentDetail.student.id,
+                                    course.invoiceId,
+                                  );
+                                }}
                               >
-                                <div className="flex items-center gap-2">
-                                  <button
-                                    onClick={() => handleViewReceipt(alloc.paymentId)}
-                                    className="font-mono font-bold text-[#CC6B00] hover:underline"
-                                  >
-                                    {alloc.receiptNumber}
-                                  </button>
-                                  <span className="text-neutral-500 font-mono">
-                                    • {new Date(alloc.paymentDate).toLocaleDateString()}
-                                  </span>
-                                  <span className="text-neutral-400">({alloc.paymentMethod})</span>
-                                </div>
-                                <strong className="font-mono text-black">
-                                  ₹{alloc.allocatedAmount.toLocaleString()}
-                                </strong>
-                              </div>
-                            ))}
+                                Pay This Course
+                              </Button>
+                            )}
                           </div>
                         </div>
-                      )}
-                    </div>
-                  ))
-                )}
-              </div>
+
+                        {/* Course financial row */}
+                        <div className="grid grid-cols-3 gap-2 text-xs bg-neutral-50 p-2.5 rounded-lg font-mono">
+                          <div>
+                            <span className="text-neutral-500 text-[10px] uppercase block">Course Fee</span>
+                            <strong className="text-black">₹{course.totalAmount.toLocaleString()}</strong>
+                          </div>
+                          <div>
+                            <span className="text-neutral-500 text-[10px] uppercase block">Paid So Far</span>
+                            <strong className="text-green-700">₹{course.paidAmount.toLocaleString()}</strong>
+                          </div>
+                          <div>
+                            <span className="text-neutral-500 text-[10px] uppercase block">Outstanding</span>
+                            <strong className="text-[#CC6B00]">₹{course.balanceAmount.toLocaleString()}</strong>
+                          </div>
+                        </div>
+
+                        {/* Course Allocations History */}
+                        {course.allocations.length > 0 && (
+                          <div className="mt-2 text-xs">
+                            <span className="text-[11px] font-semibold text-neutral-600 block mb-1">
+                              Recorded Collections:
+                            </span>
+                            <div className="space-y-1">
+                              {course.allocations.map((alloc) => (
+                                <div
+                                  key={alloc.allocationId}
+                                  className="flex items-center justify-between py-1 px-2 rounded bg-neutral-50 border border-neutral-100 text-[11px]"
+                                >
+                                  <div className="flex items-center gap-2">
+                                    <button
+                                      onClick={() => handleViewReceipt(alloc.paymentId)}
+                                      className="font-mono font-bold text-[#CC6B00] hover:underline"
+                                    >
+                                      {alloc.receiptNumber}
+                                    </button>
+                                    <span className="text-neutral-500 font-mono">
+                                      • {new Date(alloc.paymentDate).toLocaleDateString()}
+                                    </span>
+                                    <span className="text-neutral-400">({alloc.paymentMethod})</span>
+                                  </div>
+                                  <strong className="font-mono text-black">
+                                    ₹{alloc.allocatedAmount.toLocaleString()}
+                                  </strong>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
 
               <div className="flex justify-between items-center pt-3 border-t border-neutral-100">
                 <Button variant="outline" onClick={() => setSelectedStudentDetail(null)}>
@@ -2451,7 +3513,7 @@ export default function FeesPage() {
                   </div>
                 )}
 
-                {/* Proof of Payment Upload Widget (Required) */}
+                {/* Proof of Payment Upload Widget (Required & Compressed <= 150KB) */}
                 <div className={`p-3 rounded-xl border transition-all ${
                   paymentProofFile
                     ? 'bg-emerald-50/60 border-emerald-300'
@@ -2464,59 +3526,87 @@ export default function FeesPage() {
                       <Paperclip className="w-3.5 h-3.5 text-[#FF8500]" />
                       Payment Proof Document <span className="text-rose-500">*</span>
                     </label>
-                    <span className="text-[9px] text-neutral-400 font-semibold uppercase">Mandatory</span>
+                    <span className="text-[9px] text-neutral-500 font-bold uppercase tracking-wider bg-neutral-200/60 px-1.5 py-0.2 rounded">
+                      Private S3 Encrypted
+                    </span>
                   </div>
 
-                  {paymentProofFile ? (
-                    <div className="flex items-center justify-between gap-2 p-2 bg-white rounded-lg border border-emerald-200 text-xs">
-                      <div className="flex items-center gap-2 min-w-0">
-                        {paymentProofPreview ? (
-                          <img
-                            src={paymentProofPreview}
-                            alt="Proof Preview"
-                            className="w-10 h-10 rounded object-cover border border-neutral-200 shrink-0"
-                          />
-                        ) : (
-                          <div className="w-10 h-10 rounded bg-emerald-100 flex items-center justify-center text-emerald-700 font-bold text-[10px] shrink-0">
-                            PDF
-                          </div>
-                        )}
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-1.5">
-                            <span className="font-bold text-neutral-900 truncate text-xs">
-                              {paymentProofName}
+                  {compressingProof ? (
+                    <div className="flex items-center justify-center gap-2.5 p-4 bg-white rounded-lg border border-neutral-200 text-xs text-neutral-600">
+                      <Loader2 className="w-4 h-4 animate-spin text-[#FF8500]" />
+                      <span className="font-semibold">Optimizing proof image to target ≤ 150 KB...</span>
+                    </div>
+                  ) : paymentProofFile ? (
+                    <div className="p-2.5 bg-white rounded-lg border border-emerald-200 text-xs space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          {paymentProofPreview ? (
+                            <img
+                              src={paymentProofPreview}
+                              alt="Proof Preview"
+                              className="w-11 h-11 rounded-md object-cover border border-neutral-200 shrink-0 shadow-2xs"
+                            />
+                          ) : (
+                            <div className="w-11 h-11 rounded-md bg-emerald-100 flex flex-col items-center justify-center text-emerald-800 font-bold text-[10px] shrink-0 border border-emerald-300">
+                              <FileText className="w-4 h-4 text-emerald-700 mb-0.5" />
+                              PDF
+                            </div>
+                          )}
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="font-bold text-neutral-900 truncate text-xs max-w-[170px]" title={paymentProofName}>
+                                {paymentProofName}
+                              </span>
+                              <span className="px-1.5 py-0.2 rounded text-[9px] font-extrabold bg-emerald-100 text-emerald-800 border border-emerald-300 shrink-0">
+                                READY FOR S3
+                              </span>
+                            </div>
+                            <span className="text-[10px] text-neutral-500 font-mono block mt-0.5">
+                              {paymentProofSize}
                             </span>
-                            <span className="px-1.5 py-0.2 rounded text-[9px] font-extrabold bg-emerald-100 text-emerald-800">
-                              ATTACHED
-                            </span>
                           </div>
-                          <span className="text-[10px] text-neutral-500 font-mono block mt-0.5">
-                            {paymentProofSize} • Ready to submit
-                          </span>
                         </div>
+                        <button
+                          type="button"
+                          onClick={handleRemoveProof}
+                          className="p-1.5 text-neutral-400 hover:text-rose-600 hover:bg-rose-50 rounded-md transition cursor-pointer"
+                          title="Remove attached proof"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
                       </div>
-                      <button
-                        type="button"
-                        onClick={handleRemoveProof}
-                        className="p-1.5 text-neutral-400 hover:text-rose-600 hover:bg-rose-50 rounded-md transition cursor-pointer"
-                        title="Remove attached proof"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+
+                      {/* Compression transparency notice */}
+                      {proofCompressionInfo && (
+                        <div className="pt-1.5 border-t border-neutral-100 flex items-center justify-between text-[10px] font-medium">
+                          {proofCompressionInfo.isCompressed ? (
+                            <span className="text-emerald-700 flex items-center gap-1">
+                              <Zap className="w-3 h-3 text-emerald-600" />
+                              Compressed from {proofCompressionInfo.originalSize} to {proofCompressionInfo.compressedSize} ({proofCompressionInfo.ratio}% saved)
+                            </span>
+                          ) : (
+                            <span className="text-neutral-500 flex items-center gap-1">
+                              <FileText className="w-3 h-3 text-neutral-400" />
+                              {proofCompressionInfo.note}
+                            </span>
+                          )}
+                          <span className="text-neutral-400 font-mono">Max 10MB</span>
+                        </div>
+                      )}
                     </div>
                   ) : (
                     <div>
-                      <label className="flex flex-col items-center justify-center p-3 border-2 border-dashed border-neutral-300 hover:border-[#FF8500] rounded-lg cursor-pointer bg-white transition group">
+                      <label className="flex flex-col items-center justify-center p-3.5 border-2 border-dashed border-neutral-300 hover:border-[#FF8500] rounded-lg cursor-pointer bg-white transition group">
                         <Upload className="w-5 h-5 text-neutral-400 group-hover:text-[#FF8500] transition mb-1" />
                         <span className="text-xs font-semibold text-neutral-700 group-hover:text-[#FF8500]">
-                          Click to Upload Proof Slip / Screenshot
+                          Click to Upload Proof Slip / Screenshot / PDF
                         </span>
-                        <span className="text-[10px] text-neutral-400 mt-0.5">
-                          Supports PNG, JPG, PDF (Receipt, UPI screenshot, voucher)
+                        <span className="text-[10px] text-neutral-400 mt-0.5 text-center">
+                          Auto-compressed to ≤ 150 KB for instant loading • PDFs kept crisp & uncompressed
                         </span>
                         <input
                           type="file"
-                          accept="image/*,application/pdf"
+                          accept="image/jpeg,image/png,image/webp,application/pdf"
                           onChange={handleProofChange}
                           className="hidden"
                         />
@@ -2546,8 +3636,138 @@ export default function FeesPage() {
                 </div>
               </div>
 
-              {/* RIGHT COLUMN (7 cols on lg): Only Cash, UPI, Cash + UPI, Amounts, Settlement & Actions */}
+              {/* RIGHT COLUMN (7 cols on lg): Concession/Discount, Payment Mode, Amounts, Settlement & Actions */}
               <div className="lg:col-span-7 space-y-3 bg-neutral-50 p-3.5 rounded-xl border border-neutral-200">
+                {/* Instant Fee Concession & Discount Card */}
+                <div className="bg-white p-3 rounded-xl border border-neutral-200/90 shadow-2xs space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-bold text-neutral-800 flex items-center gap-1.5">
+                      <Percent className="w-3.5 h-3.5 text-[#FF8500]" />
+                      <span>Instant Fee Concession / Discount</span>
+                    </label>
+                    {appliedPaymentDiscount > 0 ? (
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-200">
+                        -₹{appliedPaymentDiscount.toLocaleString()} Concession
+                      </span>
+                    ) : (
+                      <span className="text-[10px] text-neutral-400 font-medium">Optional</span>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    {/* Discount Amount */}
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-[11px] font-semibold text-neutral-700">Discount Amount (₹)</span>
+                        {appliedPaymentDiscount > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPaymentDiscount('');
+                              setPaymentDiscountReason('');
+                              setDiscountError(null);
+                              setPaymentAmount(modalTargetBalance);
+                              if (paymentMethodMode === 'CASH_UPI') {
+                                const half = Math.round(modalTargetBalance / 2);
+                                setSplitCashAmount(half);
+                                setSplitUpiAmount(modalTargetBalance - half);
+                              }
+                            }}
+                            className="text-[10px] text-neutral-400 hover:text-rose-600 underline cursor-pointer"
+                          >
+                            Clear
+                          </button>
+                        )}
+                      </div>
+                      <div className="relative">
+                        <span className="absolute left-2.5 top-1/2 -translate-y-1/2 font-bold text-neutral-400 text-xs">₹</span>
+                        <input
+                          type="number"
+                          min="0"
+                          max={modalTargetBalance}
+                          placeholder="0 (Optional)"
+                          value={paymentDiscount}
+                          onChange={(e) => {
+                            const raw = e.target.value;
+                            const val = raw === '' ? '' : Math.max(0, Number(raw));
+                            setPaymentDiscount(val);
+                            const disc = typeof val === 'number' ? val : 0;
+                            if (disc > modalTargetBalance) {
+                              setDiscountError(`Discount cannot exceed total fee (₹${modalTargetBalance.toLocaleString()})`);
+                            } else {
+                              setDiscountError(null);
+                            }
+                            const net = Math.max(0, modalTargetBalance - disc);
+                            setPaymentAmount(net);
+                            if (paymentMethodMode === 'CASH_UPI') {
+                              const half = Math.round(net / 2);
+                              setSplitCashAmount(half);
+                              setSplitUpiAmount(net - half);
+                            }
+                          }}
+                          className={`w-full pl-6 pr-2.5 py-1.5 bg-neutral-50 border rounded-lg font-mono font-bold text-xs text-black focus:bg-white focus:outline-none focus:ring-1 focus:ring-[#FF8500] ${
+                            discountError ? 'border-rose-300 ring-1 ring-rose-300' : 'border-neutral-300'
+                          }`}
+                        />
+                      </div>
+                    </div>
+
+                    {/* Discount Reason (MANDATORY if discount > 0) */}
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-[11px] font-semibold text-neutral-700 flex items-center gap-1">
+                          Discount Reason
+                          {appliedPaymentDiscount > 0 ? (
+                            <span className="text-rose-600 font-bold">*</span>
+                          ) : (
+                            <span className="text-neutral-400 font-normal">(if discount)</span>
+                          )}
+                        </span>
+                        {appliedPaymentDiscount > 0 && (
+                          <span className="text-[9px] font-bold text-rose-600 bg-rose-50 px-1 py-0.2 rounded border border-rose-200">
+                            Mandatory
+                          </span>
+                        )}
+                      </div>
+                      <input
+                        type="text"
+                        placeholder={appliedPaymentDiscount > 0 ? 'Reason required (e.g. Sibling waiver)' : 'e.g. Scholarship, Sibling concession'}
+                        value={paymentDiscountReason}
+                        onChange={(e) => {
+                          setPaymentDiscountReason(e.target.value);
+                          if (discountError && e.target.value.trim()) {
+                            setDiscountError(null);
+                          }
+                        }}
+                        className={`w-full px-2.5 py-1.5 bg-neutral-50 border rounded-lg text-xs text-black focus:bg-white focus:outline-none focus:ring-1 focus:ring-[#FF8500] ${
+                          appliedPaymentDiscount > 0 && !paymentDiscountReason.trim()
+                            ? 'border-amber-400 bg-amber-50/40 ring-1 ring-amber-300'
+                            : 'border-neutral-300'
+                        }`}
+                        required={appliedPaymentDiscount > 0}
+                      />
+                    </div>
+                  </div>
+
+                  {discountError && (
+                    <div className="flex items-center gap-1 text-rose-600 text-[11px] font-semibold">
+                      <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                      <span>{discountError}</span>
+                    </div>
+                  )}
+
+                  {appliedPaymentDiscount > 0 && (
+                    <div className="bg-amber-50/70 p-2 rounded-lg border border-amber-200 text-[11px] flex items-center justify-between">
+                      <span className="text-amber-900 font-medium">
+                        Fee: <strong className="font-mono">₹{modalTargetBalance.toLocaleString()}</strong> − Discount: <strong className="font-mono text-amber-700">₹{appliedPaymentDiscount.toLocaleString()}</strong>
+                      </span>
+                      <span className="text-emerald-800 font-bold">
+                        Net Amount to Pay: <strong className="font-mono text-emerald-700 text-xs">₹{modalNetPayable.toLocaleString()}</strong>
+                      </span>
+                    </div>
+                  )}
+                </div>
+
                 {/* 3 Payment Mode Buttons (ONLY Cash, UPI, Cash+UPI) */}
                 <div>
                   <label className="text-xs font-bold text-neutral-800 block mb-1.5">
@@ -2591,11 +3811,11 @@ export default function FeesPage() {
                       onClick={() => {
                         setPaymentMethodMode('CASH_UPI');
                         setPaymentMethod('UPI');
-                        if (splitCashAmount === 0 && splitUpiAmount === 0 && modalTargetBalance > 0) {
-                          const half = Math.round(modalTargetBalance / 2);
+                        if (splitCashAmount === 0 && splitUpiAmount === 0 && modalNetPayable > 0) {
+                          const half = Math.round(modalNetPayable / 2);
                           setSplitCashAmount(half);
-                          setSplitUpiAmount(modalTargetBalance - half);
-                          setPaymentAmount(modalTargetBalance);
+                          setSplitUpiAmount(modalNetPayable - half);
+                          setPaymentAmount(modalNetPayable);
                         }
                       }}
                       className={`py-2 px-2 rounded-xl text-xs font-bold border transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
@@ -2619,15 +3839,15 @@ export default function FeesPage() {
                         <ArrowLeftRight className="w-3.5 h-3.5 text-[#FF8500]" />
                         <span>Split Distribution:</span>
                       </span>
-                      {/* Presets for Split */}
+                      {/* Presets for Split based on Net Payable */}
                       <div className="flex items-center gap-1.5">
                         <button
                           type="button"
                           onClick={() => {
-                            const half = Math.round(modalTargetBalance / 2);
+                            const half = Math.round(modalNetPayable / 2);
                             setSplitCashAmount(half);
-                            setSplitUpiAmount(modalTargetBalance - half);
-                            setPaymentAmount(modalTargetBalance);
+                            setSplitUpiAmount(modalNetPayable - half);
+                            setPaymentAmount(modalNetPayable);
                           }}
                           className="px-2 py-0.5 text-[10px] font-bold rounded bg-neutral-100 hover:bg-neutral-200 text-neutral-800 transition cursor-pointer"
                         >
@@ -2636,9 +3856,9 @@ export default function FeesPage() {
                         <button
                           type="button"
                           onClick={() => {
-                            setSplitCashAmount(modalTargetBalance);
+                            setSplitCashAmount(modalNetPayable);
                             setSplitUpiAmount(0);
-                            setPaymentAmount(modalTargetBalance);
+                            setPaymentAmount(modalNetPayable);
                           }}
                           className="px-2 py-0.5 text-[10px] font-bold rounded bg-neutral-100 hover:bg-neutral-200 text-neutral-800 transition cursor-pointer"
                         >
@@ -2648,8 +3868,8 @@ export default function FeesPage() {
                           type="button"
                           onClick={() => {
                             setSplitCashAmount(0);
-                            setSplitUpiAmount(modalTargetBalance);
-                            setPaymentAmount(modalTargetBalance);
+                            setSplitUpiAmount(modalNetPayable);
+                            setPaymentAmount(modalNetPayable);
                           }}
                           className="px-2 py-0.5 text-[10px] font-bold rounded bg-neutral-100 hover:bg-neutral-200 text-neutral-800 transition cursor-pointer"
                         >
@@ -2691,7 +3911,7 @@ export default function FeesPage() {
                             setSplitUpiAmount(uVal);
                             setPaymentAmount(Number(splitCashAmount) + uVal);
                           }}
-                          placeholder="e.g. 2000"
+                          placeholder="e.g. 1500"
                           className="w-full px-2.5 py-1.5 bg-neutral-50 border border-neutral-300 rounded-lg font-mono font-bold text-sm text-black focus:bg-white focus:outline-none focus:ring-1 focus:ring-[#FF8500]"
                           required
                         />
@@ -2721,14 +3941,14 @@ export default function FeesPage() {
                       <div className="flex items-center gap-1.5">
                         <button
                           type="button"
-                          onClick={() => setPaymentAmount(modalTargetBalance)}
+                          onClick={() => setPaymentAmount(modalNetPayable)}
                           className="px-2 py-0.5 text-[10px] font-bold rounded bg-neutral-100 hover:bg-neutral-200 text-neutral-800 transition cursor-pointer"
                         >
-                          Full (₹{modalTargetBalance.toLocaleString()})
+                          Full (₹{modalNetPayable.toLocaleString()})
                         </button>
                         <button
                           type="button"
-                          onClick={() => setPaymentAmount(Math.round(modalTargetBalance / 2))}
+                          onClick={() => setPaymentAmount(Math.round(modalNetPayable / 2))}
                           className="px-2 py-0.5 text-[10px] font-bold rounded bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200 transition cursor-pointer"
                         >
                           50% Partial
@@ -2766,7 +3986,7 @@ export default function FeesPage() {
                   </div>
                 )}
 
-                {/* Compact Live Settlement Strip */}
+                {/* Compact Live Settlement Strip with Discount Overview */}
                 <div className={`p-2.5 rounded-xl border text-xs transition-all ${
                   isExcessPayment
                     ? 'bg-rose-50 border-rose-200 text-rose-950'
@@ -2781,33 +4001,41 @@ export default function FeesPage() {
                       {isExcessPayment ? (
                         <>
                           <AlertCircle className="w-3.5 h-3.5 text-rose-600" />
-                          <span className="text-rose-700">Amount exceeds balance</span>
+                          <span className="text-rose-700">Amount exceeds net payable</span>
                         </>
                       ) : isPartialPayment ? (
-                        <span className="text-amber-800">PARTIAL INSTALLMENT</span>
+                        <span className="text-amber-800">PARTIAL PAYMENT</span>
                       ) : isFullPayment ? (
                         <>
                           <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700" />
-                          <span className="text-emerald-800">FULL SETTLEMENT</span>
+                          <span className="text-emerald-800">
+                            {appliedPaymentDiscount > 0 ? 'SETTLED WITH CONCESSION' : 'FULL SETTLEMENT'}
+                          </span>
                         </>
                       ) : (
-                        <span>Settlement Status</span>
+                        <span>Settlement Summary</span>
                       )}
                     </span>
                     <span className="text-[11px] font-mono">
-                      Result: <strong>{isPartialPayment ? 'PARTIAL' : isFullPayment ? 'PAID' : 'PENDING'}</strong>
+                      Status: <strong>{isPartialPayment ? 'PARTIAL' : isFullPayment ? 'PAID' : 'PENDING'}</strong>
                     </span>
                   </div>
 
-                  <div className="grid grid-cols-3 gap-2 mt-1.5 pt-1.5 border-t border-black/10 text-center">
+                  <div className="grid grid-cols-4 gap-1.5 mt-1.5 pt-1.5 border-t border-black/10 text-center">
                     <div className="bg-white/90 p-1 rounded-md border border-black/5">
-                      <span className="text-[9px] text-neutral-500 uppercase block">Total Due</span>
+                      <span className="text-[9px] text-neutral-500 uppercase block">Fee Due</span>
                       <span className="font-mono font-bold text-neutral-900 text-xs">
                         ₹{modalTargetBalance.toLocaleString()}
                       </span>
                     </div>
                     <div className="bg-white/90 p-1 rounded-md border border-black/5">
-                      <span className="text-[9px] text-neutral-500 uppercase block">Collecting</span>
+                      <span className="text-[9px] text-neutral-500 uppercase block">Discount</span>
+                      <span className="font-mono font-bold text-amber-700 text-xs">
+                        {appliedPaymentDiscount > 0 ? `-₹${appliedPaymentDiscount.toLocaleString()}` : '₹0'}
+                      </span>
+                    </div>
+                    <div className="bg-white/90 p-1 rounded-md border border-black/5">
+                      <span className="text-[9px] text-neutral-500 uppercase block">Paying Now</span>
                       <span className="font-mono font-bold text-[#CC6B00] text-xs">
                         ₹{(Number(paymentAmount) || 0).toLocaleString()}
                       </span>
@@ -2829,15 +4057,24 @@ export default function FeesPage() {
                   <Button
                     type="submit"
                     variant="primary"
-                    disabled={loading || isExcessPayment || Number(paymentAmount) <= 0 || (!paymentProofFile && !paymentProofName)}
+                    disabled={
+                      loading ||
+                      isExcessPayment ||
+                      Number(paymentAmount) <= 0 ||
+                      (!paymentProofFile && !paymentProofName) ||
+                      (appliedPaymentDiscount > 0 && !paymentDiscountReason.trim()) ||
+                      Boolean(discountError)
+                    }
                   >
                     {loading
                       ? 'Processing...'
+                      : appliedPaymentDiscount > 0 && !paymentDiscountReason.trim()
+                      ? 'Provide Reason for Discount'
                       : (!paymentProofFile && !paymentProofName)
                       ? 'Upload Proof to Record'
                       : isPartialPayment
                       ? `Record Partial Collection (₹${(Number(paymentAmount) || 0).toLocaleString()})`
-                      : `Record Full Settlement (₹${(Number(paymentAmount) || 0).toLocaleString()})`}
+                      : `Record Settlement (₹${(Number(paymentAmount) || 0).toLocaleString()})`}
                   </Button>
                 </div>
               </div>
@@ -2854,26 +4091,31 @@ export default function FeesPage() {
             setShowConfigModal(false);
             setEditingConfigId(null);
           }}
-          title={editingConfigId ? 'Edit Course Fee Rule' : 'Configure Course Fee Rule'}
+          title={editingConfigId ? 'Edit Course Fee Pricing Rule' : 'Configure Course Fee Pricing Rule'}
           description={
             editingConfigId
-              ? 'Update course fee rule parameters, billing period, and synchronize fees with enrolled students'
-              : 'Define course tuition fee rules and automatically replicate billing to all active enrolled students'
+              ? 'Update tuition fee pricing parameters, bundle offer discounts, and payment schedule'
+              : 'Define course tuition fee rules, package offer discounts, and pricing catalog used for student payments (does not mass-create invoices)'
           }
-          maxWidth="3xl"
+          maxWidth="6xl"
         >
           <form onSubmit={handleSaveConfig} className="space-y-4">
-            {/* 2-Column Grid */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {/* Left Column: Scope & Identification */}
-              <div className="space-y-3.5 bg-neutral-50/60 p-3.5 rounded-xl border border-neutral-200">
-                <div className="flex items-center gap-2 pb-2 border-b border-neutral-200">
+            {/* 2-Column Grid with Increased Spaciousness */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+              {/* Left Column: Course, Cohort & Subject Scope */}
+              <div className="space-y-4 bg-neutral-50/70 p-4 rounded-xl border border-neutral-200">
+                <div className="flex items-center gap-2 pb-2.5 border-b border-neutral-200">
                   <div className="w-6 h-6 rounded-md bg-[#FFF4E5] text-[#FF8500] flex items-center justify-center font-bold text-xs">
                     1
                   </div>
-                  <span className="text-xs font-bold text-neutral-800 uppercase tracking-wider">
-                    Course & Scope
-                  </span>
+                  <div>
+                    <span className="text-xs font-bold text-neutral-800 uppercase tracking-wider block">
+                      Course & Curriculum Scope
+                    </span>
+                    <span className="text-[11px] text-neutral-500">
+                      Select target course and configure full-package vs single-subject billing
+                    </span>
+                  </div>
                 </div>
 
                 {/* 1. Course / Standard Selection with Setup Detailing */}
@@ -2902,13 +4144,14 @@ export default function FeesPage() {
                           ? 'Monthly Tuition'
                           : configForm.billingPeriod === 'ANNUAL'
                           ? 'Annual Tuition'
-                          : 'Standard Tuition';
-                      const autoName = course ? `${course.name} ${periodLabel}` : '';
+                          : `${configForm.billingPeriod} Tuition`;
+                      const autoName = course ? `${course.name} All Subjects ${periodLabel}` : '';
                       setConfigForm((prev) => ({
                         ...prev,
                         classId: selectedId,
                         batchId: '',
                         subjectId: '',
+                        subjectMode: 'ALL',
                         name: autoName,
                       }));
                     }}
@@ -2918,7 +4161,7 @@ export default function FeesPage() {
                     <option value="">-- Select Course / Standard --</option>
                     {availableCourses.map((c) => (
                       <option key={c.id} value={c.id}>
-                        {c.name} ({c.code}) • {c.category === 'SKILL' ? 'Skill Course' : 'Academic Standard'} ({c.batches?.length || 0} Cohorts)
+                        {c.name} ({c.code}) • {c.category === 'SKILL' ? 'Skill Course' : 'Academic Standard'} ({c.batches?.length || 0} Cohorts, {c.subjects?.length || 0} Subjects)
                       </option>
                     ))}
                   </select>
@@ -2935,7 +4178,7 @@ export default function FeesPage() {
                           </span>
                         </span>
                         <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">
-                          {selectedConfigCourse.totalEnrolled ?? selectedCourseStudentsCount} Enrolled
+                          {selectedConfigCourse.totalEnrolled ?? selectedCourseStudentsCount} Students in Course
                         </span>
                       </div>
                       <div className="grid grid-cols-2 gap-2 text-[10px] text-neutral-500 pt-1.5 border-t border-neutral-100">
@@ -2944,8 +4187,8 @@ export default function FeesPage() {
                           <span className="text-neutral-700 font-semibold">{selectedConfigCourse.academicYear?.name || '2026-2027'}</span>
                         </div>
                         <div>
-                          <span className="text-neutral-400 block">Configured Cohorts:</span>
-                          <span className="text-neutral-700 font-semibold">{selectedConfigCourse.batches?.length || 0} Active Batches</span>
+                          <span className="text-neutral-400 block">Curriculum Subjects:</span>
+                          <span className="text-neutral-700 font-semibold">{selectedConfigCourse.subjects?.length || 0} Subjects Configured</span>
                         </div>
                       </div>
                     </div>
@@ -2977,9 +4220,9 @@ export default function FeesPage() {
                           ? 'Monthly Tuition'
                           : configForm.billingPeriod === 'ANNUAL'
                           ? 'Annual Tuition'
-                          : 'Standard Tuition';
+                          : `${configForm.billingPeriod} Tuition`;
                       const batchPart = batch ? ` (${batch.name})` : '';
-                      const subPart = sub ? ` - ${sub.name}` : '';
+                      const subPart = sub && configForm.subjectMode === 'SINGLE' ? ` - ${sub.name}` : ' All Subjects';
                       const autoName = course
                         ? `${course.name}${batchPart}${subPart} ${periodLabel}`
                         : configForm.name;
@@ -2998,166 +4241,38 @@ export default function FeesPage() {
                       </option>
                     ))}
                   </select>
-
-                  {/* Cohort Batch Detailing Card */}
-                  {selectedConfigCourse && (
-                    <div className={`p-2.5 rounded-lg border text-xs transition ${
-                      configForm.batchId && selectedConfigBatch
-                        ? 'bg-amber-50/80 border-amber-200 text-amber-900'
-                        : 'bg-blue-50/70 border-blue-200 text-blue-900'
-                    }`}>
-                      {configForm.batchId && selectedConfigBatch ? (
-                        <div className="space-y-1">
-                          <div className="flex items-center justify-between">
-                            <span className="font-bold flex items-center gap-1.5">
-                              <Users className="w-3.5 h-3.5 text-amber-600" />
-                              <span>Cohort: {selectedConfigBatch.name}</span>
-                              {selectedConfigBatch.code && (
-                                <span className="font-mono text-[10px] text-amber-700 bg-amber-100/80 px-1.5 py-0.2 rounded font-semibold">
-                                  {selectedConfigBatch.code}
-                                </span>
-                              )}
-                            </span>
-                            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-200 text-amber-900">
-                              Targeted Cohort
-                            </span>
-                          </div>
-                          <p className="text-[11px] text-amber-800 leading-relaxed">
-                            Rule applies strictly to students registered in <strong>{selectedConfigBatch.name}</strong> ({selectedConfigBatch.activeEnrollments ?? 0} active student{selectedConfigBatch.activeEnrollments === 1 ? '' : 's'}).
-                          </p>
-                        </div>
-                      ) : (
-                        <div className="space-y-1">
-                          <div className="flex items-center justify-between">
-                            <span className="font-bold flex items-center gap-1.5">
-                              <Layers className="w-3.5 h-3.5 text-blue-600" />
-                              <span>Course-Wide Scope (All Batches)</span>
-                            </span>
-                            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-200 text-blue-900">
-                              Universal Rule
-                            </span>
-                          </div>
-                          <p className="text-[11px] text-blue-800 leading-relaxed">
-                            Applies across all cohorts in {selectedConfigCourse.name}:{' '}
-                            <span className="font-semibold">
-                              {selectedConfigCourse.batches && selectedConfigCourse.batches.length > 0
-                                ? selectedConfigCourse.batches.map((b: any) => `${b.name} (${b.activeEnrollments ?? 0})`).join(' • ')
-                                : 'General Batch'}
-                            </span>
-                          </p>
-                        </div>
-                      )}
-                    </div>
-                  )}
                 </div>
 
-                {/* 3. Subject Offering (Course Standard vs Subject-Based) */}
-                <div className="space-y-2">
+                {/* 3. Subject Curriculum Scope & Tier Selection */}
+                <div className="space-y-3 pt-2 border-t border-neutral-200">
                   <div className="flex items-center justify-between">
-                    <label className="text-xs font-semibold text-neutral-700">
-                      Subject Offering <span className="text-neutral-400 font-normal">(Class vs Subject-Based)</span>
-                    </label>
-                    {selectedConfigCourse && (
-                      <span className="text-[10px] text-neutral-500 font-medium">
-                        {configForm.subjectId ? 'Subject-Specific' : 'Full Class / All Subjects'}
+                    <div>
+                      <label className="text-xs font-bold text-neutral-800 block">
+                        Enrollment Tier & Pricing Mode <span className="text-red-500">*</span>
+                      </label>
+                      <span className="text-[11px] text-neutral-500">
+                        Separate fee amounts for all subjects, 2 subjects, or single subject (not mixed during replication)
                       </span>
-                    )}
-                  </div>
-                  <select
-                    value={configForm.subjectId}
-                    disabled={!selectedConfigCourse}
-                    onChange={(e) => {
-                      const selectedSubId = e.target.value;
-                      const course = availableCourses.find((c) => c.id === configForm.classId);
-                      const batch = course?.batches?.find((b: any) => b.id === configForm.batchId);
-                      const sub = course?.subjects?.find((s: any) => s.id === selectedSubId);
-                      const periodLabel =
-                        configForm.billingPeriod === 'MONTHLY'
-                          ? 'Monthly Tuition'
-                          : configForm.billingPeriod === 'ANNUAL'
-                          ? 'Annual Tuition'
-                          : 'Standard Tuition';
-                      let autoName = course ? `${course.name} ${periodLabel}` : configForm.name;
-                      if (course) {
-                        const batchPart = batch ? ` (${batch.name})` : '';
-                        const subPart = sub ? ` - ${sub.name}` : '';
-                        autoName = `${course.name}${batchPart}${subPart} ${periodLabel}`;
-                      }
-                      setConfigForm((prev) => ({
-                        ...prev,
-                        subjectId: selectedSubId,
-                        name: autoName,
-                      }));
-                    }}
-                    className="w-full px-3 py-2 bg-white border border-neutral-300 rounded-lg text-xs text-black focus:outline-none focus:ring-2 focus:ring-[#FF8500] disabled:bg-neutral-100 disabled:text-neutral-400 font-medium"
-                  >
-                    <option value="">Full Class / All Subjects (Integrated Standard Tuition)</option>
-                    {selectedConfigCourse?.subjects?.map((s: any) => (
-                      <option key={s.id} value={s.id}>
-                        {s.name} ({s.code}) • Subject-Specific Tuition
-                      </option>
-                    ))}
-                  </select>
-
-                  {/* Subject Detailing Card */}
-                  {selectedConfigCourse && (
-                    <div className={`p-2.5 rounded-lg border text-xs transition ${
-                      configForm.subjectId && selectedConfigSubject
-                        ? 'bg-purple-50/80 border-purple-200 text-purple-900'
-                        : 'bg-emerald-50/70 border-emerald-200 text-emerald-900'
-                    }`}>
-                      {configForm.subjectId && selectedConfigSubject ? (
-                        <div className="space-y-1">
-                          <div className="flex items-center justify-between">
-                            <span className="font-bold flex items-center gap-1.5">
-                              <BookOpen className="w-3.5 h-3.5 text-purple-600" />
-                              <span>Subject: {selectedConfigSubject.name}</span>
-                              <span className="font-mono text-[10px] text-purple-700 bg-purple-100/80 px-1.5 py-0.2 rounded font-semibold">
-                                {selectedConfigSubject.code}
-                              </span>
-                            </span>
-                            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-200 text-purple-900">
-                              Subject-Based Rule
-                            </span>
-                          </div>
-                          <p className="text-[11px] text-purple-800 leading-relaxed">
-                            Fee rule is targeted exclusively for <strong>{selectedConfigSubject.name}</strong> instruction, assessments, and curriculum.
-                          </p>
-                        </div>
-                      ) : (
-                        <div className="space-y-1">
-                          <div className="flex items-center justify-between">
-                            <span className="font-bold flex items-center gap-1.5">
-                              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                              <span>Standard Course-Wide Curriculum</span>
-                            </span>
-                            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-200 text-emerald-900">
-                              All Subjects Included
-                            </span>
-                          </div>
-                          <p className="text-[11px] text-emerald-800 leading-relaxed">
-                            Includes all standard subjects in {selectedConfigCourse.name}:{' '}
-                            <span className="font-semibold">
-                              {selectedConfigCourse.subjects && selectedConfigCourse.subjects.length > 0
-                                ? selectedConfigCourse.subjects.map((s: any) => s.name).join(', ')
-                                : 'Core Curriculum'}
-                            </span>
-                          </p>
-                        </div>
-                      )}
                     </div>
-                  )}
-                </div>
+                    <span className="text-[10px] font-bold text-neutral-600 uppercase px-2 py-0.5 rounded bg-neutral-100 border border-neutral-200">
+                      {configForm.subjectTier === 'ALL'
+                        ? 'All Subjects Fixed'
+                        : configForm.subjectTier === 'TWO_SUBJECTS'
+                        ? '2-Subjects Package'
+                        : configForm.subjectTier === 'SINGLE_SUBJECT'
+                        ? 'Single Subject'
+                        : 'Custom Bundle'}
+                    </span>
+                  </div>
 
-                {/* Auto-Assigned Rule Name Indicator */}
-                {configForm.classId && (
-                  <div className="p-2 bg-neutral-100/80 rounded-lg text-xs text-neutral-600 flex items-center justify-between border border-neutral-200">
-                    <span className="text-[11px] font-semibold text-neutral-500">Auto Rule Title:</span>
-                    <span className="text-xs font-bold text-neutral-900 font-mono">
-                      {(() => {
+                  {/* 3 Tier Segmented Cards */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                    {/* Card 1: All Subjects */}
+                    <button
+                      type="button"
+                      onClick={() => {
                         const course = availableCourses.find((c) => c.id === configForm.classId);
                         const batch = course?.batches?.find((b: any) => b.id === configForm.batchId);
-                        const sub = course?.subjects?.find((s: any) => s.id === configForm.subjectId);
                         const periodLabel =
                           configForm.billingPeriod === 'MONTHLY'
                             ? 'Monthly Tuition'
@@ -3165,9 +4280,396 @@ export default function FeesPage() {
                             ? 'Annual Tuition'
                             : `${configForm.billingPeriod} Tuition`;
                         const batchPart = batch ? ` (${batch.name})` : '';
-                        const subPart = sub ? ` - ${sub.name}` : '';
-                        return `${course?.name || ''}${batchPart}${subPart} ${periodLabel}`;
-                      })()}
+                        const autoName = course ? `${course.name}${batchPart} All Subjects ${periodLabel}` : configForm.name;
+                        setConfigForm((prev) => ({
+                          ...prev,
+                          subjectTier: 'ALL',
+                          subjectMode: 'ALL',
+                          subjectId: '',
+                          selectedSubjectIds: [],
+                          name: autoName,
+                        }));
+                      }}
+                      className={`p-3 rounded-xl border text-left transition flex flex-col justify-between cursor-pointer ${
+                        configForm.subjectTier === 'ALL'
+                          ? 'bg-emerald-50/90 border-emerald-500 text-emerald-950 ring-2 ring-emerald-300/40 shadow-xs'
+                          : 'bg-white border-neutral-200 text-neutral-600 hover:bg-neutral-50'
+                      }`}
+                    >
+                      <div>
+                        <div className="flex items-center justify-between mb-1.5">
+                          <span className="flex items-center gap-1.5 font-bold text-xs">
+                            <Layers className={`w-4 h-4 ${configForm.subjectTier === 'ALL' ? 'text-emerald-600' : 'text-neutral-400'}`} />
+                            <span>All Subjects</span>
+                          </span>
+                          {configForm.subjectTier === 'ALL' && (
+                            <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                          )}
+                        </div>
+                        <p className="text-[11px] leading-snug text-neutral-500">
+                          Full course package. Standard fixed amount for all {totalClassSubjectsCount || ''} subjects.
+                        </p>
+                      </div>
+                      <div className="mt-2.5 pt-2 border-t border-neutral-200/60 flex items-center justify-between">
+                        <span className="text-[10px] font-bold uppercase text-neutral-400">Target Cohort</span>
+                        <span className="text-xs font-mono font-bold text-emerald-800 bg-emerald-100/80 px-2 py-0.5 rounded">
+                          {allSubjectsCount} Joined
+                        </span>
+                      </div>
+                    </button>
+
+                    {/* Card 2: 2 Subjects Package */}
+                    <button
+                      type="button"
+                      disabled={!selectedConfigCourse || (totalClassSubjectsCount > 0 && totalClassSubjectsCount < 2)}
+                      onClick={() => {
+                        const course = availableCourses.find((c) => c.id === configForm.classId);
+                        const batch = course?.batches?.find((b: any) => b.id === configForm.batchId);
+                        const periodLabel =
+                          configForm.billingPeriod === 'MONTHLY'
+                            ? 'Monthly Tuition'
+                            : configForm.billingPeriod === 'ANNUAL'
+                            ? 'Annual Tuition'
+                            : `${configForm.billingPeriod} Tuition`;
+                        const batchPart = batch ? ` (${batch.name})` : '';
+                        const autoName = course ? `${course.name}${batchPart} 2 Subjects Package ${periodLabel}` : configForm.name;
+                        setConfigForm((prev) => ({
+                          ...prev,
+                          subjectTier: 'TWO_SUBJECTS',
+                          subjectMode: 'SELECT',
+                          subjectId: '',
+                          selectedSubjectIds: prev.selectedSubjectIds.length === 2 ? prev.selectedSubjectIds : [],
+                          name: autoName,
+                        }));
+                      }}
+                      className={`p-3 rounded-xl border text-left transition flex flex-col justify-between cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
+                        configForm.subjectTier === 'TWO_SUBJECTS'
+                          ? 'bg-amber-50/90 border-amber-500 text-amber-950 ring-2 ring-amber-300/40 shadow-xs'
+                          : 'bg-white border-neutral-200 text-neutral-600 hover:bg-neutral-50'
+                      }`}
+                    >
+                      <div>
+                        <div className="flex items-center justify-between mb-1.5">
+                          <span className="flex items-center gap-1.5 font-bold text-xs">
+                            <Zap className={`w-4 h-4 ${configForm.subjectTier === 'TWO_SUBJECTS' ? 'text-amber-600' : 'text-neutral-400'}`} />
+                            <span>2 Subjects Bundle</span>
+                          </span>
+                          {configForm.subjectTier === 'TWO_SUBJECTS' && (
+                            <span className="w-2 h-2 rounded-full bg-amber-500" />
+                          )}
+                        </div>
+                        <p className="text-[11px] leading-snug text-neutral-500">
+                          Separate fixed fee for students who joined 2 subjects. Replicates only to them.
+                        </p>
+                      </div>
+                      <div className="mt-2.5 pt-2 border-t border-neutral-200/60 flex items-center justify-between">
+                        <span className="text-[10px] font-bold uppercase text-neutral-400">Target Cohort</span>
+                        <span className="text-xs font-mono font-bold text-amber-800 bg-amber-100/80 px-2 py-0.5 rounded">
+                          {twoSubjectsCount} Joined
+                        </span>
+                      </div>
+                    </button>
+
+                    {/* Card 3: Single Subject (1 Subject) */}
+                    <button
+                      type="button"
+                      disabled={!selectedConfigCourse || !selectedConfigCourse.subjects?.length}
+                      onClick={() => {
+                        const course = availableCourses.find((c) => c.id === configForm.classId);
+                        const firstSub = course?.subjects?.[0];
+                        const batch = course?.batches?.find((b: any) => b.id === configForm.batchId);
+                        const periodLabel =
+                          configForm.billingPeriod === 'MONTHLY'
+                            ? 'Monthly Tuition'
+                            : configForm.billingPeriod === 'ANNUAL'
+                            ? 'Annual Tuition'
+                            : `${configForm.billingPeriod} Tuition`;
+                        const batchPart = batch ? ` (${batch.name})` : '';
+                        const subPart = firstSub ? ` - ${firstSub.name}` : ' Single Subject';
+                        const autoName = course ? `${course.name}${batchPart}${subPart} ${periodLabel}` : configForm.name;
+                        setConfigForm((prev) => ({
+                          ...prev,
+                          subjectTier: 'SINGLE_SUBJECT',
+                          subjectMode: 'SELECT',
+                          subjectId: firstSub?.id || '',
+                          selectedSubjectIds: firstSub ? [firstSub.id] : [],
+                          name: autoName,
+                        }));
+                      }}
+                      className={`p-3 rounded-xl border text-left transition flex flex-col justify-between cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
+                        configForm.subjectTier === 'SINGLE_SUBJECT'
+                          ? 'bg-purple-50/90 border-purple-500 text-purple-950 ring-2 ring-purple-300/40 shadow-xs'
+                          : 'bg-white border-neutral-200 text-neutral-600 hover:bg-neutral-50'
+                      }`}
+                    >
+                      <div>
+                        <div className="flex items-center justify-between mb-1.5">
+                          <span className="flex items-center gap-1.5 font-bold text-xs">
+                            <BookOpen className={`w-4 h-4 ${configForm.subjectTier === 'SINGLE_SUBJECT' ? 'text-purple-600' : 'text-neutral-400'}`} />
+                            <span>Single Subject (1)</span>
+                          </span>
+                          {configForm.subjectTier === 'SINGLE_SUBJECT' && (
+                            <span className="w-2 h-2 rounded-full bg-purple-500" />
+                          )}
+                        </div>
+                        <p className="text-[11px] leading-snug text-neutral-500">
+                          Separate fee for students who joined only 1 subject. Will not mix with other tiers.
+                        </p>
+                      </div>
+                      <div className="mt-2.5 pt-2 border-t border-neutral-200/60 flex items-center justify-between">
+                        <span className="text-[10px] font-bold uppercase text-neutral-400">Target Cohort</span>
+                        <span className="text-xs font-mono font-bold text-purple-800 bg-purple-100/80 px-2 py-0.5 rounded">
+                          {oneSubjectCount} Joined
+                        </span>
+                      </div>
+                    </button>
+                  </div>
+
+                  {/* Detailed Panel based on Tier */}
+                  {configForm.subjectTier === 'ALL' && (
+                    <div className="p-3 bg-white rounded-lg border border-emerald-200/80 space-y-2">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-bold text-emerald-900 flex items-center gap-1.5">
+                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                          <span>All Standard Subjects Included in Full Fee</span>
+                        </span>
+                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800">
+                          {totalClassSubjectsCount || 'Core'} Subjects
+                        </span>
+                      </div>
+                      {selectedConfigCourse?.subjects && selectedConfigCourse.subjects.length > 0 ? (
+                        <div className="flex flex-wrap gap-1.5 pt-1">
+                          {selectedConfigCourse.subjects.map((s: any) => (
+                            <span
+                              key={s.id}
+                              className="px-2 py-0.5 bg-neutral-100 hover:bg-neutral-200 rounded text-[10px] font-semibold text-neutral-700 flex items-center gap-1 border border-neutral-200"
+                            >
+                              <BookOpen className="w-3 h-3 text-neutral-500" />
+                              {s.name} {s.code ? `(${s.code})` : ''}
+                            </span>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  )}
+
+                  {configForm.subjectTier === 'TWO_SUBJECTS' && (
+                    <div className="space-y-3 p-3.5 bg-amber-50/50 rounded-xl border border-amber-200/90 shadow-2xs">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <label className="text-xs font-bold text-amber-950 block">
+                            2-Subjects Bundle Scope <span className="text-red-500">*</span>
+                          </label>
+                          <span className="text-[11px] text-amber-800/80">
+                            Configure whether this price applies to any 2 subjects or specific subjects
+                          </span>
+                        </div>
+                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-200">
+                          {configForm.selectedSubjectIds.length === 2 ? 'Pair-Specific' : 'Any 2 Subjects'}
+                        </span>
+                      </div>
+
+                      {/* Mode Switcher: Any 2 Subjects vs Specific Pair */}
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const course = availableCourses.find((c) => c.id === configForm.classId);
+                            const batch = course?.batches?.find((b: any) => b.id === configForm.batchId);
+                            const periodLabel =
+                              configForm.billingPeriod === 'MONTHLY'
+                                ? 'Monthly Tuition'
+                                : configForm.billingPeriod === 'ANNUAL'
+                                ? 'Annual Tuition'
+                                : `${configForm.billingPeriod} Tuition`;
+                            const batchPart = batch ? ` (${batch.name})` : '';
+                            const autoName = course ? `${course.name}${batchPart} 2 Subjects Package ${periodLabel}` : configForm.name;
+                            setConfigForm((prev) => ({
+                              ...prev,
+                              selectedSubjectIds: [],
+                              name: autoName,
+                            }));
+                          }}
+                          className={`p-2 rounded-lg text-xs font-bold border transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                            configForm.selectedSubjectIds.length !== 2
+                              ? 'bg-amber-600 text-white border-amber-600 shadow-2xs'
+                              : 'bg-white text-neutral-700 border-neutral-300 hover:bg-amber-50'
+                          }`}
+                        >
+                          <Zap className="w-3.5 h-3.5" />
+                          <span>Any 2 Subjects ({twoSubjectsCount} Students)</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (selectedConfigCourse?.subjects && selectedConfigCourse.subjects.length >= 2) {
+                              const pair = [selectedConfigCourse.subjects[0].id, selectedConfigCourse.subjects[1].id];
+                              const course = availableCourses.find((c) => c.id === configForm.classId);
+                              const batch = course?.batches?.find((b: any) => b.id === configForm.batchId);
+                              const subNames = course?.subjects
+                                ?.filter((sub: any) => pair.includes(sub.id))
+                                .map((sub: any) => sub.name)
+                                .join(', ');
+                              const periodLabel =
+                                configForm.billingPeriod === 'MONTHLY'
+                                  ? 'Monthly Tuition'
+                                  : configForm.billingPeriod === 'ANNUAL'
+                                  ? 'Annual Tuition'
+                                  : `${configForm.billingPeriod} Tuition`;
+                              const batchPart = batch ? ` (${batch.name})` : '';
+                              const autoName = course ? `${course.name}${batchPart} - ${subNames} ${periodLabel}` : configForm.name;
+                              setConfigForm((prev) => ({
+                                ...prev,
+                                selectedSubjectIds: pair,
+                                name: autoName,
+                              }));
+                            }
+                          }}
+                          className={`p-2 rounded-lg text-xs font-bold border transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                            configForm.selectedSubjectIds.length === 2
+                              ? 'bg-amber-600 text-white border-amber-600 shadow-2xs'
+                              : 'bg-white text-neutral-700 border-neutral-300 hover:bg-amber-50'
+                          }`}
+                        >
+                          <BookOpen className="w-3.5 h-3.5" />
+                          <span>Choose Specific 2 Subjects</span>
+                        </button>
+                      </div>
+
+                      {/* Subject Selection Pills if Specific Pair is chosen */}
+                      {configForm.selectedSubjectIds.length === 2 && (
+                        <div className="space-y-1.5 pt-1">
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-amber-900 block">
+                            Pick the 2 subjects for this bundle:
+                          </span>
+                          <div className="flex flex-wrap gap-2">
+                            {selectedConfigCourse?.subjects?.map((s: any) => {
+                              const isSelected = configForm.selectedSubjectIds.includes(s.id);
+                              return (
+                                <button
+                                  key={s.id}
+                                  type="button"
+                                  onClick={() => {
+                                    const current = [...configForm.selectedSubjectIds];
+                                    let updated: string[];
+                                    if (isSelected) {
+                                      updated = current.filter((id) => id !== s.id);
+                                    } else {
+                                      updated = current.length >= 2 ? [current[1], s.id] : [...current, s.id];
+                                    }
+                                    const course = availableCourses.find((c) => c.id === configForm.classId);
+                                    const batch = course?.batches?.find((b: any) => b.id === configForm.batchId);
+                                    const periodLabel =
+                                      configForm.billingPeriod === 'MONTHLY'
+                                        ? 'Monthly Tuition'
+                                        : configForm.billingPeriod === 'ANNUAL'
+                                        ? 'Annual Tuition'
+                                        : `${configForm.billingPeriod} Tuition`;
+                                    const batchPart = batch ? ` (${batch.name})` : '';
+                                    const subNames = course?.subjects
+                                      ?.filter((sub: any) => updated.includes(sub.id))
+                                      .map((sub: any) => sub.name)
+                                      .join(', ');
+                                    const subPart = subNames ? ` - ${subNames}` : ' 2 Subjects Package';
+                                    const autoName = course ? `${course.name}${batchPart}${subPart} ${periodLabel}` : configForm.name;
+
+                                    setConfigForm((prev) => ({
+                                      ...prev,
+                                      selectedSubjectIds: updated,
+                                      name: autoName,
+                                    }));
+                                  }}
+                                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 border transition cursor-pointer ${
+                                    isSelected
+                                      ? 'bg-amber-600 text-white border-amber-600 shadow-xs'
+                                      : 'bg-white text-neutral-700 border-neutral-300 hover:bg-amber-50'
+                                  }`}
+                                >
+                                  <BookOpen className={`w-3.5 h-3.5 ${isSelected ? 'text-white' : 'text-neutral-400'}`} />
+                                  <span>{s.name}</span>
+                                  {isSelected && <span className="font-bold text-xs ml-0.5">✓</span>}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Tier Isolation Notice */}
+                      <div className="p-2.5 bg-white rounded-lg border border-amber-300/80 text-[11px] text-amber-950 flex items-start gap-2 shadow-2xs">
+                        <CheckCircle2 className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                        <div>
+                          <strong className="block font-bold">
+                            {configForm.selectedSubjectIds.length === 2
+                              ? `Applies only to students taking this exact 2-subject combination.`
+                              : `Applies automatically to any student enrolled in 2 subjects (${twoSubjectsCount} students).`}
+                          </strong>
+                          <span className="text-neutral-500 block mt-0.5">
+                            🚫 <strong>Not applicable to all-subject students</strong>: Students enrolled in all {totalClassSubjectsCount || 3} subjects ({allSubjectsCount} students) or 1 subject ({oneSubjectCount} students) will <strong>never</strong> be charged this price.
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {configForm.subjectTier === 'SINGLE_SUBJECT' && (
+                    <div className="space-y-2.5 p-3 bg-white rounded-lg border border-purple-200 shadow-2xs">
+                      <div>
+                        <label className="text-xs font-bold text-purple-950 block">
+                          Single Subject Selection <span className="text-red-500">*</span>
+                        </label>
+                        <span className="text-[11px] text-neutral-500">
+                          Choose the specific subject for this rule, or apply to any 1-subject enrollment
+                        </span>
+                      </div>
+
+                      <select
+                        value={configForm.subjectId}
+                        onChange={(e) => {
+                          const subId = e.target.value;
+                          const course = availableCourses.find((c) => c.id === configForm.classId);
+                          const batch = course?.batches?.find((b: any) => b.id === configForm.batchId);
+                          const sub = course?.subjects?.find((s: any) => s.id === subId);
+                          const periodLabel =
+                            configForm.billingPeriod === 'MONTHLY'
+                              ? 'Monthly Tuition'
+                              : configForm.billingPeriod === 'ANNUAL'
+                              ? 'Annual Tuition'
+                              : `${configForm.billingPeriod} Tuition`;
+                          const batchPart = batch ? ` (${batch.name})` : '';
+                          const subPart = sub ? ` - ${sub.name}` : ' Single Subject';
+                          const autoName = course ? `${course.name}${batchPart}${subPart} ${periodLabel}` : configForm.name;
+                          setConfigForm((prev) => ({
+                            ...prev,
+                            subjectId: subId,
+                            selectedSubjectIds: subId ? [subId] : [],
+                            name: autoName,
+                          }));
+                        }}
+                        className="w-full px-3 py-2 bg-white border border-neutral-300 rounded-lg text-xs font-semibold text-black focus:outline-none focus:ring-2 focus:ring-purple-500"
+                      >
+                        <option value="">Apply to Any Single Subject ({oneSubjectCount} Students)</option>
+                        {selectedConfigCourse?.subjects?.map((s: any) => (
+                          <option key={s.id} value={s.id}>
+                            {s.name} {s.code ? `(${s.code})` : ''}
+                          </option>
+                        ))}
+                      </select>
+
+                      <div className="p-2 bg-purple-50/70 rounded border border-purple-200 text-[11px] text-purple-900 leading-relaxed">
+                        Students taking 2 subjects or all subjects are <strong>strictly excluded</strong> from this rule.
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Auto-Assigned Rule Name Indicator */}
+                {configForm.classId && (
+                  <div className="p-2.5 bg-neutral-100/80 rounded-lg text-xs text-neutral-600 flex items-center justify-between border border-neutral-200">
+                    <span className="text-[11px] font-semibold text-neutral-500">Auto Rule Title:</span>
+                    <span className="text-xs font-bold text-neutral-900 font-mono">
+                      {configForm.name || 'Tuition Fee Rule'}
                     </span>
                   </div>
                 )}
@@ -3179,7 +4681,7 @@ export default function FeesPage() {
                   </label>
                   <input
                     type="text"
-                    placeholder="e.g. Includes monthly books and lab access"
+                    placeholder="e.g. Includes study materials, laboratory fees, and term exams"
                     value={configForm.description}
                     onChange={(e) => setConfigForm({ ...configForm, description: e.target.value })}
                     className="w-full px-3 py-2 bg-white border border-neutral-300 rounded-lg text-xs text-black"
@@ -3187,21 +4689,29 @@ export default function FeesPage() {
                 </div>
               </div>
 
-              {/* Right Column: Fee Structure & Terms */}
-              <div className="space-y-3.5 bg-neutral-50/60 p-3.5 rounded-xl border border-neutral-200">
-                <div className="flex items-center gap-2 pb-2 border-b border-neutral-200">
+              {/* Right Column: Pricing, Package Discounts & Terms */}
+              <div className="space-y-4 bg-neutral-50/70 p-4 rounded-xl border border-neutral-200">
+                <div className="flex items-center gap-2 pb-2.5 border-b border-neutral-200">
                   <div className="w-6 h-6 rounded-md bg-[#FFF4E5] text-[#FF8500] flex items-center justify-center font-bold text-xs">
                     2
                   </div>
-                  <span className="text-xs font-bold text-neutral-800 uppercase tracking-wider">
-                    Pricing & Schedule
-                  </span>
+                  <div>
+                    <span className="text-xs font-bold text-neutral-800 uppercase tracking-wider block">
+                      Pricing & Package Offer Discounts
+                    </span>
+                    <span className="text-[11px] text-neutral-500">
+                      Set standard base amount, apply package offer discount, and verify net fixed payable fee
+                    </span>
+                  </div>
                 </div>
 
-                {/* Fee Amount (₹) */}
+                {/* Base Fee Amount (₹) */}
                 <div>
                   <label className="text-xs font-semibold text-neutral-700 block mb-1">
-                    Fee Amount (₹ / Month) <span className="text-red-500">*</span>
+                    {configForm.subjectMode === 'ALL'
+                      ? 'Base Course Tuition Fee (₹ / Billing Period)'
+                      : 'Base Fee for Selected Subject(s) (₹ / Billing Period)'}{' '}
+                    <span className="text-red-500">*</span>
                   </label>
                   <div className="relative">
                     <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm font-bold text-neutral-400">
@@ -3212,70 +4722,201 @@ export default function FeesPage() {
                       min="0"
                       value={configForm.amount}
                       onChange={(e) => setConfigForm({ ...configForm, amount: Number(e.target.value) })}
-                      className="w-full pl-8 pr-3 py-2 bg-white border border-neutral-300 rounded-lg font-mono font-bold text-sm text-black focus:outline-none focus:ring-2 focus:ring-[#FF8500]"
+                      className="w-full pl-8 pr-3 py-2.5 bg-white border border-neutral-300 rounded-lg font-mono font-bold text-base text-black focus:outline-none focus:ring-2 focus:ring-[#FF8500]"
                       required
                     />
                   </div>
                 </div>
 
-                {/* Billing Period */}
-                <div>
-                  <label className="text-xs font-semibold text-neutral-700 block mb-1">
-                    Billing Period <span className="text-red-500">*</span>
-                  </label>
-                  <select
-                    value={configForm.billingPeriod}
-                    onChange={(e) => {
-                      const newPeriod = e.target.value;
-                      const course = availableCourses.find((c) => c.id === configForm.classId);
-                      const batch = course?.batches?.find((b: any) => b.id === configForm.batchId);
-                      const sub = course?.subjects?.find((s: any) => s.id === configForm.subjectId);
-                      let updatedName = configForm.name;
-                      if (course) {
-                        const periodLabel =
-                          newPeriod === 'MONTHLY'
-                            ? 'Monthly Tuition'
-                            : newPeriod === 'ANNUAL'
-                            ? 'Annual Tuition'
-                            : `${newPeriod} Tuition`;
-                        const batchPart = batch ? ` (${batch.name})` : '';
-                        const subPart = sub ? ` - ${sub.name}` : '';
-                        updatedName = `${course.name}${batchPart}${subPart} ${periodLabel}`;
+                {/* Package Offer Discount Amount (Active for BOTH All Subjects & Select Subject) */}
+                <div className="p-3.5 bg-amber-50/70 rounded-xl border border-amber-300/80 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5">
+                      <Tag className="w-4 h-4 text-amber-600" />
+                      <label className="text-xs font-bold text-amber-950">
+                        {configForm.subjectMode === 'ALL'
+                          ? 'All-Subjects Combo Offer / Discount (₹)'
+                          : 'Selected Subjects Package Offer / Discount (₹)'}
+                      </label>
+                    </div>
+                    <span className="text-[10px] font-bold text-amber-800 bg-amber-200/80 px-2 py-0.5 rounded-full">
+                      Offer Applied
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-amber-800 leading-snug">
+                    Apply a package offer discount to reduce the payable tuition. The student will pay the fixed net amount instead of paying per subject.
+                  </p>
+
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm font-bold text-amber-700">
+                      -₹
+                    </span>
+                    <input
+                      type="number"
+                      min="0"
+                      max={configForm.amount}
+                      value={configForm.discountAmount}
+                      onChange={(e) =>
+                        setConfigForm({
+                          ...configForm,
+                          discountAmount: Math.min(Number(configForm.amount) || 0, Math.max(0, Number(e.target.value))),
+                        })
                       }
-                      setConfigForm((prev) => ({
-                        ...prev,
-                        billingPeriod: newPeriod,
-                        name: updatedName,
-                      }));
-                    }}
-                    className="w-full px-3 py-2 bg-white border border-neutral-300 rounded-lg text-xs font-semibold text-black focus:outline-none focus:ring-2 focus:ring-[#FF8500]"
-                  >
-                    <option value="MONTHLY">Monthly</option>
-                    <option value="ANNUAL">Annual (Full Year)</option>
-                    <option value="TERM_1">Term 1 (Semester 1)</option>
-                    <option value="TERM_2">Term 2 (Semester 2)</option>
-                    <option value="ONE_TIME">One Time (Admission / Registration)</option>
-                  </select>
+                      placeholder="0"
+                      className="w-full pl-9 pr-3 py-2 bg-white border border-amber-300 rounded-lg font-mono font-bold text-sm text-amber-950 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                    />
+                  </div>
+
+                  {/* Quick Preset Buttons */}
+                  <div className="space-y-1.5">
+                    <span className="text-[10px] font-semibold text-amber-900 block">
+                      Quick Discount Shortcuts:
+                    </span>
+                    <div className="flex flex-wrap gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setConfigForm((prev) => ({ ...prev, discountAmount: 0 }))}
+                        className={`px-2 py-1 rounded text-[11px] font-bold border transition cursor-pointer ${
+                          configForm.discountAmount === 0
+                            ? 'bg-amber-600 text-white border-amber-600'
+                            : 'bg-white text-neutral-700 border-neutral-300 hover:bg-neutral-100'
+                        }`}
+                      >
+                        No Discount
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setConfigForm((prev) => ({ ...prev, discountAmount: 500 }))}
+                        className="px-2 py-1 rounded text-[11px] font-bold bg-white text-neutral-700 border border-neutral-300 hover:bg-amber-100 cursor-pointer"
+                      >
+                        ₹500 OFF
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setConfigForm((prev) => ({ ...prev, discountAmount: 1000 }))}
+                        className="px-2 py-1 rounded text-[11px] font-bold bg-white text-neutral-700 border border-neutral-300 hover:bg-amber-100 cursor-pointer"
+                      >
+                        ₹1,000 OFF
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const disc = Math.round((Number(configForm.amount) || 0) * 0.1);
+                          setConfigForm((prev) => ({ ...prev, discountAmount: disc }));
+                        }}
+                        className="px-2 py-1 rounded text-[11px] font-bold bg-white text-neutral-700 border border-neutral-300 hover:bg-amber-100 cursor-pointer"
+                      >
+                        10% OFF
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const disc = Math.round((Number(configForm.amount) || 0) * 0.15);
+                          setConfigForm((prev) => ({ ...prev, discountAmount: disc }));
+                        }}
+                        className="px-2 py-1 rounded text-[11px] font-bold bg-white text-neutral-700 border border-neutral-300 hover:bg-amber-100 cursor-pointer"
+                      >
+                        15% OFF
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const disc = Math.round((Number(configForm.amount) || 0) * 0.2);
+                          setConfigForm((prev) => ({ ...prev, discountAmount: disc }));
+                        }}
+                        className="px-2 py-1 rounded text-[11px] font-bold bg-white text-neutral-700 border border-neutral-300 hover:bg-amber-100 cursor-pointer"
+                      >
+                        20% OFF
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Live Price Reduction Card */}
+                  <div className="p-3 bg-white rounded-lg border border-amber-200/90 shadow-2xs space-y-1.5">
+                    <div className="flex items-center justify-between text-xs text-neutral-600">
+                      <span>Standard Base Fee:</span>
+                      <span className="font-mono font-semibold">₹{(Number(configForm.amount) || 0).toLocaleString()}</span>
+                    </div>
+                    <div className="flex items-center justify-between text-xs text-emerald-700 font-semibold">
+                      <span>Applied Package Offer Discount:</span>
+                      <span className="font-mono">-₹{(Number(configForm.discountAmount) || 0).toLocaleString()}</span>
+                    </div>
+                    <div className="pt-1.5 border-t border-neutral-200 flex items-center justify-between">
+                      <span className="text-xs font-bold text-neutral-900">
+                        Fixed Net Payable Fee (Admin Config):
+                      </span>
+                      <span className="font-mono font-extrabold text-base text-emerald-700">
+                        ₹{Math.max(0, (Number(configForm.amount) || 0) - (Number(configForm.discountAmount) || 0)).toLocaleString()}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5 text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-1 rounded border border-emerald-200">
+                      <Sparkles className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                      <span>
+                        Students enrolled in the selected course/subjects will pay a single fixed amount of ₹{Math.max(0, (Number(configForm.amount) || 0) - (Number(configForm.discountAmount) || 0)).toLocaleString()} per {configForm.billingPeriod.toLowerCase()}. No separate per-subject fee is charged.
+                      </span>
+                    </div>
+                  </div>
                 </div>
 
-                {/* Installments */}
-                <div>
-                  <label className="text-xs font-semibold text-neutral-700 block mb-1">
-                    Installment Payment Parts
-                  </label>
-                  <select
-                    value={configForm.installmentCount}
-                    onChange={(e) => setConfigForm({ ...configForm, installmentCount: Number(e.target.value) })}
-                    className="w-full px-3 py-2 bg-white border border-neutral-300 rounded-lg text-xs text-black"
-                  >
-                    <option value={1}>1 (Single Full Payment)</option>
-                    <option value={2}>2 Installments (50% / 50%)</option>
-                    <option value={3}>3 Installments</option>
-                    <option value={4}>4 Quarterly Installments</option>
-                  </select>
+                {/* Billing Period & Installments */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs font-semibold text-neutral-700 block mb-1">
+                      Billing Period <span className="text-red-500">*</span>
+                    </label>
+                    <select
+                      value={configForm.billingPeriod}
+                      onChange={(e) => {
+                        const newPeriod = e.target.value;
+                        const course = availableCourses.find((c) => c.id === configForm.classId);
+                        const batch = course?.batches?.find((b: any) => b.id === configForm.batchId);
+                        const sub = course?.subjects?.find((s: any) => s.id === configForm.subjectId);
+                        let updatedName = configForm.name;
+                        if (course) {
+                          const periodLabel =
+                            newPeriod === 'MONTHLY'
+                              ? 'Monthly Tuition'
+                              : newPeriod === 'ANNUAL'
+                              ? 'Annual Tuition'
+                              : `${newPeriod} Tuition`;
+                          const batchPart = batch ? ` (${batch.name})` : '';
+                          const subPart = sub && configForm.subjectMode === 'SINGLE' ? ` - ${sub.name}` : ' All Subjects';
+                          updatedName = `${course.name}${batchPart}${subPart} ${periodLabel}`;
+                        }
+                        setConfigForm((prev) => ({
+                          ...prev,
+                          billingPeriod: newPeriod,
+                          name: updatedName,
+                        }));
+                      }}
+                      className="w-full px-3 py-2 bg-white border border-neutral-300 rounded-lg text-xs font-semibold text-black focus:outline-none focus:ring-2 focus:ring-[#FF8500]"
+                    >
+                      <option value="MONTHLY">Monthly</option>
+                      <option value="ANNUAL">Annual (Full Year)</option>
+                      <option value="TERM_1">Term 1 (Semester 1)</option>
+                      <option value="TERM_2">Term 2 (Semester 2)</option>
+                      <option value="ONE_TIME">One Time (Admission / Registration)</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-semibold text-neutral-700 block mb-1">
+                      Installments
+                    </label>
+                    <select
+                      value={configForm.installmentCount}
+                      onChange={(e) => setConfigForm({ ...configForm, installmentCount: Number(e.target.value) })}
+                      className="w-full px-3 py-2 bg-white border border-neutral-300 rounded-lg text-xs text-black"
+                    >
+                      <option value={1}>1 (Full Payment)</option>
+                      <option value={2}>2 Installments (50% / 50%)</option>
+                      <option value={3}>3 Installments</option>
+                      <option value={4}>4 Quarterly Installments</option>
+                    </select>
+                  </div>
                 </div>
 
-                {/* Active / Inactive Status (When Editing) */}
+                {/* Active / Inactive Status */}
                 {editingConfigId ? (
                   <div className="flex items-center justify-between p-2.5 bg-white rounded-lg border border-neutral-200">
                     <div>
@@ -3325,7 +4966,7 @@ export default function FeesPage() {
                 {configForm.classId ? (
                   <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white border border-orange-200 shadow-sm text-xs font-bold text-neutral-800">
                     <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                    <span>{selectedCourseStudentsCount} Active Students Enrolled</span>
+                    <span>{selectedCourseStudentsCount} Active Eligible Student(s)</span>
                   </div>
                 ) : (
                   <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold text-neutral-500 bg-neutral-100">
@@ -3334,42 +4975,45 @@ export default function FeesPage() {
                 )}
               </div>
 
-              <label className="flex items-start gap-3 p-2.5 bg-white rounded-lg border border-orange-200 cursor-pointer hover:bg-orange-50/30 transition">
-                <input
-                  type="checkbox"
-                  checked={configForm.replicateToStudents}
-                  onChange={(e) => setConfigForm((prev) => ({ ...prev, replicateToStudents: e.target.checked }))}
-                  className="mt-0.5 h-4 w-4 rounded text-[#FF8500] focus:ring-[#FF8500] border-neutral-300 cursor-pointer"
-                />
-                <div className="text-xs">
-                  <span className="font-bold text-neutral-900 block">
-                    {editingConfigId
-                      ? 'Replicate fee rule to all active enrolled students now'
-                      : 'Automatically invoice all currently enrolled students for this course'}
-                  </span>
-                  <span className="text-[11px] text-neutral-600 block mt-0.5 leading-relaxed">
-                    {configForm.classId ? (
-                      <>
-                        Generates a fee invoice of <strong>₹{(Number(configForm.amount) || 0).toLocaleString()}</strong> for all {selectedCourseStudentsCount} enrolled student(s) in{' '}
-                        <strong>{selectedConfigCourse?.name || 'this course'}</strong>
-                        {selectedConfigBatch ? ` (${selectedConfigBatch.name})` : ''}
-                        {selectedConfigSubject ? ` for ${selectedConfigSubject.name}` : ''}.
-                        Students who already have an active invoice for this billing cycle will safely be skipped to prevent duplicates.
-                      </>
-                    ) : (
-                      'When checked, invoices will automatically be created for all students enrolled in the selected course without duplicating existing billings.'
-                    )}
-                  </span>
-                </div>
-              </label>
+              <div className="p-3 bg-neutral-100 rounded-xl border border-neutral-200">
+                <label className="flex items-start gap-3 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={configForm.replicateToStudents}
+                    onChange={(e) => setConfigForm((prev) => ({ ...prev, replicateToStudents: e.target.checked }))}
+                    className="mt-0.5 h-4 w-4 rounded text-[#FF8500] focus:ring-[#FF8500] border-neutral-300 cursor-pointer"
+                  />
+                  <div className="text-xs">
+                    <span className="font-bold text-neutral-800 block">
+                      Mass-generate invoices for {selectedTierStudentsCount} qualifying {configForm.subjectTier === 'TWO_SUBJECTS' ? '2-subject' : configForm.subjectTier === 'SINGLE_SUBJECT' ? '1-subject' : 'all-subjects'} enrolled students now
+                    </span>
+                    <span className="text-[11px] text-neutral-500 block mt-0.5 leading-relaxed">
+                      Strict tier separation: Students joined for {configForm.subjectTier === 'TWO_SUBJECTS' ? '1 subject or all subjects' : configForm.subjectTier === 'SINGLE_SUBJECT' ? '2 subjects or all subjects' : '1 or 2 subjects'} will <strong>NOT</strong> be billed by this rule.
+                    </span>
+                  </div>
+                </label>
+              </div>
             </div>
 
             <div className="flex items-center justify-between pt-3 border-t border-neutral-200">
-              <span className="text-[11px] text-neutral-500">
-                {configForm.replicateToStudents && configForm.classId && selectedCourseStudentsCount > 0
-                  ? `Will create invoices for up to ${selectedCourseStudentsCount} student(s)`
-                  : 'Fee rule will be saved to academy catalog'}
-              </span>
+              <div className="flex items-center gap-3">
+                {editingConfigId && (
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteFeeConfig(editingConfigId, configForm.name)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border border-red-200 text-red-600 bg-red-50 hover:bg-red-100 transition cursor-pointer"
+                    title="Delete this fee rule"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Delete Rule</span>
+                  </button>
+                )}
+                <span className="text-[11px] text-neutral-500">
+                  {configForm.replicateToStudents && configForm.classId && selectedCourseStudentsCount > 0
+                    ? `Will create invoices for up to ${selectedCourseStudentsCount} student(s)`
+                    : 'Fee rule will be saved to pricing rules catalog'}
+                </span>
+              </div>
 
               <div className="flex items-center gap-2">
                 <Button
@@ -3388,10 +5032,10 @@ export default function FeesPage() {
                     : editingConfigId
                     ? configForm.replicateToStudents
                       ? 'Update & Replicate Fee'
-                      : 'Update Rule'
+                      : 'Save Rule Changes'
                     : configForm.replicateToStudents && selectedCourseStudentsCount > 0
-                    ? `Create & Invoice ${selectedCourseStudentsCount} Students`
-                    : 'Create Fee Rule'}
+                    ? `Save & Invoice ${selectedCourseStudentsCount} Students`
+                    : 'Save Fee Rule'}
                 </Button>
               </div>
             </div>
@@ -3525,6 +5169,45 @@ export default function FeesPage() {
                   </div>
                 </div>
 
+                {/* Proof Document Attachment */}
+                {(selectedReceipt.payment.hasProofAttachment || selectedReceipt.payment.proofFileName) && (
+                  <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 p-2.5 bg-blue-50/60 border border-blue-200/80 rounded-lg text-xs">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Paperclip className="w-4 h-4 text-blue-600 shrink-0" />
+                      <div className="min-w-0">
+                        <span className="font-bold text-neutral-900 truncate block text-xs">
+                          Proof Document: {selectedReceipt.payment.proofFileName || 'Attached Payment Voucher'}
+                        </span>
+                        <span className="text-[10px] text-neutral-500 font-mono">
+                          Stored in private Amazon S3 bucket
+                        </span>
+                      </div>
+                    </div>
+                    {selectedReceipt.payment.id && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          handleOpenProofDocument(selectedReceipt.payment.id!, {
+                            receiptNumber: selectedReceipt.receiptNumber,
+                            fileName: selectedReceipt.payment.proofFileName || 'Payment Proof Document',
+                            fileSize: selectedReceipt.payment.proofFileSize || undefined,
+                            mimeType: selectedReceipt.payment.proofMimeType || undefined,
+                          })
+                        }
+                        disabled={loadingProofUrl === selectedReceipt.payment.id}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-bold bg-[#FF8500] hover:bg-[#e07500] text-white shadow-2xs transition cursor-pointer shrink-0 disabled:opacity-50"
+                      >
+                        {loadingProofUrl === selectedReceipt.payment.id ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <ExternalLink className="w-3.5 h-3.5" />
+                        )}
+                        <span>Open Verified Proof</span>
+                      </button>
+                    )}
+                  </div>
+                )}
+
                 {/* Actions */}
                 <div className="flex justify-between items-center pt-3 border-t border-neutral-100">
                   <Button variant="outline" onClick={() => setSelectedReceipt(null)}>
@@ -3634,6 +5317,350 @@ export default function FeesPage() {
               </Button>
               <Button type="submit" variant="primary" disabled={loading}>
                 Authorize Disbursal
+              </Button>
+            </div>
+          </form>
+        </Modal>
+
+        {/* ==================================================================== */}
+        {/* MODAL 8: AWS S3 SECURE PAYMENT PROOF VIEWER */}
+        {/* ==================================================================== */}
+        <Modal
+          isOpen={proofViewer.isOpen}
+          onClose={() => setProofViewer((prev) => ({ ...prev, isOpen: false }))}
+          title={`Verified Payment Proof: ${proofViewer.receiptNumber || 'Receipt Document'}`}
+          description="Retrieved via short-lived AWS S3 presigned URL with EC2 IAM role authentication."
+          maxWidth="lg"
+        >
+          <div className="space-y-4">
+            {/* S3 Security & Metadata Bar */}
+            <div className="p-3 bg-neutral-50 rounded-xl border border-neutral-200/90 flex flex-wrap items-center justify-between gap-2.5 text-xs">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
+                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-700" />
+                  <span>AWS S3 Private (AES256)</span>
+                </span>
+                <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-semibold bg-blue-50 text-blue-700 border border-blue-200">
+                  <Clock className="w-3 h-3 text-blue-600" />
+                  <span>Expires in 15 mins</span>
+                </span>
+                {proofViewer.mimeType === 'application/pdf' ? (
+                  <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-semibold bg-neutral-200 text-neutral-800 border border-neutral-300">
+                    <FileText className="w-3 h-3 text-neutral-600" />
+                    <span>PDF Document (Uncompressed)</span>
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-semibold bg-amber-50 text-amber-800 border border-amber-200">
+                    <Zap className="w-3 h-3 text-amber-600" />
+                    <span>Auto-Optimized (≤ 150 KB Target)</span>
+                  </span>
+                )}
+              </div>
+
+              <div className="text-[11px] font-mono text-neutral-600 flex items-center gap-2">
+                <span className="truncate max-w-[200px]" title={proofViewer.fileName}>
+                  {proofViewer.fileName}
+                </span>
+                {proofViewer.fileSize && (
+                  <span className="text-neutral-400">({proofViewer.fileSize})</span>
+                )}
+              </div>
+            </div>
+
+            {/* Viewer Stage */}
+            <div className="min-h-[380px] max-h-[560px] flex flex-col justify-center items-center rounded-xl overflow-hidden border border-neutral-200 relative bg-neutral-100">
+              {proofViewer.loading ? (
+                <div className="flex flex-col items-center justify-center p-12 text-center">
+                  <Loader2 className="w-8 h-8 text-[#FF8500] animate-spin mb-3" />
+                  <p className="text-xs font-semibold text-neutral-700">
+                    Generating authorized short-lived download URL from AWS S3...
+                  </p>
+                  <p className="text-[11px] text-neutral-400 mt-1">
+                    Authenticating via EC2 IAM Role (RCA2-EC2-PaymentProofs-Role)
+                  </p>
+                </div>
+              ) : proofViewer.error ? (
+                <div className="flex flex-col items-center justify-center p-8 text-center max-w-md">
+                  <AlertCircle className="w-10 h-10 text-rose-500 mb-2" />
+                  <h4 className="text-sm font-bold text-neutral-900">Could Not Retrieve Document</h4>
+                  <p className="text-xs text-rose-600 mt-1 mb-4">{proofViewer.error}</p>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() =>
+                      handleOpenProofDocument(proofViewer.paymentId, {
+                        receiptNumber: proofViewer.receiptNumber,
+                        fileName: proofViewer.fileName,
+                        fileSize: proofViewer.fileSize || undefined,
+                        mimeType: proofViewer.mimeType || undefined,
+                      })
+                    }
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    Retry S3 Access
+                  </Button>
+                </div>
+              ) : proofViewer.downloadUrl ? (
+                proofViewer.mimeType === 'application/pdf' ||
+                proofViewer.fileName.toLowerCase().endsWith('.pdf') ? (
+                  <div className="w-full h-[520px] flex flex-col">
+                    <iframe
+                      src={proofViewer.downloadUrl}
+                      className="w-full h-full border-0 rounded-b-xl"
+                      title="Payment Proof PDF Document"
+                    />
+                  </div>
+                ) : (
+                  <div className="w-full h-full flex flex-col">
+                    {/* Image Viewer Toolbar */}
+                    <div className="flex items-center justify-between px-3 py-1.5 bg-white/90 backdrop-blur border-b border-neutral-200 z-10 text-xs">
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => setProofViewerZoom((z) => Math.max(50, z - 25))}
+                          className="p-1 rounded hover:bg-neutral-100 text-neutral-600 transition cursor-pointer"
+                          title="Zoom out"
+                        >
+                          <ZoomOut className="w-4 h-4" />
+                        </button>
+                        <span className="font-mono text-[11px] font-bold text-neutral-700 min-w-[42px] text-center">
+                          {proofViewerZoom}%
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setProofViewerZoom((z) => Math.min(300, z + 25))}
+                          className="p-1 rounded hover:bg-neutral-100 text-neutral-600 transition cursor-pointer"
+                          title="Zoom in"
+                        >
+                          <ZoomIn className="w-4 h-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setProofViewerZoom(100)}
+                          className="px-2 py-0.5 text-[10px] rounded hover:bg-neutral-100 text-neutral-500 cursor-pointer"
+                        >
+                          Reset
+                        </button>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setProofViewerRotation((r) => (r + 90) % 360)}
+                          className="flex items-center gap-1 px-2 py-1 rounded hover:bg-neutral-100 text-neutral-600 transition cursor-pointer text-[11px]"
+                          title="Rotate 90 degrees"
+                        >
+                          <RotateCw className="w-3.5 h-3.5" />
+                          <span>Rotate</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setProofViewerDarkBg((d) => !d)}
+                          className="p-1 rounded hover:bg-neutral-100 text-neutral-600 transition cursor-pointer"
+                          title="Toggle backdrop theme"
+                        >
+                          {proofViewerDarkBg ? (
+                            <Sun className="w-4 h-4 text-amber-500" />
+                          ) : (
+                            <Moon className="w-4 h-4 text-neutral-600" />
+                          )}
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Image Canvas Container */}
+                    <div
+                      className={`flex-1 overflow-auto p-4 flex items-center justify-center min-h-[420px] transition-colors ${
+                        proofViewerDarkBg ? 'bg-neutral-900' : 'bg-neutral-100'
+                      }`}
+                    >
+                      <img
+                        src={proofViewer.downloadUrl}
+                        alt="Verified Fee Payment Proof"
+                        className="max-w-full object-contain rounded shadow-lg transition-transform"
+                        style={{
+                          transform: `scale(${proofViewerZoom / 100}) rotate(${proofViewerRotation}deg)`,
+                          transformOrigin: 'center center',
+                        }}
+                      />
+                    </div>
+                  </div>
+                )
+              ) : null}
+            </div>
+
+            {/* Modal Actions */}
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-2 pt-2 border-t border-neutral-200">
+              <span className="text-[11px] text-neutral-400">
+                Encrypted with SSE-S3. Presigned URLs are cryptographically signed.
+              </span>
+              <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
+                {proofViewer.downloadUrl && (
+                  <>
+                    <a
+                      href={proofViewer.downloadUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border border-neutral-300 hover:bg-neutral-50 text-neutral-700 transition"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      <span>Open in New Tab</span>
+                    </a>
+                    <a
+                      href={proofViewer.downloadUrl}
+                      download={proofViewer.fileName || 'payment-proof'}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-[#FF8500] hover:bg-[#e07500] text-white shadow-2xs transition"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>Download File</span>
+                    </a>
+                  </>
+                )}
+                <Button
+                  variant="outline"
+                  onClick={() => setProofViewer((prev) => ({ ...prev, isOpen: false }))}
+                >
+                  Close
+                </Button>
+              </div>
+            </div>
+          </div>
+        </Modal>
+
+        {/* ==================================================================== */}
+        {/* MODAL 9: ATTACH PROOF DOCUMENT TO EXISTING PAYMENT */}
+        {/* ==================================================================== */}
+        <Modal
+          isOpen={!!attachProofModal?.isOpen}
+          onClose={() => setAttachProofModal(null)}
+          title={`Attach Proof: ${attachProofModal?.receiptNumber || ''}`}
+          description={`Upload verified payment voucher or deposit slip for ${attachProofModal?.studentName || 'student'} (₹${attachProofModal?.amount.toLocaleString() || '0'}).`}
+          maxWidth="md"
+        >
+          <form onSubmit={handleSubmitAttachProof} className="space-y-4">
+            <div>
+              <label className="text-xs font-semibold text-neutral-700 block mb-1">
+                Select Proof Document (Slip, Screenshot, or PDF)
+              </label>
+
+              {existingProofFile ? (
+                <div className="p-3 bg-neutral-50 rounded-xl border border-neutral-200 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      {existingProofPreview ? (
+                        <img
+                          src={existingProofPreview}
+                          alt="Proof preview"
+                          className="w-12 h-12 object-cover rounded-md border border-neutral-200 shrink-0"
+                        />
+                      ) : (
+                        <div className="w-12 h-12 rounded-md bg-emerald-100 flex flex-col items-center justify-center text-emerald-800 font-bold text-[10px] shrink-0 border border-emerald-300">
+                          <FileText className="w-5 h-5 text-emerald-700 mb-0.5" />
+                          PDF
+                        </div>
+                      )}
+                      <div className="min-w-0">
+                        <span className="font-bold text-neutral-900 truncate block text-xs" title={existingProofFile.name}>
+                          {existingProofFile.name}
+                        </span>
+                        <span className="text-[11px] text-neutral-500 font-mono mt-0.5 block">
+                          {formatBytes(existingProofFile.size)}
+                        </span>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setExistingProofFile(null);
+                        setExistingProofPreview(null);
+                        setExistingProofCompression(null);
+                        setExistingProofError(null);
+                      }}
+                      className="p-1.5 text-neutral-400 hover:text-rose-600 hover:bg-rose-50 rounded-md transition cursor-pointer"
+                      title="Remove file"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  {existingProofCompression && (
+                    <div className="pt-2 border-t border-neutral-200/80 text-[11px] font-medium text-emerald-700 flex items-center gap-1.5">
+                      {existingProofCompression.isCompressed ? (
+                        <>
+                          <Zap className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                          <span>{existingProofCompression.note}</span>
+                        </>
+                      ) : (
+                        <>
+                          <FileText className="w-3.5 h-3.5 text-neutral-500 shrink-0" />
+                          <span className="text-neutral-600">{existingProofCompression.note}</span>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <label className="flex flex-col items-center justify-center p-6 border-2 border-dashed border-neutral-300 hover:border-[#FF8500] rounded-xl cursor-pointer bg-white transition group">
+                  <Upload className="w-6 h-6 text-neutral-400 group-hover:text-[#FF8500] transition mb-1.5" />
+                  <span className="text-xs font-bold text-neutral-700 group-hover:text-[#FF8500]">
+                    Click to Select Proof File
+                  </span>
+                  <span className="text-[11px] text-neutral-400 mt-1 text-center">
+                    JPG, PNG, WebP (auto-compressed to ≤ 150 KB) or PDF (uncompressed)
+                  </span>
+                  <input
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp,application/pdf"
+                    onChange={handleExistingProofChange}
+                    className="hidden"
+                  />
+                </label>
+              )}
+
+              {existingProofError && (
+                <div className="flex items-center gap-1.5 text-rose-600 text-xs font-semibold mt-2">
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                  <span>{existingProofError}</span>
+                </div>
+              )}
+            </div>
+
+            <div className="p-2.5 bg-blue-50/70 rounded-lg border border-blue-200/80 text-[11px] text-blue-900 space-y-0.5">
+              <span className="font-bold flex items-center gap-1">
+                <ShieldCheck className="w-3.5 h-3.5 text-blue-600" />
+                <span>AWS S3 Enterprise Security</span>
+              </span>
+              <p className="text-blue-700">
+                Uploaded file is encrypted with AES-256 and stored in private bucket <code className="font-mono text-blue-900 bg-blue-100 px-1 rounded">rca2-payment-proofs</code>.
+              </p>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-neutral-100">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setAttachProofModal(null)}
+                disabled={uploadingExistingProof}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                variant="primary"
+                disabled={!existingProofFile || uploadingExistingProof}
+              >
+                {uploadingExistingProof ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Uploading to S3...</span>
+                  </>
+                ) : (
+                  <>
+                    <Upload className="w-3.5 h-3.5" />
+                    <span>Upload & Encrypt Proof</span>
+                  </>
+                )}
               </Button>
             </div>
           </form>

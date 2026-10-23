@@ -509,7 +509,7 @@ export default function ExaminationsPage() {
   return (
     <>
       <Header
-        title="Examination & Paper Builder"
+        title="Question Paper Preparation & Question Bank"
         subtitle="Curriculum blueprints, question bank, local AI synthesis, marks entry and finalized results"
       />
 
@@ -565,7 +565,7 @@ export default function ExaminationsPage() {
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-6">
           <div className="bg-white p-5 sm:p-6 rounded-xl border border-neutral-200 shadow-card flex flex-col justify-between h-full">
             <span className="text-xs font-semibold text-neutral-500 uppercase tracking-wider block">
-              Scheduled Exams
+              Question Papers
             </span>
             <div className="text-2xl font-bold text-black mt-2">
               {loading && exams.length === 0 ? '—' : exams.length}
@@ -609,7 +609,7 @@ export default function ExaminationsPage() {
           <div className="flex items-center gap-1 overflow-x-auto no-scrollbar">
             {(
               [
-                { id: 'exams', label: 'Examinations' },
+                { id: 'exams', label: 'Paper Blueprints' },
                 { id: 'questions', label: 'Question Bank' },
                 { id: 'marks', label: 'Marks Entry' },
                 { id: 'results', label: 'Results & Ranks' },
@@ -636,7 +636,7 @@ export default function ExaminationsPage() {
             </Button>
             <Button onClick={() => setShowNewExamModal(true)} variant="primary" size="sm">
               <Plus className="w-3.5 h-3.5" />
-              New Examination
+              New Question Paper
             </Button>
           </div>
         </div>
@@ -645,17 +645,17 @@ export default function ExaminationsPage() {
         {loading && exams.length === 0 && questions.length === 0 && (
           <div className="p-12 text-center bg-white rounded-xl border border-neutral-200">
             <Loader2 className="w-6 h-6 animate-spin text-[#FF8500] mx-auto mb-2" />
-            <p className="text-xs text-neutral-500 font-medium">Connecting to examination services...</p>
+            <p className="text-xs text-neutral-500 font-medium">Connecting to question paper services...</p>
           </div>
         )}
 
-        {/* TAB 1: EXAMINATIONS */}
+        {/* TAB 1: QUESTION PAPERS */}
         {activeTab === 'exams' && (
           <div className="bg-white rounded-xl border border-neutral-200 shadow-card overflow-hidden">
             {examsError && exams.length === 0 ? (
               <div className="p-12 text-center">
                 <AlertCircle className="w-8 h-8 text-red-500 mx-auto mb-2" />
-                <h4 className="text-sm font-semibold text-black">Failed to load examinations</h4>
+                <h4 className="text-sm font-semibold text-black">Failed to load question papers</h4>
                 <p className="text-xs text-neutral-500 mt-1 max-w-sm mx-auto">{examsError}</p>
                 <Button onClick={loadPageData} variant="outline" size="sm" className="mt-4">
                   <RefreshCw className="w-3.5 h-3.5" /> Try Again
@@ -664,9 +664,9 @@ export default function ExaminationsPage() {
             ) : exams.length === 0 && !loading ? (
               <div className="p-12 text-center">
                 <BookOpen className="w-8 h-8 text-neutral-300 mx-auto mb-2" />
-                <h4 className="text-sm font-semibold text-black">No examinations scheduled yet</h4>
+                <h4 className="text-sm font-semibold text-black">No question papers created yet</h4>
                 <p className="text-xs text-neutral-500 mt-1 max-w-sm mx-auto">
-                  The database currently has 0 examination blueprints. Click &apos;New Examination&apos; to schedule an assessment.
+                  The database currently has 0 question paper blueprints. Click &apos;New Question Paper&apos; to prepare an assessment paper.
                 </p>
               </div>
             ) : (
@@ -674,7 +674,7 @@ export default function ExaminationsPage() {
                 <table className="w-full text-left text-sm text-black">
                   <thead className="bg-neutral-50 border-b border-neutral-200 text-neutral-600 font-semibold text-xs uppercase tracking-wider">
                     <tr>
-                      <th className="px-6 py-3.5">Examination Title</th>
+                      <th className="px-6 py-3.5">Question Paper Title</th>
                       <th className="px-6 py-3.5">Class / Batch</th>
                       <th className="px-6 py-3.5">Subject</th>
                       <th className="px-6 py-3.5">Date</th>
@@ -805,9 +805,9 @@ export default function ExaminationsPage() {
             {exams.length === 0 ? (
               <div className="bg-white p-12 text-center rounded-xl border border-neutral-200">
                 <BookOpen className="w-8 h-8 text-neutral-300 mx-auto mb-2" />
-                <h4 className="text-sm font-semibold text-black">No examinations available</h4>
+                <h4 className="text-sm font-semibold text-black">No question papers available</h4>
                 <p className="text-xs text-neutral-500 mt-1">
-                  Create an examination blueprint before recording candidate marks.
+                  Create a question paper blueprint before recording candidate marks.
                 </p>
               </div>
             ) : (
@@ -815,7 +815,7 @@ export default function ExaminationsPage() {
                 <div className="bg-white p-5 rounded-xl border border-neutral-200 shadow-card flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                   <div className="flex-1">
                     <label className="text-xs font-semibold text-neutral-500 uppercase tracking-wider block mb-1">
-                      Active Examination
+                      Active Question Paper
                     </label>
                     <select
                       value={selectedExamId}
@@ -960,7 +960,7 @@ export default function ExaminationsPage() {
               <>
                 <div className="bg-white p-4 rounded-xl border border-neutral-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
                   <div className="flex items-center gap-3">
-                    <span className="text-xs font-semibold text-neutral-500 uppercase tracking-wider">Exam:</span>
+                    <span className="text-xs font-semibold text-neutral-500 uppercase tracking-wider">Question Paper:</span>
                     <select
                       value={selectedExamId}
                       onChange={(e) => setSelectedExamId(e.target.value)}
@@ -1083,13 +1083,13 @@ export default function ExaminationsPage() {
       <Modal
         isOpen={showNewExamModal}
         onClose={() => setShowNewExamModal(false)}
-        title="Create Examination Blueprint"
+        title="Create Question Paper Blueprint"
         description="Establish paper details, class batch targeting and passing thresholds."
         maxWidth="md"
       >
         <form onSubmit={handleCreateExam} className="space-y-4">
           <div>
-            <label className="text-xs font-semibold text-black block mb-1">Exam Title *</label>
+            <label className="text-xs font-semibold text-black block mb-1">Question Paper Title *</label>
             <input
               type="text"
               required

@@ -78,11 +78,19 @@ export const ALL_NAV_ITEMS: NavItem[] = [
   },
   {
     id: 'examinations',
-    name: 'Examinations',
-    shortName: 'Exams',
+    name: 'Question Papers',
+    shortName: 'Questions',
     href: '/examinations',
     icon: LuFileText,
     roles: ['SUPER_ADMIN', 'ACADEMY_ADMIN', 'TEACHER'],
+  },
+  {
+    id: 'test-conduct',
+    name: 'Examinations',
+    shortName: 'Exams',
+    href: '/test-conduct',
+    icon: LuCalendarClock,
+    roles: ['SUPER_ADMIN', 'ACADEMY_ADMIN', 'TEACHER', 'STAFF'],
   },
   {
     id: 'answer-evaluation',

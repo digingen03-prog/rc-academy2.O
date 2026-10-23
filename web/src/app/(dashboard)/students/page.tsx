@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { usePathname } from 'next/navigation';
 import { Header } from '@/components/layout/header';
 import { ResponsivePageContainer } from '@/components/layout/responsive-container';
@@ -35,6 +35,13 @@ import {
   ArrowRight,
   ArrowLeft,
   GraduationCap,
+  BarChart3,
+  SlidersHorizontal,
+  Link2,
+  ChevronRight,
+  ChevronLeft,
+  Zap,
+  Sparkles,
 } from 'lucide-react';
 
 interface StudentEnrollment {
@@ -108,6 +115,16 @@ export default function StudentsPage() {
   const [statusFilter, setStatusFilter] = useState('ALL');
   const [loading, setLoading] = useState(true);
 
+  // Pagination states (Defaults to 100 per user request)
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(100);
+  const [totalCount, setTotalCount] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
+
+  // Analysis panel and subject filtering
+  const [showAnalysisPanel, setShowAnalysisPanel] = useState(false);
+  const [selectedSubjectFilter, setSelectedSubjectFilter] = useState('');
+
   // Manual Modal
   const [showManualModal, setShowManualModal] = useState(false);
   const [showCreatedCodeModal, setShowCreatedCodeModal] = useState<{
@@ -116,10 +133,48 @@ export default function StudentsPage() {
     attendanceCode: string;
   } | null>(null);
 
-  // Bulk CSV Modal
+  // Bulk CSV Modal with Interactive Column Mapping
   const [showBulkModal, setShowBulkModal] = useState(false);
-  const [bulkStep, setBulkStep] = useState<'UPLOAD' | 'PREVIEW' | 'REPORT'>('UPLOAD');
+  const [bulkStep, setBulkStep] = useState<'UPLOAD' | 'MAP_COLUMNS' | 'PREVIEW' | 'REPORT'>('UPLOAD');
   const [csvContent, setCsvContent] = useState('');
+  const [csvRawHeaders, setCsvRawHeaders] = useState<string[]>([]);
+  const [csvRawDataRows, setCsvRawDataRows] = useState<string[][]>([]);
+  const [columnMapping, setColumnMapping] = useState<{
+    rawName: string;
+    courseCode: string;
+    batchCode: string;
+    subjects: string;
+    dob: string;
+    gender: string;
+    phone: string;
+    email: string;
+    fatherName: string;
+    fatherPhone: string;
+    motherName: string;
+    motherPhone: string;
+    schoolName: string;
+    academicBoard: string;
+    address: string;
+    dateOfJoining: string;
+  }>({
+    rawName: '',
+    courseCode: '',
+    batchCode: '',
+    subjects: '',
+    dob: '',
+    gender: '',
+    phone: '',
+    email: '',
+    fatherName: '',
+    fatherPhone: '',
+    motherName: '',
+    motherPhone: '',
+    schoolName: '',
+    academicBoard: '',
+    address: '',
+    dateOfJoining: '',
+  });
+  const [useClassColumn, setUseClassColumn] = useState<boolean>(false);
   const [validationReport, setValidationReport] = useState<any>(null);
   const [importSummary, setImportSummary] = useState<any>(null);
   const [bulkLoading, setBulkLoading] = useState(false);
@@ -322,11 +377,26 @@ export default function StudentsPage() {
     try {
       setLoading(true);
       setErrorMsg(null);
+      const queryParams = new URLSearchParams();
+      if (search) queryParams.append('search', search);
+      if (batchFilter) queryParams.append('batchId', batchFilter);
+      queryParams.append('page', String(currentPage));
+      queryParams.append('limit', String(pageSize));
+
       const [studentsRes, coursesRes] = await Promise.all([
-        ApiClient.fetch<{ items: Student[] }>(`/students?search=${encodeURIComponent(search)}`),
+        ApiClient.fetch<{ items: Student[]; meta?: { page: number; limit: number; total: number; totalPages: number } }>(
+          `/students?${queryParams.toString()}`
+        ),
         ApiClient.fetch<CourseOption[]>('/courses'),
       ]);
       setStudents(studentsRes.items || []);
+      if (studentsRes.meta) {
+        setTotalCount(studentsRes.meta.total);
+        setTotalPages(studentsRes.meta.totalPages || Math.ceil(studentsRes.meta.total / pageSize) || 1);
+      } else {
+        setTotalCount(studentsRes.items?.length || 0);
+        setTotalPages(1);
+      }
       setCourses(coursesRes || []);
     } catch (err: any) {
       setErrorMsg(err.message || 'Failed to fetch student data');
@@ -337,7 +407,11 @@ export default function StudentsPage() {
 
   useEffect(() => {
     loadData();
-  }, [search]);
+  }, [search, batchFilter, currentPage, pageSize]);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [search, batchFilter, statusFilter, selectedSubjectFilter]);
 
   // Handle Manual Student Registration
   const handleManualSubmit = async (e: React.FormEvent) => {
@@ -957,6 +1031,133 @@ export default function StudentsPage() {
     }
   };
 
+  const parseRawCsvGrid = (text: string): { headers: string[]; dataRows: string[][] } => {
+    if (!text || !text.trim()) return { headers: [], dataRows: [] };
+    const cleaned = text.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const rows: string[][] = [];
+    let currentRow: string[] = [];
+    let currentCell = '';
+    let inQuotes = false;
+
+    for (let i = 0; i < cleaned.length; i++) {
+      const char = cleaned[i];
+      const nextChar = cleaned[i + 1];
+
+      if (char === '"') {
+        if (inQuotes && nextChar === '"') {
+          currentCell += '"';
+          i++;
+        } else {
+          inQuotes = !inQuotes;
+        }
+      } else if (char === ',' && !inQuotes) {
+        currentRow.push(currentCell.trim());
+        currentCell = '';
+      } else if (char === '\n' && !inQuotes) {
+        currentRow.push(currentCell.trim());
+        if (currentRow.some((c) => c.length > 0)) {
+          rows.push(currentRow);
+        }
+        currentRow = [];
+        currentCell = '';
+      } else {
+        currentCell += char;
+      }
+    }
+
+    if (currentCell.length > 0 || currentRow.length > 0) {
+      currentRow.push(currentCell.trim());
+      if (currentRow.some((c) => c.length > 0)) {
+        rows.push(currentRow);
+      }
+    }
+
+    if (rows.length === 0) return { headers: [], dataRows: [] };
+    const headers = rows[0].map((h) => h.trim());
+    const dataRows = rows.slice(1).filter((r) => r.some((c) => c.length > 0));
+    return { headers, dataRows };
+  };
+
+  const autoDetectColumnMapping = (headers: string[]) => {
+    const mapping = {
+      rawName: '',
+      courseCode: '',
+      batchCode: '',
+      subjects: '',
+      dob: '',
+      gender: '',
+      phone: '',
+      email: '',
+      fatherName: '',
+      fatherPhone: '',
+      motherName: '',
+      motherPhone: '',
+      schoolName: '',
+      academicBoard: '',
+      address: '',
+      dateOfJoining: '',
+    };
+
+    const clean = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+    headers.forEach((h) => {
+      const c = clean(h);
+      if (!mapping.rawName && (c === 'name' || c === 'studentname' || c === 'fullname' || c === 'candidate' || c === 'candidatename' || c === 'student')) {
+        mapping.rawName = h;
+      } else if (!mapping.courseCode && (c === 'class' || c === 'course' || c === 'standard' || c === 'grade' || c === 'cohort' || c === 'coursecode')) {
+        mapping.courseCode = h;
+      } else if (!mapping.batchCode && (c === 'batch' || c === 'section' || c === 'batchcode' || c === 'division')) {
+        mapping.batchCode = h;
+      } else if (!mapping.subjects && (c === 'subjects' || c === 'subject' || c === 'subjectcode' || c === 'coursesubject' || c === 'elective')) {
+        mapping.subjects = h;
+      } else if (!mapping.dob && (c === 'dob' || c === 'dateofbirth' || c === 'birthdate' || c === 'birth')) {
+        mapping.dob = h;
+      } else if (!mapping.gender && (c === 'gender' || c === 'sex')) {
+        mapping.gender = h;
+      } else if (!mapping.phone && (c === 'phone' || c === 'mobile' || c === 'contact' || c === 'phonenumber' || c === 'mobilenumber' || c === 'studentphone')) {
+        mapping.phone = h;
+      } else if (!mapping.email && (c === 'email' || c === 'emailid' || c === 'emailaddress')) {
+        mapping.email = h;
+      } else if (!mapping.fatherName && (c === 'fathername' || c === 'fathersname' || c === 'parentname' || c === 'primaryguardian')) {
+        mapping.fatherName = h;
+      } else if (!mapping.fatherPhone && (c === 'fatherphone' || c === 'fathersphone' || c === 'fathermobile' || c === 'fathersmobile' || c === 'fathermobilenumber')) {
+        mapping.fatherPhone = h;
+      } else if (!mapping.motherName && (c === 'mothername' || c === 'mothersname')) {
+        mapping.motherName = h;
+      } else if (!mapping.motherPhone && (c === 'motherphone' || c === 'mothersphone' || c === 'mothermobile' || c === 'mothersmobile' || c === 'mothermobilenumber')) {
+        mapping.motherPhone = h;
+      } else if (!mapping.schoolName && (c === 'schoolname' || c === 'school' || c === 'nameoftheschool' || c === 'institution')) {
+        mapping.schoolName = h;
+      } else if (!mapping.academicBoard && (c === 'board' || c === 'academicboard' || c === 'areyouapartof' || c === 'curriculum')) {
+        mapping.academicBoard = h;
+      } else if (!mapping.address && (c === 'address' || c === 'residentialaddress')) {
+        mapping.address = h;
+      } else if (!mapping.dateOfJoining && (c === 'dateofjoining' || c === 'doj' || c === 'joiningdate')) {
+        mapping.dateOfJoining = h;
+      }
+    });
+
+    return mapping;
+  };
+
+  const handleProcessRawCsv = (text: string) => {
+    setCsvContent(text);
+    const { headers, dataRows } = parseRawCsvGrid(text);
+    if (headers.length === 0 || dataRows.length === 0) {
+      setErrorMsg('The CSV file does not contain header or data rows.');
+      return;
+    }
+    setCsvRawHeaders(headers);
+    setCsvRawDataRows(dataRows);
+    const detected = autoDetectColumnMapping(headers);
+    setColumnMapping(detected);
+    if (detected.courseCode) {
+      setUseClassColumn(true);
+    }
+    setErrorMsg(null);
+    setBulkStep('MAP_COLUMNS');
+  };
+
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -964,24 +1165,77 @@ export default function StudentsPage() {
     const reader = new FileReader();
     reader.onload = (event) => {
       const content = event.target?.result as string;
-      setCsvContent(content);
+      handleProcessRawCsv(content);
     };
     reader.readAsText(file);
   };
 
-  const handleValidateCsv = async () => {
+  const handleValidateMappedCsv = async () => {
+    if (!columnMapping.rawName) {
+      setErrorMsg('Please connect a CSV column for Student Name (Mandatory).');
+      return;
+    }
+    if (useClassColumn && !columnMapping.courseCode) {
+      setErrorMsg('Please connect a CSV column for Class / Course, or choose a default course.');
+      return;
+    }
+    if (!useClassColumn && !bulkTargetCourseId) {
+      setErrorMsg('Please select a Target Academic Course for the cohort, or connect a Class column.');
+      return;
+    }
+
     try {
       setBulkLoading(true);
       setErrorMsg(null);
-      const parsedRows = parseCsvText(csvContent);
-      if (parsedRows.length === 0) {
-        throw new Error('CSV file contains no data rows or has invalid headers.');
+
+      const headerIdxMap: Record<string, number> = {};
+      csvRawHeaders.forEach((h, idx) => {
+        headerIdxMap[h] = idx;
+      });
+
+      const getColVal = (rowArr: string[], colName: string) => {
+        if (!colName || headerIdxMap[colName] === undefined) return '';
+        const raw = rowArr[headerIdxMap[colName]];
+        if (raw === undefined || raw === null) return '';
+        const trimmed = String(raw).trim();
+        const lower = trimmed.toLowerCase();
+        if (['-', '--', 'nil', 'null', 'na', 'n/a', 'none', '.'].includes(lower)) return '';
+        return trimmed;
+      };
+
+      const mappedRows = csvRawDataRows.map((r) => {
+        const studentName = getColVal(r, columnMapping.rawName);
+        return {
+          rawName: studentName,
+          name: studentName,
+          courseCode: useClassColumn ? getColVal(r, columnMapping.courseCode) : undefined,
+          batchCode: getColVal(r, columnMapping.batchCode) || undefined,
+          subjects: getColVal(r, columnMapping.subjects),
+          dob: getColVal(r, columnMapping.dob),
+          gender: (getColVal(r, columnMapping.gender) || undefined) as any,
+          phone: getColVal(r, columnMapping.phone),
+          email: getColVal(r, columnMapping.email),
+          fatherName: getColVal(r, columnMapping.fatherName),
+          fatherPhone: getColVal(r, columnMapping.fatherPhone),
+          motherName: getColVal(r, columnMapping.motherName),
+          motherPhone: getColVal(r, columnMapping.motherPhone),
+          schoolName: getColVal(r, columnMapping.schoolName),
+          academicBoard: getColVal(r, columnMapping.academicBoard),
+          address: getColVal(r, columnMapping.address),
+          dateOfJoining: getColVal(r, columnMapping.dateOfJoining),
+          targetCourseId: !useClassColumn ? bulkTargetCourseId : undefined,
+          targetBatchId: !useClassColumn ? bulkTargetBatchId : undefined,
+        };
+      }).filter((r) => r.rawName);
+
+      if (mappedRows.length === 0) {
+        throw new Error('No rows found with student names in the selected column.');
       }
 
       const res: any = await ApiClient.fetch('/students/bulk-validate', {
         method: 'POST',
         body: JSON.stringify({
-          rows: parsedRows,
+          rows: mappedRows,
           defaultCourseId: bulkTargetCourseId || undefined,
           defaultBatchId: bulkTargetBatchId || undefined,
         }),
@@ -991,7 +1245,7 @@ export default function StudentsPage() {
       setBulkFilterTab('ALL');
       setBulkStep('PREVIEW');
     } catch (err: any) {
-      setErrorMsg(err.message || 'CSV validation failed');
+      setErrorMsg(err.message || 'Validation failed');
     } finally {
       setBulkLoading(false);
     }
@@ -1028,12 +1282,62 @@ export default function StudentsPage() {
     }
   };
 
+  // Student Analysis & Cohort Overview
+  const analysisStats = useMemo(() => {
+    const totalStudents = students.length;
+    const activeStudents = students.filter((s) => s.status === 'ACTIVE').length;
+
+    const classCountMap: Record<string, { name: string; count: number; code?: string }> = {};
+    const subjectCountMap: Record<string, { name: string; count: number }> = {};
+
+    students.forEach((s) => {
+      if (s.enrollments && s.enrollments.length > 0) {
+        const seenInStudentClasses = new Set<string>();
+        s.enrollments.forEach((e) => {
+          if (e.className && !seenInStudentClasses.has(e.className)) {
+            seenInStudentClasses.add(e.className);
+            if (!classCountMap[e.className]) {
+              classCountMap[e.className] = { name: e.className, count: 0, code: e.classCode };
+            }
+            classCountMap[e.className].count++;
+          }
+          if (e.subjectName) {
+            const subName = e.subjectName.trim();
+            if (!subjectCountMap[subName]) {
+              subjectCountMap[subName] = { name: subName, count: 0 };
+            }
+            subjectCountMap[subName].count++;
+          }
+        });
+      } else if (s.currentBatch) {
+        const cName = s.currentBatch.class?.name || 'Assigned Cohort';
+        if (!classCountMap[cName]) {
+          classCountMap[cName] = { name: cName, count: 0 };
+        }
+        classCountMap[cName].count++;
+      }
+    });
+
+    return {
+      totalStudents,
+      activeStudents,
+      classes: Object.values(classCountMap).sort((a, b) => b.count - a.count),
+      subjects: Object.values(subjectCountMap).sort((a, b) => b.count - a.count),
+    };
+  }, [students]);
+
   const filteredStudents = students.filter((s) => {
     if (statusFilter !== 'ALL' && s.status !== statusFilter) return false;
     if (batchFilter) {
       const hasEnrollment = s.enrollments?.some((e) => e.batchId === batchFilter);
       const hasCurrent = s.currentBatch?.id === batchFilter;
       if (!hasEnrollment && !hasCurrent) return false;
+    }
+    if (selectedSubjectFilter) {
+      const hasSubject = s.enrollments?.some(
+        (e) => e.subjectName && e.subjectName.toLowerCase().includes(selectedSubjectFilter.toLowerCase()),
+      );
+      if (!hasSubject) return false;
     }
     return true;
   });
@@ -1091,16 +1395,34 @@ export default function StudentsPage() {
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            type="button"
+            onClick={() => setShowAnalysisPanel(!showAnalysisPanel)}
+            className={`inline-flex items-center gap-2 px-3.5 py-2 text-sm font-semibold rounded-lg border transition ${
+              showAnalysisPanel || selectedSubjectFilter
+                ? 'bg-neutral-900 text-white border-neutral-900 shadow-xs'
+                : 'bg-white hover:bg-neutral-50 text-neutral-700 border-neutral-200'
+            }`}
+          >
+            <BarChart3 className={`w-4 h-4 ${showAnalysisPanel || selectedSubjectFilter ? 'text-[#FF8500]' : 'text-neutral-500'}`} />
+            <span>Analysis & Distribution</span>
+            {(selectedSubjectFilter || batchFilter) && (
+              <span className="w-2 h-2 rounded-full bg-[#FF8500]"></span>
+            )}
+          </button>
+
           <button
             onClick={() => {
               setBulkStep('UPLOAD');
               setCsvContent('');
+              setCsvRawHeaders([]);
+              setCsvRawDataRows([]);
               setValidationReport(null);
               setImportSummary(null);
               setShowBulkModal(true);
             }}
-            className="inline-flex items-center gap-2 px-3.5 py-2 bg-neutral-100 hover:bg-[#FFF4E5] hover:text-[#CC6B00] text-neutral-800 text-sm font-semibold rounded-lg border border-neutral-200 transition"
+            className="inline-flex items-center gap-2 px-3.5 py-2 bg-[#FFF4E5] hover:bg-[#FFE8CC] text-[#CC6B00] text-sm font-semibold rounded-lg border border-[#FF8500]/30 transition shadow-2xs"
           >
             <Upload className="w-4 h-4 text-[#FF8500]" />
             <span>Bulk Import CSV</span>
@@ -1120,8 +1442,206 @@ export default function StudentsPage() {
         </div>
       </div>
 
+      {/* STUDENT ANALYSIS & COHORT OVERVIEW PANEL */}
+      {(showAnalysisPanel || selectedSubjectFilter) && (
+        <div className="bg-white border border-neutral-200 rounded-xl p-4 shadow-xs space-y-4 animate-in fade-in-50 duration-200">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-neutral-100 pb-3">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-lg bg-[#FFF4E5] text-[#FF8500] flex items-center justify-center">
+                <BarChart3 className="w-4 h-4" />
+              </div>
+              <div>
+                <h3 className="font-bold text-neutral-900 text-sm">Students Cohort & Subject Analysis</h3>
+                <p className="text-xs text-neutral-500">
+                  Live distribution across enrolled classes and specific subjects (Chemistry, Maths, etc.)
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              {selectedSubjectFilter && (
+                <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-orange-100 border border-orange-200 text-orange-900 text-xs font-semibold">
+                  <span>Subject: {selectedSubjectFilter}</span>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedSubjectFilter('')}
+                    className="p-0.5 hover:bg-orange-200 rounded-full cursor-pointer"
+                    title="Clear subject filter"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+              )}
+              {batchFilter && (
+                <button
+                  type="button"
+                  onClick={() => setBatchFilter('')}
+                  className="px-2.5 py-1 text-xs text-neutral-600 hover:text-black border border-neutral-200 rounded-lg"
+                >
+                  Clear Batch Filter
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div className="p-3 bg-neutral-50 border border-neutral-200 rounded-xl">
+              <span className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wider">Total Enrolled</span>
+              <div className="text-2xl font-bold text-black mt-0.5">{analysisStats.totalStudents}</div>
+              <span className="text-[10px] text-neutral-400">Total in directory</span>
+            </div>
+            <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl">
+              <span className="text-[11px] font-semibold text-emerald-700 uppercase tracking-wider">Active Students</span>
+              <div className="text-2xl font-bold text-emerald-800 mt-0.5">{analysisStats.activeStudents}</div>
+              <span className="text-[10px] text-emerald-600 font-medium">Currently active</span>
+            </div>
+            <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl">
+              <span className="text-[11px] font-semibold text-blue-700 uppercase tracking-wider">Total Classes</span>
+              <div className="text-2xl font-bold text-blue-800 mt-0.5">{analysisStats.classes.length}</div>
+              <span className="text-[10px] text-blue-600 font-medium">Active courses</span>
+            </div>
+            <div className="p-3 bg-purple-50 border border-purple-200 rounded-xl">
+              <span className="text-[11px] font-semibold text-purple-700 uppercase tracking-wider">Total Subjects</span>
+              <div className="text-2xl font-bold text-purple-800 mt-0.5">{analysisStats.subjects.length}</div>
+              <span className="text-[10px] text-purple-600 font-medium">Unique subjects</span>
+            </div>
+          </div>
+
+          {/* Subjects Breakdown (e.g. Chemistry, Maths) */}
+          <div className="space-y-2 pt-1">
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-semibold text-neutral-700 uppercase tracking-wider text-[11px]">
+                Subject Distribution (Click to filter table)
+              </span>
+              {selectedSubjectFilter && (
+                <button
+                  type="button"
+                  onClick={() => setSelectedSubjectFilter('')}
+                  className="text-xs text-[#FF8500] hover:underline font-semibold cursor-pointer"
+                >
+                  Show All Subjects
+                </button>
+              )}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {analysisStats.subjects.length === 0 ? (
+                <p className="text-xs text-neutral-400 italic">No subject-specific enrollments recorded yet.</p>
+              ) : (
+                analysisStats.subjects.map((sub) => {
+                  const isSelected = selectedSubjectFilter.toLowerCase() === sub.name.toLowerCase();
+                  return (
+                    <button
+                      key={sub.name}
+                      type="button"
+                      onClick={() =>
+                        setSelectedSubjectFilter(isSelected ? '' : sub.name)
+                      }
+                      className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer border ${
+                        isSelected
+                          ? 'bg-[#FF8500] text-white border-[#FF8500] shadow-sm'
+                          : 'bg-neutral-50 hover:bg-[#FFF4E5] hover:text-[#CC6B00] hover:border-[#FF8500]/40 text-neutral-800 border-neutral-200'
+                      }`}
+                    >
+                      <span>{sub.name}</span>
+                      <span
+                        className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono ${
+                          isSelected ? 'bg-white/20 text-white' : 'bg-neutral-200/80 text-neutral-700'
+                        }`}
+                      >
+                        {sub.count}
+                      </span>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </div>
+
+          {/* Classes Breakdown */}
+          {analysisStats.classes.length > 0 && (
+            <div className="space-y-2 pt-2 border-t border-neutral-100">
+              <span className="font-semibold text-neutral-700 uppercase tracking-wider text-[11px] block">
+                Class / Course Distribution
+              </span>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {analysisStats.classes.map((cls) => (
+                  <div
+                    key={cls.name}
+                    className="p-2.5 rounded-lg bg-neutral-50 border border-neutral-200 flex items-center justify-between text-xs"
+                  >
+                    <span className="font-medium text-neutral-800 truncate mr-1" title={cls.name}>
+                      {cls.name}
+                    </span>
+                    <span className="font-bold text-neutral-900 bg-white border border-neutral-200 px-2 py-0.5 rounded-md text-[11px]">
+                      {cls.count}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Students Table & Native Mobile Cards */}
       <div className="bg-white border border-neutral-200 rounded-xl overflow-hidden shadow-xs">
+        {/* Top Table Control Bar with Instant 100 Listing */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 bg-neutral-50/90 border-b border-neutral-200">
+          <div className="flex items-center gap-2">
+            <span className="font-bold text-xs text-neutral-900 bg-white px-3 py-1 rounded-lg border border-neutral-200 shadow-2xs">
+              {totalCount || filteredStudents.length} Students Total
+            </span>
+            {pageSize === 100 && (
+              <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 rounded-full flex items-center gap-1 shadow-2xs">
+                <Zap className="w-3 h-3 text-emerald-600" />
+                100 Students Listed
+              </span>
+            )}
+          </div>
+
+          <div className="flex items-center gap-2.5 flex-wrap">
+            {/* Instant List 100 Button */}
+            <button
+              type="button"
+              onClick={() => {
+                setPageSize(100);
+                setCurrentPage(1);
+              }}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition shadow-xs cursor-pointer ${
+                pageSize === 100
+                  ? 'bg-[#FF8500] text-white ring-2 ring-[#FF8500]/30 shadow-subtle'
+                  : 'bg-[#FFF4E5] text-[#CC6B00] border border-[#FF8500]/40 hover:bg-[#FFE8CC]'
+              }`}
+              title="Instantly display 100 students on one page"
+            >
+              <Zap className="w-3.5 h-3.5" />
+              <span>Instantly List 100</span>
+            </button>
+
+            {/* Page Size Selection Pills */}
+            <div className="flex items-center gap-1 bg-white p-0.5 rounded-lg border border-neutral-200">
+              <span className="text-[10px] font-semibold text-neutral-400 px-1.5">Page Size:</span>
+              {[25, 50, 100, 200].map((size) => (
+                <button
+                  key={size}
+                  type="button"
+                  onClick={() => {
+                    setPageSize(size);
+                    setCurrentPage(1);
+                  }}
+                  className={`px-2.5 py-1 rounded text-xs font-bold transition cursor-pointer ${
+                    pageSize === size
+                      ? 'bg-neutral-900 text-white shadow-xs'
+                      : 'text-neutral-600 hover:bg-neutral-100'
+                  }`}
+                >
+                  {size}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
         {/* Mobile Native Card View (< 768px) */}
         <div className="md:hidden divide-y divide-neutral-100">
           {loading ? (
@@ -1140,7 +1660,7 @@ export default function StudentsPage() {
                 <div className="flex items-start justify-between gap-2">
                   <div className="flex items-start gap-2.5">
                     <span className="w-6 h-6 rounded-full bg-neutral-100 border border-neutral-200 text-neutral-600 font-mono text-xs font-bold flex items-center justify-center shrink-0 mt-0.5">
-                      #{idx + 1}
+                      #{(currentPage - 1) * pageSize + idx + 1}
                     </span>
                     <div>
                       <button
@@ -1164,51 +1684,46 @@ export default function StudentsPage() {
                       )}
                     </div>
                   </div>
-                  <span
-                    className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                      s.status === 'ACTIVE'
-                        ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                        : 'bg-neutral-100 text-neutral-600'
-                    }`}
-                  >
-                    {s.status}
-                  </span>
-                </div>
 
-                {/* Attendance Code & Cohorts */}
-                <div className="flex items-center gap-2 flex-wrap text-xs">
+                  {/* 3-Digit Attendance Code Badge */}
                   {s.attendanceCode ? (
-                    <span className="font-mono font-bold text-xs px-2 py-0.5 rounded bg-[#FFF4E5] text-[#CC6B00] border border-[#FF8500]/30 flex items-center gap-1 shadow-2xs">
-                      <QrCode className="w-3 h-3" />
-                      Code: {s.attendanceCode}
+                    <span className="font-mono font-extrabold text-xs px-2.5 py-1 rounded-lg bg-[#FFF4E5] text-[#CC6B00] border border-[#FF8500]/40 flex items-center gap-1 shadow-2xs">
+                      <QrCode className="w-3 h-3 text-[#FF8500]" />
+                      #{s.attendanceCode}
                     </span>
                   ) : (
-                    <span className="text-[10px] text-neutral-400 bg-neutral-100 px-1.5 py-0.5 rounded">
+                    <span className="text-[10px] text-neutral-400 bg-neutral-100 px-1.5 py-0.5 rounded font-mono">
                       No code
                     </span>
                   )}
-
-                  {s.enrollments && s.enrollments.length > 0 ? (
-                    <span className="px-2 py-0.5 rounded bg-neutral-100 text-neutral-700 text-[11px] font-medium">
-                      {s.enrollments.map((e) => e.className).join(', ')}
-                    </span>
-                  ) : s.currentBatch ? (
-                    <span className="px-2 py-0.5 rounded bg-neutral-100 text-neutral-700 text-[11px]">
-                      {s.currentBatch.name}
-                    </span>
-                  ) : null}
                 </div>
 
-                {/* Guardian Phone & Relationship with Direct Tap-to-Call */}
+                {/* Class & Cohorts */}
+                <div className="flex items-center gap-1.5 flex-wrap text-xs">
+                  {s.enrollments && s.enrollments.length > 0 ? (
+                    s.enrollments.map((e) => (
+                      <span key={e.id} className="px-2 py-0.5 rounded bg-neutral-100 text-neutral-800 text-[11px] font-medium border border-neutral-200">
+                        {e.className} {e.subjectName ? `(${e.subjectName})` : ''} • {e.batchName}
+                      </span>
+                    ))
+                  ) : s.currentBatch ? (
+                    <span className="px-2 py-0.5 rounded bg-neutral-100 text-neutral-700 text-[11px]">
+                      {s.currentBatch.class?.name || 'Class'} • {s.currentBatch.name}
+                    </span>
+                  ) : (
+                    <span className="text-[11px] text-neutral-400 italic">No class assigned</span>
+                  )}
+                </div>
+
+                {/* Guardian Phone if available */}
                 {s.guardians && s.guardians.length > 0 && (
-                  <div className="flex items-center justify-between text-xs text-neutral-600 pt-1.5 border-t border-neutral-100">
-                    <div className="flex items-center gap-1.5 truncate max-w-[200px]">
-                      <span className="font-medium text-black truncate">{s.guardians[0].fullName}</span>
-                      <span className="text-[10px] text-neutral-400">({s.guardians[0].relationship})</span>
-                    </div>
+                  <div className="flex items-center justify-between text-xs text-neutral-600 pt-1 border-t border-neutral-100">
+                    <span className="font-medium text-neutral-700 truncate max-w-[180px]">
+                      {s.guardians[0].fullName} ({s.guardians[0].relationship})
+                    </span>
                     <a
                       href={`tel:${s.guardians[0].phone}`}
-                      className="inline-flex items-center gap-1 text-[#FF8500] font-semibold hover:underline active:opacity-75 py-1 px-2 rounded-lg bg-[#FFF4E5]/50 border border-[#FF8500]/20"
+                      className="inline-flex items-center gap-1 text-[#FF8500] font-semibold text-[11px] py-0.5 px-2 rounded bg-[#FFF4E5]/60 border border-[#FF8500]/20"
                     >
                       <Phone className="w-3 h-3" />
                       <span>{s.guardians[0].phone}</span>
@@ -1216,16 +1731,27 @@ export default function StudentsPage() {
                   </div>
                 )}
 
+                {/* Status & Actions Footer */}
                 <div className="flex items-center justify-between pt-2 border-t border-neutral-100">
-                  <button
-                    onClick={() => openManageEnrollments(s)}
-                    className="inline-flex items-center gap-1.5 px-3 py-1 bg-[#FFF4E5] hover:bg-[#FFE8CC] text-[#CC6B00] border border-[#FF8500]/30 rounded-lg text-xs font-semibold transition"
+                  <span
+                    className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold ${
+                      s.status === 'ACTIVE'
+                        ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                        : 'bg-neutral-100 text-neutral-600 border border-neutral-200'
+                    }`}
                   >
-                    <Layers className="w-3.5 h-3.5" />
-                    <span>Enrollments ({s.enrollments?.length || 0})</span>
-                  </button>
+                    <span className={`w-1.5 h-1.5 rounded-full ${s.status === 'ACTIVE' ? 'bg-emerald-500' : 'bg-neutral-400'}`} />
+                    {s.status}
+                  </span>
+
                   <div className="flex items-center gap-2">
-                    <span className="text-xs text-neutral-400 font-mono">{s.admissionNumber}</span>
+                    <button
+                      onClick={() => openManageEnrollments(s)}
+                      className="inline-flex items-center gap-1.5 px-3 py-1 bg-[#FFF4E5] hover:bg-[#FFE8CC] text-[#CC6B00] border border-[#FF8500]/30 rounded-lg text-xs font-bold transition"
+                    >
+                      <Eye className="w-3.5 h-3.5" />
+                      <span>View</span>
+                    </button>
                     <button
                       onClick={() => setStudentToDelete(s)}
                       className="p-1.5 text-neutral-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition"
@@ -1240,181 +1766,167 @@ export default function StudentsPage() {
           )}
         </div>
 
-        {/* Desktop Full Table View (>= 768px) */}
+        {/* Desktop Table View (>= 768px): Name, 3-Digit Code, Class, Status, Action */}
         <div className="overflow-x-auto hidden md:block">
           <table className="w-full text-left border-collapse text-sm">
             <thead>
               <tr className="bg-neutral-50/80 border-b border-neutral-200 text-[11px] font-semibold text-neutral-500 uppercase tracking-wider">
-                <th className="py-3 px-3 text-center w-12 font-mono">#</th>
-                <th className="py-3 px-4">Student</th>
-                <th className="py-3 px-4">Student ID / Adm #</th>
-                <th className="py-3 px-4 text-center">3-Digit Code</th>
-                <th className="py-3 px-4">Enrolled Course(s) & Batch(es)</th>
-                <th className="py-3 px-4">Guardian Contact</th>
-                <th className="py-3 px-4 text-center">Status</th>
-                <th className="py-3 px-4 text-right">Actions</th>
+                <th className="py-3.5 px-3 text-center w-12 font-mono">#</th>
+                <th className="py-3.5 px-4 font-bold text-neutral-800">Name</th>
+                <th className="py-3.5 px-4 text-center font-bold text-neutral-800">3-Digit Code</th>
+                <th className="py-3.5 px-4 font-bold text-neutral-800">Class</th>
+                <th className="py-3.5 px-4 text-center font-bold text-neutral-800">Status</th>
+                <th className="py-3.5 px-4 text-right font-bold text-neutral-800">Action</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-neutral-100">
               {loading ? (
                 <tr>
-                  <td colSpan={8} className="py-12 text-center text-neutral-400">
+                  <td colSpan={6} className="py-12 text-center text-neutral-400">
                     <RefreshCw className="w-5 h-5 animate-spin mx-auto mb-2 text-[#FF8500]" />
                     Loading student directory...
                   </td>
                 </tr>
               ) : filteredStudents.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="py-12 text-center text-neutral-400">
+                  <td colSpan={6} className="py-12 text-center text-neutral-400">
                     <Users className="w-8 h-8 mx-auto mb-2 text-neutral-300" />
                     No students found matching current filters.
                   </td>
                 </tr>
               ) : (
                 filteredStudents.map((s, idx) => (
-                  <tr key={s.id} className="hover:bg-neutral-50/50 transition">
+                  <tr key={s.id} className="hover:bg-neutral-50/70 transition">
+                    {/* Index */}
                     <td className="py-3 px-3 text-center font-mono text-xs text-neutral-400 font-semibold">
-                      {idx + 1}
+                      {(currentPage - 1) * pageSize + idx + 1}
                     </td>
 
+                    {/* Column 1: Name */}
                     <td className="py-3 px-4">
                       <button
                         type="button"
                         onClick={() => openManageEnrollments(s)}
                         className="text-left group cursor-pointer block"
-                        title="View single student details & enrollments"
+                        title="View student profile & enrollments"
                       >
-                        <div className="font-semibold text-black group-hover:text-[#FF8500] transition">
+                        <div className="font-bold text-neutral-900 group-hover:text-[#FF8500] transition text-sm">
                           {s.fullName}
                         </div>
-                        <div className="text-xs text-neutral-400 flex items-center gap-2 mt-0.5 flex-wrap">
-                          <span className="capitalize">{s.gender.toLowerCase()}</span>
-                          {s.schoolName && (
-                            <>
-                              <span>•</span>
-                              <span className="text-neutral-500 font-medium truncate max-w-[160px] flex items-center gap-1" title={s.schoolName}>
-                                <GraduationCap className="w-3 h-3 text-[#FF8500] shrink-0" />
-                                <span>{s.schoolName}</span>
-                              </span>
-                            </>
-                          )}
+                        <div className="text-xs text-neutral-500 flex items-center gap-1.5 mt-0.5 flex-wrap font-mono">
+                          <span className="font-semibold text-neutral-700">{s.studentCode}</span>
+                          <span>•</span>
+                          <span>Adm: {s.admissionNumber}</span>
+                          <span>•</span>
+                          <span className="capitalize font-sans text-neutral-400">{s.gender.toLowerCase()}</span>
                         </div>
+                        {s.schoolName && (
+                          <div className="text-[11px] text-neutral-500 font-medium truncate max-w-[280px] flex items-center gap-1 mt-0.5" title={s.schoolName}>
+                            <GraduationCap className="w-3 h-3 text-[#FF8500] shrink-0" />
+                            <span>{s.schoolName}</span>
+                          </div>
+                        )}
+                        {s.guardians && s.guardians.length > 0 && (
+                          <div className="text-[11px] text-neutral-400 flex items-center gap-1 mt-0.5 truncate max-w-[280px]">
+                            <Phone className="w-3 h-3 text-neutral-400 shrink-0" />
+                            <span>{s.guardians[0].fullName} ({s.guardians[0].relationship}): {s.guardians[0].phone}</span>
+                          </div>
+                        )}
                       </button>
                     </td>
 
-                    <td className="py-3 px-4 font-mono text-xs">
-                      <div className="text-black font-semibold">{s.studentCode}</div>
-                      <div className="text-neutral-400">{s.admissionNumber}</div>
-                    </td>
-
+                    {/* Column 2: 3-Digit Code */}
                     <td className="py-3 px-4 text-center">
-                      {s.attendanceCode ? (
-                        <span
-                          className="inline-block px-2.5 py-1 bg-[#FFF4E5] border border-[#FF8500] text-[#CC6B00] font-mono font-bold text-sm tracking-wider rounded-lg shadow-2xs"
-                          title="Assigned 3-Digit Attendance Code (100–999)"
-                        >
-                          {s.attendanceCode}
-                        </span>
-                      ) : (
-                        <span className="text-[11px] text-neutral-400 bg-neutral-100 px-2 py-0.5 rounded">
-                          None
-                        </span>
-                      )}
+                      <div className="flex justify-center">
+                        {s.attendanceCode ? (
+                          <span
+                            className="inline-flex items-center gap-1.5 px-3 py-1 bg-[#FFF4E5] border border-[#FF8500]/60 text-[#CC6B00] font-mono font-extrabold text-sm tracking-wider rounded-lg shadow-2xs"
+                            title="Assigned 3-Digit Attendance Code (100–999)"
+                          >
+                            <QrCode className="w-3.5 h-3.5 text-[#FF8500]" />
+                            <span>#{s.attendanceCode}</span>
+                          </span>
+                        ) : (
+                          <span className="text-xs text-neutral-400 bg-neutral-100 px-2 py-0.5 rounded font-mono">
+                            ---
+                          </span>
+                        )}
+                      </div>
                     </td>
 
+                    {/* Column 3: Class */}
                     <td className="py-3 px-4">
                       {s.enrollments && s.enrollments.length > 0 ? (
-                        <div className="space-y-1.5">
+                        <div className="space-y-1">
                           {s.enrollments.map((en) => (
                             <div key={en.id} className="flex items-center gap-1.5 text-xs flex-wrap">
-                              <span className="px-1.5 py-0.5 bg-neutral-100 border border-neutral-200 text-neutral-700 font-mono text-[10px] rounded font-semibold">
-                                {en.classCode || 'CRS'}
+                              <span className="font-bold text-neutral-900 bg-neutral-100 px-2 py-0.5 rounded border border-neutral-200">
+                                {en.className}
                               </span>
-                              <span className="font-medium text-neutral-800">{en.className}:</span>
                               {en.subjectName && (
-                                <span className="font-semibold text-blue-700 bg-blue-50 px-1.5 py-0.2 rounded border border-blue-200 text-[11px]">
+                                <span className="font-semibold text-purple-700 bg-purple-50 px-1.5 py-0.5 rounded border border-purple-200 text-[11px]">
                                   {en.subjectName}
                                 </span>
                               )}
-                              <span className="text-[#FF8500] font-semibold">{en.batchName}</span>
-                              {en.batchCode && (
-                                <span className="text-[10px] text-neutral-400">({en.batchCode})</span>
-                              )}
+                              <span className="text-[#FF8500] font-semibold text-xs">
+                                {en.batchName}
+                              </span>
                             </div>
                           ))}
                           {s.enrollments.length > 1 && (
                             <div className="pt-0.5">
-                              <span className="inline-block text-[10px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">
-                                {s.enrollments.length} Active Courses Enrolled
+                              <span className="inline-block text-[10px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.2 rounded-full">
+                                {s.enrollments.length} Course Enrollments
                               </span>
                             </div>
                           )}
                         </div>
                       ) : s.currentBatch ? (
                         <div>
-                          <div className="font-semibold text-black text-xs flex items-center gap-1.5">
-                            <span className="px-1.5 py-0.5 bg-neutral-100 border border-neutral-200 text-neutral-700 font-mono text-[10px] rounded">
-                              {s.currentBatch.class?.code || 'CRS'}
+                          <div className="font-semibold text-neutral-900 text-xs flex items-center gap-1.5">
+                            <span className="px-2 py-0.5 bg-neutral-100 border border-neutral-200 text-neutral-800 font-bold rounded">
+                              {s.currentBatch.class?.name || 'Course'}
                             </span>
-                            <span>{s.currentBatch.class?.name || 'Course'}</span>
-                          </div>
-                          <div className="text-xs text-[#FF8500] font-medium mt-0.5">
-                            {s.currentBatch.name} {s.currentBatch.code ? `(${s.currentBatch.code})` : ''}
-                          </div>
-                        </div>
-                      ) : (
-                        <span className="text-xs text-neutral-400 italic">No active cohort</span>
-                      )}
-                    </td>
-
-                    <td className="py-3 px-4 text-xs">
-                      {s.guardians && s.guardians.length > 0 ? (
-                        <div>
-                          <div className="text-black font-medium flex items-center gap-1.5 flex-wrap">
-                            <span>{s.guardians[0].fullName}</span>
-                            {s.guardians.length > 1 && (
-                              <span
-                                className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-[#FFF4E5] text-[#CC6B00] border border-[#FF8500]/30 cursor-help"
-                                title={s.guardians.slice(1).map((g) => `${g.fullName} (${g.relationship}): ${g.phone}`).join(' | ')}
-                              >
-                                +{s.guardians.length - 1} contact{s.guardians.length > 2 ? 's' : ''}
-                              </span>
-                            )}
-                          </div>
-                          <div className="text-neutral-500 flex items-center gap-1 mt-0.5">
-                            <Phone className="w-3 h-3 text-neutral-400 shrink-0" />
-                            <span>{s.guardians[0].phone}</span>
-                            <span className="text-[10px] text-neutral-400">({s.guardians[0].relationship})</span>
+                            <span className="text-xs text-[#FF8500] font-medium">
+                              {s.currentBatch.name}
+                            </span>
                           </div>
                         </div>
                       ) : (
-                        <span className="text-neutral-400 text-xs">No guardian</span>
+                        <span className="text-xs text-neutral-400 italic">No class assigned</span>
                       )}
                     </td>
 
+                    {/* Column 4: Status */}
                     <td className="py-3 px-4 text-center">
-                      <span
-                        className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium ${
-                          s.status === 'ACTIVE'
-                            ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                            : 'bg-neutral-100 text-neutral-600'
-                        }`}
-                      >
-                        {s.status}
-                      </span>
+                      <div className="flex justify-center">
+                        <span
+                          className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-bold ${
+                            s.status === 'ACTIVE'
+                              ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                              : 'bg-neutral-100 text-neutral-600 border border-neutral-200'
+                          }`}
+                        >
+                          <span className={`w-1.5 h-1.5 rounded-full ${s.status === 'ACTIVE' ? 'bg-emerald-500' : 'bg-neutral-400'}`} />
+                          {s.status}
+                        </span>
+                      </div>
                     </td>
 
+                    {/* Column 5: Action */}
                     <td className="py-3 px-4 text-right">
                       <div className="flex items-center justify-end gap-1.5">
                         <button
+                          type="button"
                           onClick={() => openManageEnrollments(s)}
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#FFF4E5] hover:bg-[#FFE8CC] text-[#CC6B00] border border-[#FF8500]/30 rounded-lg text-xs font-semibold shadow-2xs transition cursor-pointer"
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#FFF4E5] hover:bg-[#FFE8CC] text-[#CC6B00] border border-[#FF8500]/30 rounded-lg text-xs font-bold shadow-2xs transition cursor-pointer"
                           title="View student profile & manage enrollments"
                         >
                           <Eye className="w-3.5 h-3.5" />
                           <span>View</span>
                         </button>
                         <button
+                          type="button"
                           onClick={() => setStudentToDelete(s)}
                           className="p-1.5 text-neutral-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg border border-transparent hover:border-rose-200 transition cursor-pointer"
                           title={`Delete student ${s.fullName}`}
@@ -1428,6 +1940,70 @@ export default function StudentsPage() {
               )}
             </tbody>
           </table>
+        </div>
+
+        {/* Bottom Button Pagination Toolbar */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 bg-neutral-50/90 border-t border-neutral-200 text-xs">
+          <div className="flex items-center gap-2 text-neutral-600 font-medium">
+            <span>
+              Showing <strong className="text-black font-mono">{filteredStudents.length > 0 ? (currentPage - 1) * pageSize + 1 : 0}</strong> to{' '}
+              <strong className="text-black font-mono">{(currentPage - 1) * pageSize + filteredStudents.length}</strong> of{' '}
+              <strong className="text-black font-mono">{totalCount || filteredStudents.length}</strong> students
+            </span>
+            {pageSize === 100 && (
+              <span className="px-2 py-0.5 rounded-full bg-orange-100 text-[#CC6B00] font-bold text-[10px]">
+                100 / page
+              </span>
+            )}
+          </div>
+
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <button
+              type="button"
+              disabled={currentPage <= 1 || loading}
+              onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-neutral-300 bg-white font-bold text-neutral-700 hover:bg-neutral-100 disabled:opacity-40 disabled:cursor-not-allowed transition cursor-pointer shadow-2xs"
+            >
+              <ChevronLeft className="w-3.5 h-3.5" />
+              <span>Prev</span>
+            </button>
+
+            {/* Dynamic Page Buttons */}
+            {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+              let pageNum = i + 1;
+              if (totalPages > 5 && currentPage > 3) {
+                pageNum = Math.min(totalPages - 4 + i, Math.max(1, currentPage - 2 + i));
+              }
+              return (
+                <button
+                  key={pageNum}
+                  type="button"
+                  onClick={() => setCurrentPage(pageNum)}
+                  className={`w-8 h-8 rounded-lg font-bold text-xs transition cursor-pointer ${
+                    currentPage === pageNum
+                      ? 'bg-[#FF8500] text-white shadow-xs'
+                      : 'bg-white border border-neutral-200 text-neutral-700 hover:bg-neutral-100'
+                  }`}
+                >
+                  {pageNum}
+                </button>
+              );
+            })}
+
+            {totalPages > 5 && currentPage < totalPages - 2 && (
+              <span className="px-1 text-neutral-400 font-bold">...</span>
+            )}
+
+            <button
+              type="button"
+              disabled={currentPage >= totalPages || loading}
+              onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-neutral-300 bg-white font-bold text-neutral-700 hover:bg-neutral-100 disabled:opacity-40 disabled:cursor-not-allowed transition cursor-pointer shadow-2xs"
+            >
+              <span>Next</span>
+              <ChevronRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
         </div>
       </div>
       </ResponsivePageContainer>
@@ -2104,11 +2680,568 @@ export default function StudentsPage() {
                     <button
                       type="button"
                       disabled={bulkLoading || !csvContent.trim()}
-                      onClick={handleValidateCsv}
+                      onClick={() => handleProcessRawCsv(csvContent)}
                       className="px-4 py-2 text-sm font-semibold bg-[#FF8500] hover:bg-[#E67700] text-white rounded-lg transition disabled:opacity-50 cursor-pointer flex items-center gap-2"
                     >
+                      <span>Connect Columns & Next</span>
+                      <ArrowRight className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Step 2: Connect CSV Columns (Interactive Column Mapping) */}
+              {bulkStep === 'MAP_COLUMNS' && (
+                <div className="space-y-5 animate-in fade-in-50 duration-200">
+                  {/* Step Progress Header */}
+                  <div className="flex items-center justify-between p-3.5 bg-neutral-50 border border-neutral-200 rounded-xl">
+                    <div className="flex items-center gap-2">
+                      <div className="w-7 h-7 rounded-lg bg-[#FFF4E5] text-[#FF8500] flex items-center justify-center font-bold text-xs">
+                        2
+                      </div>
+                      <div>
+                        <h4 className="font-bold text-neutral-900 text-sm flex items-center gap-2">
+                          <Link2 className="w-4 h-4 text-[#FF8500]" />
+                          Connect CSV Columns to Fields
+                        </h4>
+                        <p className="text-xs text-neutral-500">
+                          Match your spreadsheet headers. <strong>Name</strong> and <strong>Class</strong> are the only mandatory requirements.
+                        </p>
+                      </div>
+                    </div>
+                    <span className="text-xs font-mono bg-white border border-neutral-200 px-2.5 py-1 rounded-md text-neutral-600 font-semibold">
+                      {csvRawDataRows.length} Rows Detected
+                    </span>
+                  </div>
+
+                  {/* Mandatory Requirement Note */}
+                  <div className="p-3 bg-amber-50/70 border border-amber-200/80 rounded-xl flex items-start gap-2.5 text-xs text-amber-900">
+                    <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="font-bold">Required &amp; Multi-Subject Rules:</span>
+                      <ul className="list-disc list-inside mt-0.5 space-y-0.5 text-amber-800">
+                        <li><strong>Student Name</strong> and <strong>Class</strong> are the only mandatory fields.</li>
+                        <li><strong>Subjects</strong>: Enter multiple subjects separated by semicolons (e.g. <code>Chemistry;Maths</code>) or commas. Missing subjects will be auto-provisioned!</li>
+                        <li><strong>DOB &amp; Gender</strong>: Optional. If omitted, safe standard defaults are automatically assigned.</li>
+                      </ul>
+                    </div>
+                  </div>
+
+                  {/* Cohort Course & Batch Assignment Mode */}
+                  <div className="p-4 bg-neutral-50 border border-neutral-200 rounded-xl space-y-3">
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <label className="text-xs font-bold text-neutral-800 uppercase tracking-wider flex items-center gap-1.5">
+                        <GraduationCap className="w-4 h-4 text-[#FF8500]" />
+                        Class / Course Destination *
+                      </label>
+                      <div className="flex items-center gap-4 text-xs">
+                        <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                          <input
+                            type="radio"
+                            name="classSource"
+                            checked={!useClassColumn}
+                            onChange={() => setUseClassColumn(false)}
+                            className="text-[#FF8500] focus:ring-[#FF8500]"
+                          />
+                          <span className="font-medium text-neutral-700">Select One Class for All</span>
+                        </label>
+                        <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                          <input
+                            type="radio"
+                            name="classSource"
+                            checked={useClassColumn}
+                            onChange={() => setUseClassColumn(true)}
+                            className="text-[#FF8500] focus:ring-[#FF8500]"
+                          />
+                          <span className="font-medium text-neutral-700">Map from CSV Column</span>
+                        </label>
+                      </div>
+                    </div>
+
+                    {!useClassColumn ? (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                        <div>
+                          <label className="block text-[11px] font-semibold text-neutral-600 mb-1">
+                            Target Academic Course (Mandatory)
+                          </label>
+                          <select
+                            value={bulkTargetCourseId}
+                            onChange={(e) => {
+                              const cId = e.target.value;
+                              setBulkTargetCourseId(cId);
+                              const sel = courses.find((c) => c.id === cId);
+                              if (sel && sel.batches && sel.batches.length > 0) {
+                                setBulkTargetBatchId(sel.batches[0].id);
+                              } else {
+                                setBulkTargetBatchId('');
+                              }
+                            }}
+                            className="w-full px-3 py-2 text-xs bg-white border border-neutral-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#FF8500]"
+                          >
+                            <option value="">-- Choose Course (e.g. 10th Standard) --</option>
+                            {courses.map((c) => (
+                              <option key={c.id} value={c.id}>
+                                {c.name} ({c.code})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-[11px] font-semibold text-neutral-600 mb-1">
+                            Target Batch (Optional - defaults to Section A)
+                          </label>
+                          <select
+                            value={bulkTargetBatchId}
+                            onChange={(e) => setBulkTargetBatchId(e.target.value)}
+                            disabled={!bulkTargetCourseId}
+                            className="w-full px-3 py-2 text-xs bg-white border border-neutral-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#FF8500] disabled:bg-neutral-100"
+                          >
+                            <option value="">-- Auto-Assign Default Batch --</option>
+                            {courses
+                              .find((c) => c.id === bulkTargetCourseId)
+                              ?.batches.map((b) => (
+                                <option key={b.id} value={b.id}>
+                                  {b.name} {b.code ? `(${b.code})` : ''}
+                                </option>
+                              ))}
+                          </select>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                        <div>
+                          <label className="block text-[11px] font-semibold text-neutral-600 mb-1">
+                            Connect Class / Course Column *
+                          </label>
+                          <select
+                            value={columnMapping.courseCode}
+                            onChange={(e) =>
+                              setColumnMapping({ ...columnMapping, courseCode: e.target.value })
+                            }
+                            className="w-full px-3 py-2 text-xs bg-white border border-neutral-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#FF8500]"
+                          >
+                            <option value="">-- Select CSV Header for Class --</option>
+                            {csvRawHeaders.map((h) => (
+                              <option key={h} value={h}>
+                                Column: {h}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-[11px] font-semibold text-neutral-600 mb-1">
+                            Fallback Course (if row column is empty)
+                          </label>
+                          <select
+                            value={bulkTargetCourseId}
+                            onChange={(e) => setBulkTargetCourseId(e.target.value)}
+                            className="w-full px-3 py-2 text-xs bg-white border border-neutral-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#FF8500]"
+                          >
+                            <option value="">-- Optional Fallback Course --</option>
+                            {courses.map((c) => (
+                              <option key={c.id} value={c.id}>
+                                {c.name}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Core Column Connections */}
+                  <div className="space-y-3">
+                    <h4 className="text-xs font-bold text-neutral-900 uppercase tracking-wider">
+                      Field Connectors
+                    </h4>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      {/* Student Name */}
+                      <div className="p-3.5 bg-white border-2 border-orange-200 rounded-xl space-y-1.5">
+                        <div className="flex items-center justify-between">
+                          <label className="text-xs font-bold text-neutral-900 flex items-center gap-1.5">
+                            <span className="w-2 h-2 rounded-full bg-[#FF8500]"></span>
+                            Student Name * (Mandatory)
+                          </label>
+                          <span className="text-[10px] bg-orange-100 text-orange-800 px-2 py-0.5 rounded font-semibold uppercase">
+                            Required
+                          </span>
+                        </div>
+                        <select
+                          value={columnMapping.rawName}
+                          onChange={(e) =>
+                            setColumnMapping({ ...columnMapping, rawName: e.target.value })
+                          }
+                          className="w-full px-3 py-2 text-xs bg-neutral-50 border border-neutral-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#FF8500] font-medium"
+                        >
+                          <option value="">-- Select CSV Column for Name --</option>
+                          {csvRawHeaders.map((h) => (
+                            <option key={h} value={h}>
+                              {h}
+                            </option>
+                          ))}
+                        </select>
+                        {columnMapping.rawName && (
+                          <div className="text-[11px] text-neutral-500 font-mono truncate">
+                            Row 1 Sample: &quot;{csvRawDataRows[0]?.[csvRawHeaders.indexOf(columnMapping.rawName)] || '-'}&quot;
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Subjects */}
+                      <div className="p-3.5 bg-white border border-neutral-200 rounded-xl space-y-1.5">
+                        <div className="flex items-center justify-between">
+                          <label className="text-xs font-bold text-neutral-900 flex items-center gap-1.5">
+                            <BookOpen className="w-3.5 h-3.5 text-[#FF8500]" />
+                            Subjects (e.g. Chemistry;Maths)
+                          </label>
+                          <span className="text-[10px] bg-neutral-100 text-neutral-600 px-2 py-0.5 rounded font-medium">
+                            Auto-split
+                          </span>
+                        </div>
+                        <select
+                          value={columnMapping.subjects}
+                          onChange={(e) =>
+                            setColumnMapping({ ...columnMapping, subjects: e.target.value })
+                          }
+                          className="w-full px-3 py-2 text-xs bg-neutral-50 border border-neutral-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#FF8500]"
+                        >
+                          <option value="">-- (Optional) Select Subjects Column --</option>
+                          {csvRawHeaders.map((h) => (
+                            <option key={h} value={h}>
+                              {h}
+                            </option>
+                          ))}
+                        </select>
+                        {columnMapping.subjects && (
+                          <div className="text-[11px] text-neutral-500 font-mono truncate">
+                            Row 1 Sample: &quot;{csvRawDataRows[0]?.[csvRawHeaders.indexOf(columnMapping.subjects)] || '-'}&quot;
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Batch */}
+                      <div className="p-3.5 bg-white border border-neutral-200 rounded-xl space-y-1.5">
+                        <div className="flex items-center justify-between">
+                          <label className="text-xs font-semibold text-neutral-800">
+                            Batch / Section (Optional)
+                          </label>
+                          <span className="text-[10px] text-neutral-400">Default: Section A</span>
+                        </div>
+                        <select
+                          value={columnMapping.batchCode}
+                          onChange={(e) =>
+                            setColumnMapping({ ...columnMapping, batchCode: e.target.value })
+                          }
+                          className="w-full px-3 py-2 text-xs bg-neutral-50 border border-neutral-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#FF8500]"
+                        >
+                          <option value="">-- (Optional) Select Batch Column --</option>
+                          {csvRawHeaders.map((h) => (
+                            <option key={h} value={h}>
+                              {h}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {/* Date of Birth */}
+                      <div className="p-3.5 bg-white border border-neutral-200 rounded-xl space-y-1.5">
+                        <div className="flex items-center justify-between">
+                          <label className="text-xs font-semibold text-neutral-800">
+                            Date of Birth (Optional)
+                          </label>
+                          <span className="text-[10px] text-neutral-400">Auto-defaults</span>
+                        </div>
+                        <select
+                          value={columnMapping.dob}
+                          onChange={(e) =>
+                            setColumnMapping({ ...columnMapping, dob: e.target.value })
+                          }
+                          className="w-full px-3 py-2 text-xs bg-neutral-50 border border-neutral-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#FF8500]"
+                        >
+                          <option value="">-- (Optional) Select DOB Column --</option>
+                          {csvRawHeaders.map((h) => (
+                            <option key={h} value={h}>
+                              {h}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {/* Gender */}
+                      <div className="p-3.5 bg-white border border-neutral-200 rounded-xl space-y-1.5">
+                        <div className="flex items-center justify-between">
+                          <label className="text-xs font-semibold text-neutral-800">
+                            Gender (Optional)
+                          </label>
+                          <span className="text-[10px] text-neutral-400">Defaults to OTHER</span>
+                        </div>
+                        <select
+                          value={columnMapping.gender}
+                          onChange={(e) =>
+                            setColumnMapping({ ...columnMapping, gender: e.target.value })
+                          }
+                          className="w-full px-3 py-2 text-xs bg-neutral-50 border border-neutral-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#FF8500]"
+                        >
+                          <option value="">-- (Optional) Select Gender Column --</option>
+                          {csvRawHeaders.map((h) => (
+                            <option key={h} value={h}>
+                              {h}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {/* Student Mobile */}
+                      <div className="p-3.5 bg-white border border-neutral-200 rounded-xl space-y-1.5">
+                        <label className="block text-xs font-semibold text-neutral-800">
+                          Student Phone Number (Optional)
+                        </label>
+                        <select
+                          value={columnMapping.phone}
+                          onChange={(e) =>
+                            setColumnMapping({ ...columnMapping, phone: e.target.value })
+                          }
+                          className="w-full px-3 py-2 text-xs bg-neutral-50 border border-neutral-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#FF8500]"
+                        >
+                          <option value="">-- (Optional) Select Phone Column --</option>
+                          {csvRawHeaders.map((h) => (
+                            <option key={h} value={h}>
+                              {h}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {/* Student Email */}
+                      <div className="p-3.5 bg-white border border-neutral-200 rounded-xl space-y-1.5">
+                        <label className="block text-xs font-semibold text-neutral-800">
+                          Student Email (Optional)
+                        </label>
+                        <select
+                          value={columnMapping.email}
+                          onChange={(e) =>
+                            setColumnMapping({ ...columnMapping, email: e.target.value })
+                          }
+                          className="w-full px-3 py-2 text-xs bg-neutral-50 border border-neutral-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#FF8500]"
+                        >
+                          <option value="">-- (Optional) Select Email Column --</option>
+                          {csvRawHeaders.map((h) => (
+                            <option key={h} value={h}>
+                              {h}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {/* Father Contact */}
+                      <div className="p-3.5 bg-white border border-neutral-200 rounded-xl space-y-1.5">
+                        <label className="block text-xs font-semibold text-neutral-800">
+                          Father&apos;s Name &amp; Mobile (Optional)
+                        </label>
+                        <div className="grid grid-cols-2 gap-2">
+                          <select
+                            value={columnMapping.fatherName}
+                            onChange={(e) =>
+                              setColumnMapping({ ...columnMapping, fatherName: e.target.value })
+                            }
+                            className="w-full px-2 py-1.5 text-xs bg-neutral-50 border border-neutral-300 rounded-lg focus:outline-none"
+                          >
+                            <option value="">Father Name Col</option>
+                            {csvRawHeaders.map((h) => (
+                              <option key={h} value={h}>
+                                {h}
+                              </option>
+                            ))}
+                          </select>
+                          <select
+                            value={columnMapping.fatherPhone}
+                            onChange={(e) =>
+                              setColumnMapping({ ...columnMapping, fatherPhone: e.target.value })
+                            }
+                            className="w-full px-2 py-1.5 text-xs bg-neutral-50 border border-neutral-300 rounded-lg focus:outline-none"
+                          >
+                            <option value="">Father Mobile Col</option>
+                            {csvRawHeaders.map((h) => (
+                              <option key={h} value={h}>
+                                {h}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+
+                      {/* Mother Contact */}
+                      <div className="p-3.5 bg-white border border-neutral-200 rounded-xl space-y-1.5">
+                        <label className="block text-xs font-semibold text-neutral-800">
+                          Mother&apos;s Name &amp; Mobile (Optional)
+                        </label>
+                        <div className="grid grid-cols-2 gap-2">
+                          <select
+                            value={columnMapping.motherName}
+                            onChange={(e) =>
+                              setColumnMapping({ ...columnMapping, motherName: e.target.value })
+                            }
+                            className="w-full px-2 py-1.5 text-xs bg-neutral-50 border border-neutral-300 rounded-lg focus:outline-none"
+                          >
+                            <option value="">Mother Name Col</option>
+                            {csvRawHeaders.map((h) => (
+                              <option key={h} value={h}>
+                                {h}
+                              </option>
+                            ))}
+                          </select>
+                          <select
+                            value={columnMapping.motherPhone}
+                            onChange={(e) =>
+                              setColumnMapping({ ...columnMapping, motherPhone: e.target.value })
+                            }
+                            className="w-full px-2 py-1.5 text-xs bg-neutral-50 border border-neutral-300 rounded-lg focus:outline-none"
+                          >
+                            <option value="">Mother Mobile Col</option>
+                            {csvRawHeaders.map((h) => (
+                              <option key={h} value={h}>
+                                {h}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+
+                      {/* School & Board */}
+                      <div className="p-3.5 bg-white border border-neutral-200 rounded-xl space-y-1.5">
+                        <label className="block text-xs font-semibold text-neutral-800">
+                          School Name &amp; Board (Optional)
+                        </label>
+                        <div className="grid grid-cols-2 gap-2">
+                          <select
+                            value={columnMapping.schoolName}
+                            onChange={(e) =>
+                              setColumnMapping({ ...columnMapping, schoolName: e.target.value })
+                            }
+                            className="w-full px-2 py-1.5 text-xs bg-neutral-50 border border-neutral-300 rounded-lg focus:outline-none"
+                          >
+                            <option value="">School Name Col</option>
+                            {csvRawHeaders.map((h) => (
+                              <option key={h} value={h}>
+                                {h}
+                              </option>
+                            ))}
+                          </select>
+                          <select
+                            value={columnMapping.academicBoard}
+                            onChange={(e) =>
+                              setColumnMapping({ ...columnMapping, academicBoard: e.target.value })
+                            }
+                            className="w-full px-2 py-1.5 text-xs bg-neutral-50 border border-neutral-300 rounded-lg focus:outline-none"
+                          >
+                            <option value="">Board Col</option>
+                            {csvRawHeaders.map((h) => (
+                              <option key={h} value={h}>
+                                {h}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Live Sample Preview Table */}
+                  <div className="border border-neutral-200 rounded-xl p-3.5 bg-neutral-50/50 space-y-2">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-bold text-neutral-800 uppercase tracking-wider flex items-center gap-1.5">
+                        <Eye className="w-3.5 h-3.5 text-[#FF8500]" />
+                        Live Connection Preview (First 3 Rows)
+                      </span>
+                      <span className="text-neutral-500">Previewing mapped columns</span>
+                    </div>
+
+                    <div className="bg-white border border-neutral-200 rounded-lg overflow-x-auto">
+                      <table className="w-full text-left text-xs">
+                        <thead className="bg-neutral-50 border-b border-neutral-200 text-neutral-500 uppercase text-[10px]">
+                          <tr>
+                            <th className="py-2 px-3">#</th>
+                            <th className="py-2 px-3">Candidate Name</th>
+                            <th className="py-2 px-3">Class / Batch</th>
+                            <th className="py-2 px-3">Subjects Breakdown</th>
+                            <th className="py-2 px-3">Sample Contact</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-neutral-100">
+                          {csvRawDataRows.slice(0, 3).map((r, idx) => {
+                            const nameIdx = csvRawHeaders.indexOf(columnMapping.rawName);
+                            const nameVal = nameIdx !== -1 ? r[nameIdx] : '—';
+                            const subIdx = csvRawHeaders.indexOf(columnMapping.subjects);
+                            const subVal = subIdx !== -1 ? r[subIdx] : '';
+                            const classIdx = csvRawHeaders.indexOf(columnMapping.courseCode);
+                            const classVal = useClassColumn && classIdx !== -1 ? r[classIdx] : (courses.find((c) => c.id === bulkTargetCourseId)?.name || 'Default Course');
+                            const phoneIdx = csvRawHeaders.indexOf(columnMapping.phone);
+                            const phoneVal = phoneIdx !== -1 ? r[phoneIdx] : '—';
+
+                            // Split subjects by semicolon or comma
+                            const subPills = subVal ? subVal.split(/[;,]/).map((t) => t.trim()).filter(Boolean) : [];
+
+                            return (
+                              <tr key={idx} className="hover:bg-neutral-50">
+                                <td className="py-2 px-3 font-mono text-neutral-400">{idx + 1}</td>
+                                <td className="py-2 px-3 font-semibold text-neutral-900">
+                                  {nameVal || <span className="text-rose-500 italic">Missing Name</span>}
+                                </td>
+                                <td className="py-2 px-3 text-neutral-700">
+                                  <span className="font-medium">{classVal || 'Default Cohort'}</span>
+                                </td>
+                                <td className="py-2 px-3">
+                                  {subPills.length > 0 ? (
+                                    <div className="flex flex-wrap gap-1">
+                                      {subPills.map((p, pIdx) => (
+                                        <span
+                                          key={pIdx}
+                                          className="px-1.5 py-0.5 rounded text-[10px] bg-orange-50 border border-orange-200 text-orange-900 font-semibold"
+                                        >
+                                          {p}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  ) : (
+                                    <span className="text-neutral-400 italic">None specified</span>
+                                  )}
+                                </td>
+                                <td className="py-2 px-3 text-neutral-600 font-mono text-[11px]">
+                                  {phoneVal || '—'}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  {/* Actions */}
+                  <div className="flex items-center justify-between pt-3 border-t border-neutral-100">
+                    <button
+                      type="button"
+                      onClick={() => setBulkStep('UPLOAD')}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-neutral-600 hover:bg-neutral-100 rounded-lg cursor-pointer"
+                    >
+                      <ArrowLeft className="w-3.5 h-3.5" />
+                      <span>Back to Upload</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={bulkLoading || !columnMapping.rawName}
+                      onClick={handleValidateMappedCsv}
+                      className="px-4 py-2 text-sm font-semibold bg-[#FF8500] hover:bg-[#E67700] text-white rounded-lg transition disabled:opacity-50 cursor-pointer flex items-center gap-2 shadow-xs"
+                    >
                       {bulkLoading && <RefreshCw className="w-4 h-4 animate-spin" />}
-                      <span>{bulkLoading ? 'Validating CSV...' : 'Validate CSV Rows'}</span>
+                      <span>
+                        {bulkLoading
+                          ? 'Validating Rows...'
+                          : `Confirm Mapping & Validate ${csvRawDataRows.length} Rows`}
+                      </span>
+                      <ArrowRight className="w-4 h-4" />
                     </button>
                   </div>
                 </div>
@@ -2327,11 +3460,11 @@ export default function StudentsPage() {
                   <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-neutral-100">
                     <button
                       type="button"
-                      onClick={() => setBulkStep('UPLOAD')}
+                      onClick={() => setBulkStep(csvRawHeaders.length > 0 ? 'MAP_COLUMNS' : 'UPLOAD')}
                       className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-neutral-600 hover:bg-neutral-100 rounded-lg cursor-pointer"
                     >
                       <ArrowLeft className="w-3.5 h-3.5" />
-                      <span>Back to Upload</span>
+                      <span>{csvRawHeaders.length > 0 ? 'Back to Column Mapping' : 'Back to Upload'}</span>
                     </button>
 
                     <div className="flex items-center gap-2">

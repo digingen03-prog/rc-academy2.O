@@ -160,7 +160,14 @@ export function normalizeHeaderKey(rawHeader: string): string {
   if (compact === 'gender' || compact === 'sex') {
     return 'gender';
   }
-  if (compact === 'coursecode' || compact === 'course' || compact === 'standard') {
+  if (
+    compact === 'coursecode' ||
+    compact === 'course' ||
+    compact === 'standard' ||
+    compact === 'class' ||
+    compact === 'grade' ||
+    compact === 'cohort'
+  ) {
     return 'courseCode';
   }
   if (compact === 'batchcode' || compact === 'batch' || compact === 'section') {
@@ -297,9 +304,7 @@ export function splitStudentName(fullName: string): NameSplitResult {
     return {
       firstName: parts[0],
       lastName: '-',
-      isAmbiguous: true,
-      reason: msg,
-      warning: msg,
+      isAmbiguous: false,
     };
   }
 

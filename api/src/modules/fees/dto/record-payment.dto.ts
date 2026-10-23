@@ -97,6 +97,15 @@ export class RecordPaymentDto {
   @ValidateNested({ each: true })
   @Type(() => PaymentAllocationItemDto)
   allocations?: PaymentAllocationItemDto[];
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0, { message: 'Discount amount cannot be negative' })
+  discountAmount?: number;
+
+  @IsOptional()
+  @IsString()
+  discountReason?: string;
 }
 
 export class ReversePaymentDto {

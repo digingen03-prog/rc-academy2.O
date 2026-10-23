@@ -1198,17 +1198,27 @@ export default function AttendancePage() {
             <p className="text-xs text-gray-400">There are no active student enrollments for this class/batch.</p>
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs border-collapse">
-              <thead>
-                <tr className="border-b border-gray-200 bg-gray-100/70 text-gray-600 font-bold uppercase text-[10px] tracking-wider">
-                  <th className="py-3 px-4 w-12 text-center">#</th>
-                  <th className="py-3 px-4">Student Name</th>
-                  <th className="py-3 px-4">Code / Admission</th>
-                  <th className="py-3 px-4 text-center w-56">Attendance Status</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
+          <div>
+            {/* MOBILE RESPONSIVE VIEW (sm:hidden) */}
+            {/* Clean layout: Name as title, Red and Green Dots, no code/admission */}
+            <div className="block sm:hidden">
+              {/* Header with Title and Red/Green Dot labels */}
+              <div className="flex items-center justify-between px-4 py-2.5 bg-gray-100/90 border-b border-gray-200 text-xs font-bold text-gray-700">
+                <span>Student Name</span>
+                <div className="flex items-center gap-4 pr-1">
+                  <span className="flex items-center gap-1.5 text-emerald-700 text-xs font-semibold">
+                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 ring-2 ring-emerald-200 inline-block" />
+                    Present
+                  </span>
+                  <span className="flex items-center gap-1.5 text-rose-700 text-xs font-semibold">
+                    <span className="w-2.5 h-2.5 rounded-full bg-rose-500 ring-2 ring-rose-200 inline-block" />
+                    Absent
+                  </span>
+                </div>
+              </div>
+
+              {/* Student Rows */}
+              <div className="divide-y divide-gray-100 bg-white">
                 {todayAttendanceStudents
                   .filter((s) => {
                     if (!todayAttendanceSearch.trim()) return true;
@@ -1218,69 +1228,145 @@ export default function AttendancePage() {
                   .map((student, idx) => {
                     const isPresent = student.status === 'PRESENT';
                     return (
-                      <tr
+                      <div
                         key={student.studentId}
-                        className={`transition-colors hover:bg-gray-50/80 ${
-                          !isPresent ? 'bg-rose-50/30' : ''
+                        className={`flex items-center justify-between px-4 py-3.5 transition-colors ${
+                          !isPresent ? 'bg-rose-50/40' : 'hover:bg-gray-50/60'
                         }`}
                       >
-                        <td className="py-3 px-4 text-center font-medium text-gray-400 text-xs">
-                          {idx + 1}
-                        </td>
-                        <td className="py-3 px-4">
-                          <div className="flex items-center gap-2.5">
-                            <div
-                              className={`h-8 w-8 rounded-full flex items-center justify-center font-bold text-xs shrink-0 ${
-                                isPresent
-                                  ? 'bg-emerald-100 text-emerald-800'
-                                  : 'bg-rose-100 text-rose-800'
-                              }`}
-                            >
-                              {student.name.charAt(0).toUpperCase()}
-                            </div>
-                            <div>
-                              <p className="font-bold text-gray-900 text-sm">{student.name}</p>
-                            </div>
-                          </div>
-                        </td>
-                        <td className="py-3 px-4">
-                          <span className="font-mono text-xs font-semibold px-2 py-0.5 rounded bg-gray-100 text-gray-700">
-                            {student.code || 'N/A'}
+                        {/* Student Name as the title (No code or admission number on mobile) */}
+                        <div className="flex items-center gap-2.5 min-w-0 pr-3">
+                          <span className="text-xs font-bold text-gray-400 w-5 shrink-0 text-right">
+                            {idx + 1}.
                           </span>
-                        </td>
-                        <td className="py-3 px-4">
-                          <div className="flex items-center justify-center gap-2">
-                            <button
-                              type="button"
-                              onClick={() => handleToggleStudentStatus(student.studentId, 'PRESENT')}
-                              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition active:scale-95 ${
-                                isPresent
-                                  ? 'bg-emerald-600 text-white shadow-2xs'
-                                  : 'bg-gray-100 text-gray-600 hover:bg-emerald-50 hover:text-emerald-700 border border-gray-200'
-                              }`}
-                            >
-                              <CheckCircle2 className={`h-3.5 w-3.5 ${isPresent ? 'text-white' : 'text-emerald-500'}`} />
-                              Present
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleToggleStudentStatus(student.studentId, 'ABSENT')}
-                              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition active:scale-95 ${
-                                !isPresent
-                                  ? 'bg-rose-600 text-white shadow-2xs'
-                                  : 'bg-gray-100 text-gray-600 hover:bg-rose-50 hover:text-rose-700 border border-gray-200'
-                              }`}
-                            >
-                              <XCircle className={`h-3.5 w-3.5 ${!isPresent ? 'text-white' : 'text-rose-500'}`} />
-                              Absent
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
+                          <p className="font-bold text-gray-900 text-sm truncate">
+                            {student.name}
+                          </p>
+                        </div>
+
+                        {/* Interactive Green and Red Dots */}
+                        <div className="flex items-center gap-3.5 shrink-0">
+                          {/* Green Dot (Present) */}
+                          <button
+                            type="button"
+                            onClick={() => handleToggleStudentStatus(student.studentId, 'PRESENT')}
+                            className={`w-9 h-9 rounded-full flex items-center justify-center transition-all active:scale-90 cursor-pointer ${
+                              isPresent
+                                ? 'bg-emerald-500 text-white shadow-md ring-4 ring-emerald-100 scale-105'
+                                : 'bg-gray-100 text-gray-300 hover:bg-emerald-100 hover:text-emerald-600'
+                            }`}
+                            title="Mark Present"
+                            aria-label={`Mark ${student.name} Present`}
+                          >
+                            <Check className={`w-5 h-5 stroke-[2.5] ${isPresent ? 'text-white opacity-100' : 'text-gray-400 opacity-40'}`} />
+                          </button>
+
+                          {/* Red Dot (Absent) */}
+                          <button
+                            type="button"
+                            onClick={() => handleToggleStudentStatus(student.studentId, 'ABSENT')}
+                            className={`w-9 h-9 rounded-full flex items-center justify-center transition-all active:scale-90 cursor-pointer ${
+                              !isPresent
+                                ? 'bg-rose-500 text-white shadow-md ring-4 ring-rose-100 scale-105'
+                                : 'bg-gray-100 text-gray-300 hover:bg-rose-100 hover:text-rose-600'
+                            }`}
+                            title="Mark Absent"
+                            aria-label={`Mark ${student.name} Absent`}
+                          >
+                            <X className={`w-5 h-5 stroke-[2.5] ${!isPresent ? 'text-white opacity-100' : 'text-gray-400 opacity-40'}`} />
+                          </button>
+                        </div>
+                      </div>
                     );
                   })}
-              </tbody>
-            </table>
+              </div>
+            </div>
+
+            {/* DESKTOP TABLE VIEW (hidden sm:block) */}
+            <div className="hidden sm:block overflow-x-auto">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead>
+                  <tr className="border-b border-gray-200 bg-gray-100/70 text-gray-600 font-bold uppercase text-[10px] tracking-wider">
+                    <th className="py-3 px-4 w-12 text-center">#</th>
+                    <th className="py-3 px-4">Student Name</th>
+                    <th className="py-3 px-4">Code / Admission</th>
+                    <th className="py-3 px-4 text-center w-56">Attendance Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {todayAttendanceStudents
+                    .filter((s) => {
+                      if (!todayAttendanceSearch.trim()) return true;
+                      const q = todayAttendanceSearch.toLowerCase();
+                      return s.name.toLowerCase().includes(q) || s.code.toLowerCase().includes(q);
+                    })
+                    .map((student, idx) => {
+                      const isPresent = student.status === 'PRESENT';
+                      return (
+                        <tr
+                          key={student.studentId}
+                          className={`transition-colors hover:bg-gray-50/80 ${
+                            !isPresent ? 'bg-rose-50/30' : ''
+                          }`}
+                        >
+                          <td className="py-3 px-4 text-center font-medium text-gray-400 text-xs">
+                            {idx + 1}
+                          </td>
+                          <td className="py-3 px-4">
+                            <div className="flex items-center gap-2.5">
+                              <div
+                                className={`h-8 w-8 rounded-full flex items-center justify-center font-bold text-xs shrink-0 ${
+                                  isPresent
+                                    ? 'bg-emerald-100 text-emerald-800'
+                                    : 'bg-rose-100 text-rose-800'
+                                }`}
+                              >
+                                {student.name.charAt(0).toUpperCase()}
+                              </div>
+                              <div>
+                                <p className="font-bold text-gray-900 text-sm">{student.name}</p>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="py-3 px-4">
+                            <span className="font-mono text-xs font-semibold px-2 py-0.5 rounded bg-gray-100 text-gray-700">
+                              {student.code || 'N/A'}
+                            </span>
+                          </td>
+                          <td className="py-3 px-4">
+                            <div className="flex items-center justify-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => handleToggleStudentStatus(student.studentId, 'PRESENT')}
+                                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition active:scale-95 cursor-pointer ${
+                                  isPresent
+                                    ? 'bg-emerald-600 text-white shadow-2xs'
+                                    : 'bg-gray-100 text-gray-600 hover:bg-emerald-50 hover:text-emerald-700 border border-gray-200'
+                                }`}
+                              >
+                                <CheckCircle2 className={`h-3.5 w-3.5 ${isPresent ? 'text-white' : 'text-emerald-500'}`} />
+                                Present
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleToggleStudentStatus(student.studentId, 'ABSENT')}
+                                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition active:scale-95 cursor-pointer ${
+                                  !isPresent
+                                    ? 'bg-rose-600 text-white shadow-2xs'
+                                    : 'bg-gray-100 text-gray-600 hover:bg-rose-50 hover:text-rose-700 border border-gray-200'
+                                }`}
+                              >
+                                <XCircle className={`h-3.5 w-3.5 ${!isPresent ? 'text-white' : 'text-rose-500'}`} />
+                                Absent
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                </tbody>
+              </table>
+            </div>
           </div>
         )}
 
@@ -2194,7 +2280,7 @@ export default function AttendancePage() {
                     <thead className="sticky top-0 bg-gray-50 text-[10px] font-bold text-gray-500 uppercase border-b border-gray-200 z-10">
                       <tr>
                         <th className="px-4 py-2.5">Student Details</th>
-                        <th className="px-3 py-2.5">Code / Admission</th>
+                        <th className="px-3 py-2.5 hidden sm:table-cell">Code / Admission</th>
                         <th className="px-3 py-2.5">Status</th>
                         <th className="px-4 py-2.5 text-right">Quick Mark Attendance</th>
                       </tr>
@@ -2225,7 +2311,7 @@ export default function AttendancePage() {
                                   </span>
                                 </div>
                               </td>
-                              <td className="px-3 py-2.5 font-mono text-xs text-gray-600">
+                              <td className="px-3 py-2.5 font-mono text-xs text-gray-600 hidden sm:table-cell">
                                 {s.attendanceCode || s.studentCode}
                               </td>
                               <td className="px-3 py-2.5">

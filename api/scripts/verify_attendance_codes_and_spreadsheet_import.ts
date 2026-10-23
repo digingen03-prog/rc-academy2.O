@@ -24,7 +24,7 @@ async function main() {
   const prismaService = prisma as any;
   const attendanceCodeService = new AttendanceCodeService(prismaService);
   const salaryService = new SalaryService(prismaService);
-  const feesService = new FeesService(prismaService, salaryService);
+  const feesService = new FeesService(prismaService, salaryService, {} as any);
   const studentsService = new StudentsService(
     prismaService,
     attendanceCodeService,

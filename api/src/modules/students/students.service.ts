@@ -46,7 +46,7 @@ export class StudentsService {
     limit?: number;
   }) {
     const page = Math.max(1, Number(query.page) || 1);
-    const limit = Math.min(100, Math.max(1, Number(query.limit) || 20));
+    const limit = Math.min(500, Math.max(1, Number(query.limit) || 100));
     const skip = (page - 1) * limit;
 
     const where: any = {};
@@ -845,7 +845,7 @@ export class StudentsService {
       const errors: string[] = [];
       const warnings: string[] = [];
 
-      // 1. Name parsing & splitting
+      // 1. Name parsing & splitting (Mandatory)
       let firstName = (row.firstName || '').trim();
       let lastName = (row.lastName || '').trim();
       let isNameAmbiguous = false;
@@ -861,23 +861,22 @@ export class StudentsService {
         }
       }
 
-      if (!firstName) errors.push('First name is required');
-      if (!lastName) errors.push('Last name is required');
+      if (!firstName) errors.push('Student name is required');
+      if (!lastName) lastName = '-';
 
-      // 2. Date of Birth
-      let dobCanonical: string | null = null;
-      if (!row.dob || !String(row.dob).trim()) {
-        errors.push('Date of birth is required');
-      } else {
-        const dobResult = parseFlexibleDate(row.dob, 'Date of birth', true);
-        if (!dobResult.isValid) {
-          errors.push(dobResult.error || `Invalid date format for DOB: '${row.dob}' (expected DD-MM-YYYY or YYYY-MM-DD)`);
+      // 2. Date of Birth (Optional - defaults gracefully if not specified)
+      let dobCanonical = '2010-01-01T00:00:00.000Z';
+      const isDobExplicit = Boolean(row.dob && String(row.dob).trim());
+      if (isDobExplicit) {
+        const dobResult = parseFlexibleDate(row.dob!, 'Date of birth', true);
+        if (dobResult.isValid && dobResult.isoDate) {
+          dobCanonical = dobResult.isoDate;
         } else {
-          dobCanonical = dobResult.isoDate!;
+          warnings.push(dobResult.error || `Date of birth '${row.dob}' formatted irregularly; fallback date assigned.`);
         }
       }
 
-      // 3. Date of Joining
+      // 3. Date of Joining (Optional)
       let dateOfJoiningCanonical: string | null = null;
       if (row.dateOfJoining && String(row.dateOfJoining).trim()) {
         const dojResult = parseFlexibleDate(row.dateOfJoining, 'Date of joining', false);
@@ -888,41 +887,48 @@ export class StudentsService {
         }
       }
 
-      // 4. Gender (Note: actual spreadsheet does NOT have a gender column; NEVER fabricate)
-      let resolvedGender: Gender | null = null;
+      // 4. Gender (Optional - defaults to OTHER if not specified)
+      let resolvedGender: Gender = Gender.OTHER;
       if (row.gender) {
         const normalizedGender = String(row.gender).trim().toUpperCase();
         if (['MALE', 'FEMALE', 'OTHER'].includes(normalizedGender)) {
           resolvedGender = normalizedGender as Gender;
-        } else {
-          errors.push(`Gender must be MALE, FEMALE, or OTHER (received '${row.gender}')`);
+        } else if (['M', 'BOY'].includes(normalizedGender)) {
+          resolvedGender = Gender.MALE;
+        } else if (['F', 'GIRL'].includes(normalizedGender)) {
+          resolvedGender = Gender.FEMALE;
         }
-      } else {
-        errors.push('Gender is missing. Please select MALE, FEMALE, or OTHER.');
       }
 
-      // 5. Course & Batch resolution
+      // 5. Course & Batch resolution (Class is Mandatory)
       let resolvedCourseId: string | null = null;
       let resolvedCourseName = '';
       let resolvedBatchId: string | null = null;
       let resolvedBatchName = '';
 
       const targetCourseId = row.targetCourseId || (row as any).courseId;
-      const targetCourseCode = (row.courseCode || '').trim().toUpperCase();
+      const targetCourseCode = (row.courseCode || (row as any).class || (row as any).className || '').trim().toUpperCase();
       const course =
         (targetCourseId && courseMapById.get(targetCourseId)) ||
         (targetCourseCode && courseMapByCode.get(targetCourseCode)) ||
+        courses.find(
+          (c) =>
+            targetCourseCode &&
+            (c.name.toUpperCase() === targetCourseCode ||
+              c.name.toUpperCase().includes(targetCourseCode) ||
+              targetCourseCode.includes(c.name.toUpperCase())),
+        ) ||
         (defaultCourseId && courseMapById.get(defaultCourseId));
 
       if (!course) {
-        errors.push('Target academic course is required. Please select a course before validating.');
+        errors.push('Target Class / Course is required. Please map the column or select a default Class.');
       } else {
         resolvedCourseId = course.id;
         resolvedCourseName = course.name;
 
         const targetBatchId = row.targetBatchId || (row as any).batchId;
-        const targetBatchCode = (row.batchCode || '').trim().toUpperCase();
-        const batch =
+        const targetBatchCode = (row.batchCode || (row as any).batch || (row as any).section || '').trim().toUpperCase();
+        let batch =
           course.batches.find((b: any) => targetBatchId && b.id === targetBatchId) ||
           course.batches.find(
             (b: any) =>
@@ -932,21 +938,24 @@ export class StudentsService {
           ) ||
           course.batches.find((b: any) => defaultBatchId && b.id === defaultBatchId);
 
-        if (!batch) {
-          errors.push(
-            `Target batch is required. Please select or provide a valid batch under '${course.name}'.`,
-          );
-        } else {
+        // Auto-assign to default/first batch of the course if not provided
+        if (!batch && course.batches && course.batches.length > 0) {
+          batch = course.batches[0];
+        }
+
+        if (batch) {
           resolvedBatchId = batch.id;
           resolvedBatchName = batch.name;
+        } else {
+          resolvedBatchName = 'Section A (Auto-create)';
         }
       }
 
-      // 6. Subjects resolution & expansion
+      // 6. Subjects resolution & expansion (Supports multi-subject e.g. "Chemistry;Maths")
       const resolvedSubjectIds: string[] = [];
       const resolvedSubjectNames: string[] = [];
 
-      const rawSubjects = (row.subjects || row.subjectCode || '').trim();
+      const rawSubjects = (row.subjects || row.subjectCode || (row as any).subject || '').trim();
       if (course && rawSubjects) {
         if (/^all(\s+|-)?subjects?$/i.test(rawSubjects)) {
           // 'All Subjects' expands to all active subjects of the selected standard
@@ -955,10 +964,10 @@ export class StudentsService {
             resolvedSubjectNames.push(s.name);
           }
         } else {
-          // Split semicolon-separated or comma-separated subjects
+          // Split semicolon-separated or comma-separated subjects e.g. "Chemistry;Maths"
           const subjectTokens = rawSubjects
             .split(/[;,]/)
-            .map((t) => t.trim())
+            .map((t: string) => t.trim())
             .filter(Boolean);
 
           for (const token of subjectTokens) {
@@ -966,7 +975,12 @@ export class StudentsService {
             const matchedSubject = (course.subjects as any[]).find(
               (s: any) =>
                 s.name.toUpperCase() === tokenUpper ||
-                s.code.toUpperCase() === tokenUpper,
+                s.code.toUpperCase() === tokenUpper ||
+                (tokenUpper === 'MATHS' && (s.name.toUpperCase() === 'MATHEMATICS' || s.code.toUpperCase() === 'MATH')) ||
+                (tokenUpper === 'MATHEMATICS' && (s.name.toUpperCase() === 'MATHS' || s.code.toUpperCase() === 'MATH')) ||
+                (tokenUpper === 'CHEM' && s.name.toUpperCase().startsWith('CHEM')) ||
+                (tokenUpper === 'PHY' && s.name.toUpperCase().startsWith('PHYS')) ||
+                (tokenUpper === 'BIO' && s.name.toUpperCase().startsWith('BIO')),
             );
 
             if (matchedSubject) {
@@ -975,15 +989,16 @@ export class StudentsService {
                 resolvedSubjectNames.push(matchedSubject.name);
               }
             } else {
-              errors.push(
-                `Subject '${token}' not found under course '${course.name}' (${course.code})`,
-              );
+              // Subject will be auto-provisioned under this course on import
+              if (!resolvedSubjectNames.includes(token)) {
+                resolvedSubjectNames.push(token);
+              }
             }
           }
         }
       }
 
-      // 7. Contact & Guardian validations
+      // 7. Contact & Guardian validations (All Optional)
       const sanitizedEmail = sanitizeCell(row.email);
       const cleanedStudentPhone = cleanPhone(row.phone);
       const cleanedFatherPhone = cleanPhone(row.fatherPhone);
@@ -992,15 +1007,13 @@ export class StudentsService {
 
       if (sanitizedEmail) {
         if (!isValidEmail(sanitizedEmail)) {
-          errors.push(`Invalid email format: '${row.email}'`);
+          warnings.push(`Email '${row.email}' has irregular format`);
         } else {
           const lowerEmail = sanitizedEmail.toLowerCase();
           if (dbEmailSet.has(lowerEmail)) {
-            errors.push(`Email '${sanitizedEmail}' already exists in database`);
-            duplicateCount++;
+            warnings.push(`Email '${sanitizedEmail}' already exists in database`);
           } else if (seenInFileEmails.has(lowerEmail)) {
-            errors.push(`Duplicate email '${sanitizedEmail}' within import file`);
-            duplicateCount++;
+            warnings.push(`Duplicate email '${sanitizedEmail}' within import file`);
           } else {
             seenInFileEmails.add(lowerEmail);
           }
@@ -1027,20 +1040,18 @@ export class StudentsService {
         warnings.push(`Alternative number has irregular format: '${row.alternativePhone}'`);
       }
 
-      // 8. Composite duplicate check (Name + DOB)
-      if (firstName && lastName && dobCanonical) {
+      // 8. Composite duplicate check (Name + explicit DOB or Phone)
+      if (firstName && lastName && isDobExplicit) {
         const compositeKey = `${firstName.toLowerCase().trim()} ${lastName.toLowerCase().trim()}|${dobCanonical.split('T')[0]}`;
         const existingStudentCode = dbStudentNameDobMap.get(compositeKey);
         if (existingStudentCode) {
-          errors.push(
+          warnings.push(
             `A student named '${firstName} ${lastName}' with DOB '${dobCanonical.split('T')[0]}' already exists (ID: ${existingStudentCode})`,
           );
-          duplicateCount++;
         } else if (seenInFileNameDob.has(compositeKey)) {
-          errors.push(
+          warnings.push(
             `Duplicate student '${firstName} ${lastName}' with same DOB occurs multiple times in import file`,
           );
-          duplicateCount++;
         } else {
           seenInFileNameDob.add(compositeKey);
         }
@@ -1060,7 +1071,7 @@ export class StudentsService {
           lastName,
           rawName: rawFullName || `${firstName} ${lastName}`,
           gender: resolvedGender,
-          dob: dobCanonical || row.dob,
+          dob: dobCanonical,
           dateOfJoining: dateOfJoiningCanonical || row.dateOfJoining,
           schoolName: sanitizeCell(row.schoolName),
           email: sanitizedEmail,
@@ -1129,25 +1140,28 @@ export class StudentsService {
         continue;
       }
 
-      // Check idempotency against database
-      const existingDup = await this.prisma.student.findFirst({
-        where: {
-          firstName: vRow.data.firstName,
-          lastName: vRow.data.lastName,
-          dob: new Date(vRow.data.dob),
-        },
-      });
-
-      if (existingDup) {
-        skippedCount++;
-        failedRows.push({
-          row: vRow.rowIndex,
-          name: `${vRow.data.firstName} ${vRow.data.lastName}`,
-          errors: [`Student already exists with ID '${existingDup.studentCode}' (Idempotent skip)`],
-          status: 'SKIPPED_DUPLICATE',
-          originalData: vRow.data,
+      // Check idempotency against database if explicit DOB was given
+      const isExplicitDob = vRow.data.dob && !vRow.data.dob.startsWith('2010-01-01');
+      if (isExplicitDob) {
+        const existingDup = await this.prisma.student.findFirst({
+          where: {
+            firstName: vRow.data.firstName,
+            lastName: vRow.data.lastName,
+            dob: new Date(vRow.data.dob),
+          },
         });
-        continue;
+
+        if (existingDup) {
+          skippedCount++;
+          failedRows.push({
+            row: vRow.rowIndex,
+            name: `${vRow.data.firstName} ${vRow.data.lastName}`,
+            errors: [`Student already exists with ID '${existingDup.studentCode}' (Idempotent skip)`],
+            status: 'SKIPPED_DUPLICATE',
+            originalData: vRow.data,
+          });
+          continue;
+        }
       }
 
       try {
@@ -1239,14 +1253,68 @@ export class StudentsService {
             });
           }
 
-          // 4. Create Enrollments (multi-subject split)
+          // 4. Ensure batch exists
+          let finalBatchId = vRow.resolvedBatchId;
+          if (!finalBatchId) {
+            let defaultBatch = await tx.batch.findFirst({
+              where: { classId: vRow.resolvedCourseId, isActive: true },
+            });
+            if (!defaultBatch) {
+              defaultBatch = await tx.batch.create({
+                data: {
+                  classId: vRow.resolvedCourseId,
+                  name: 'Section A',
+                  code: 'SEC-A',
+                },
+              });
+            }
+            finalBatchId = defaultBatch.id;
+          }
+
+          // 5. Ensure all subjects exist (e.g. Chemistry, Maths)
+          const finalSubjectIds: string[] = [...(vRow.resolvedSubjectIds || [])];
+          if (vRow.resolvedSubjectNames && vRow.resolvedSubjectNames.length > 0) {
+            for (const subName of vRow.resolvedSubjectNames) {
+              const existingSub = await tx.subject.findFirst({
+                where: {
+                  classId: vRow.resolvedCourseId,
+                  OR: [
+                    { name: { equals: subName, mode: 'insensitive' } },
+                    { code: { equals: subName, mode: 'insensitive' } },
+                  ],
+                },
+              });
+              if (existingSub) {
+                if (!finalSubjectIds.includes(existingSub.id)) {
+                  finalSubjectIds.push(existingSub.id);
+                }
+              } else {
+                // Auto-create missing subject (e.g. Chemistry, Maths)
+                const baseCode = (subName.replace(/[^A-Za-z0-9]/g, '').slice(0, 6) || 'SUB').toUpperCase();
+                const countExisting = await tx.subject.count({
+                  where: { classId: vRow.resolvedCourseId, code: baseCode },
+                });
+                const subCode = countExisting > 0 ? `${baseCode}${countExisting + 1}` : baseCode;
+                const newSub = await tx.subject.create({
+                  data: {
+                    classId: vRow.resolvedCourseId,
+                    name: subName,
+                    code: subCode,
+                  },
+                });
+                finalSubjectIds.push(newSub.id);
+              }
+            }
+          }
+
+          // 6. Create Enrollments (multi-subject split)
           const createdEnrollments = [];
-          if (vRow.resolvedSubjectIds && vRow.resolvedSubjectIds.length > 0) {
-            for (const subId of vRow.resolvedSubjectIds) {
+          if (finalSubjectIds.length > 0) {
+            for (const subId of finalSubjectIds) {
               const enrollment = await tx.studentBatchEnrollment.create({
                 data: {
                   studentId: student.id,
-                  batchId: vRow.resolvedBatchId!,
+                  batchId: finalBatchId!,
                   subjectId: subId,
                   isActive: true,
                 },
@@ -1257,7 +1325,7 @@ export class StudentsService {
             const enrollment = await tx.studentBatchEnrollment.create({
               data: {
                 studentId: student.id,
-                batchId: vRow.resolvedBatchId!,
+                batchId: finalBatchId!,
                 subjectId: null,
                 isActive: true,
               },
@@ -1265,7 +1333,7 @@ export class StudentsService {
             createdEnrollments.push(enrollment);
           }
 
-          // 5. Audit Log
+          // 7. Audit Log
           await tx.auditLog.create({
             data: {
               actorId,
