@@ -45,4 +45,30 @@ export interface PaymentReceiptDto {
   status: PaymentStatusEnum;
   paidAt: string;
   recordedByName: string;
+  proofObjectKey?: string | null;
+  proofFileName?: string | null;
+  proofFileSize?: number | null;
+  proofMimeType?: string | null;
+  proofUploadedAt?: string | null;
 }
+
+export interface PaymentProofUploadResponseDto {
+  success: boolean;
+  paymentId: string;
+  receiptNumber: string;
+  proofObjectKey: string;
+  proofFileName: string;
+  proofFileSize: number;
+  proofMimeType: string;
+  proofUploadedAt: string | Date;
+}
+
+export interface PaymentProofUrlResponseDto {
+  downloadUrl: string;
+  expiresIn: number;
+  fileName?: string;
+  fileSize?: number;
+  mimeType?: string;
+  uploadedAt?: string | Date;
+}
+
