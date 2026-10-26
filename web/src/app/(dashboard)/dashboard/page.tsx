@@ -34,6 +34,7 @@ interface Metrics {
     pendingInvoicesCount: number;
     currentMonthPending?: number;
     currentMonthInvoicesCount?: number;
+    pendingStudentsCount?: number;
     monthName?: string;
   } | null;
   academics: {
@@ -185,8 +186,8 @@ export default function DashboardPage() {
                     {loading
                       ? 'Loading records...'
                       : error
-                      ? 'Invoice data unavailable'
-                      : `${metrics.finance.currentMonthInvoicesCount ?? 0} open invoice(s) this month`}
+                      ? 'Fee data unavailable'
+                      : `${metrics.finance.pendingStudentsCount ?? metrics.finance.currentMonthInvoicesCount ?? 0} student(s) pending`}
                   </span>
                   {metrics.finance.totalOutstanding > (metrics.finance.currentMonthPending ?? 0) && (
                     <span className="text-[10px] font-medium text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200">
