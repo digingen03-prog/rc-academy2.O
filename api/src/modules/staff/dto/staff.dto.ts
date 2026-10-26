@@ -34,6 +34,9 @@ export class CourseAssignmentItemDto {
   @IsOptional()
   compensationRule?: string;
 
+  @IsOptional()
+  settlementConfig?: any;
+
   @IsString()
   @IsOptional()
   startDate?: string;

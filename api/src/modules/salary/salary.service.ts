@@ -16,6 +16,7 @@ import {
   AccrueFixedSalaryDto,
   CreateSalaryAdjustmentDto,
 } from './dto/salary.dto';
+import { calculateStaffSettlement } from '../staff/staff-settlement.helper';
 
 @Injectable()
 export class SalaryService {
@@ -238,17 +239,36 @@ export class SalaryService {
 
         // Split staff pool evenly among active assignments
         const poolFraction = allocatedAmount.div(assignments.length);
-        for (const assign of assignments) {
-          const staffRate = assign.staffSharePercentage || defaultStaffRate;
-          const academyRate = new Decimal(100).sub(staffRate);
 
-          const staffPoolAmount = poolFraction
-            .mul(staffRate)
-            .div(100)
-            .toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
-          const academyShareAmount = poolFraction
-            .sub(staffPoolAmount)
-            .toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+        // Determine student's enrolled subject count / tier for this class
+        const totalClassSubjectsCount = await db.subject.count({
+          where: { classId },
+        });
+        const studentClassEnrollments = payment.student.batchEnrollments.filter(
+          (be) => be.batch?.classId === classId && be.isActive !== false,
+        );
+        const studentSubCount = studentClassEnrollments.filter((be) => be.subjectId).length;
+
+        let studentTier: 'ALL' | 'TWO_SUBJECTS' | 'SINGLE_SUBJECT' = 'ALL';
+        if (totalClassSubjectsCount > 0 && studentSubCount >= totalClassSubjectsCount) {
+          studentTier = 'ALL';
+        } else if (studentSubCount === 2) {
+          studentTier = 'TWO_SUBJECTS';
+        } else if (studentSubCount === 1) {
+          studentTier = 'SINGLE_SUBJECT';
+        } else if (studentClassEnrollments.length >= 3 || studentSubCount >= 3) {
+          studentTier = 'ALL';
+        } else {
+          studentTier = 'ALL';
+        }
+
+        for (const assign of assignments) {
+          const calc = calculateStaffSettlement({
+            compensationRule: assign.compensationRule,
+            defaultStaffRate: assign.staffSharePercentage || defaultStaffRate,
+            collectedAmount: poolFraction,
+            studentTier,
+          });
 
           const entry = await db.staffSalaryLedger.create({
             data: {
@@ -260,13 +280,13 @@ export class SalaryService {
               paymentId: payment.id,
               paymentAllocationId: alloc.id,
               receiptNumber: payment.receiptNumber,
-              collectedAmount: poolFraction,
-              staffPoolRate: staffRate,
-              academyShareRate: academyRate,
-              academyShareAmount,
-              staffPoolAmount,
-              earnedAmount: staffPoolAmount,
-              ruleApplied: assign.compensationRule || 'REVENUE_SHARE_70_30',
+              collectedAmount: poolFraction.toDecimalPlaces(2),
+              staffPoolRate: calc.staffPoolRate,
+              academyShareRate: calc.academyShareRate,
+              academyShareAmount: calc.academyShareAmount,
+              staffPoolAmount: calc.staffPoolAmount,
+              earnedAmount: calc.earnedAmount,
+              ruleApplied: calc.ruleApplied,
               status: 'ACCRUED',
             },
           });
@@ -313,18 +333,26 @@ export class SalaryService {
             continue;
           }
 
+          // Determine tier for this line
+          let lineTier: 'ALL' | 'TWO_SUBJECTS' | 'SINGLE_SUBJECT' = 'ALL';
+          if (matchedLines.length === 1 && line.subjectId) {
+            lineTier = 'SINGLE_SUBJECT';
+          } else if (matchedLines.length === 2) {
+            lineTier = 'TWO_SUBJECTS';
+          } else if (matchedLines.length >= 3) {
+            lineTier = 'ALL';
+          } else if (line.subjectId) {
+            lineTier = 'SINGLE_SUBJECT';
+          }
+
           const splitPerTeacher = lineFraction.div(assignments.length);
           for (const assign of assignments) {
-            const staffRate = assign.staffSharePercentage || defaultStaffRate;
-            const academyRate = new Decimal(100).sub(staffRate);
-
-            const staffPoolAmount = splitPerTeacher
-              .mul(staffRate)
-              .div(100)
-              .toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
-            const academyShareAmount = splitPerTeacher
-              .sub(staffPoolAmount)
-              .toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+            const calc = calculateStaffSettlement({
+              compensationRule: assign.compensationRule,
+              defaultStaffRate: assign.staffSharePercentage || defaultStaffRate,
+              collectedAmount: splitPerTeacher,
+              studentTier: lineTier,
+            });
 
             const entry = await db.staffSalaryLedger.create({
               data: {
@@ -337,12 +365,12 @@ export class SalaryService {
                 paymentAllocationId: alloc.id,
                 receiptNumber: payment.receiptNumber,
                 collectedAmount: splitPerTeacher.toDecimalPlaces(2),
-                staffPoolRate: staffRate,
-                academyShareRate: academyRate,
-                academyShareAmount,
-                staffPoolAmount,
-                earnedAmount: staffPoolAmount,
-                ruleApplied: assign.compensationRule || 'REVENUE_SHARE_70_30',
+                staffPoolRate: calc.staffPoolRate,
+                academyShareRate: calc.academyShareRate,
+                academyShareAmount: calc.academyShareAmount,
+                staffPoolAmount: calc.staffPoolAmount,
+                earnedAmount: calc.earnedAmount,
+                ruleApplied: calc.ruleApplied,
                 status: 'ACCRUED',
               },
             });

@@ -3,6 +3,7 @@ import {
   ConflictException,
   NotFoundException,
   BadRequestException,
+  ForbiddenException,
   Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
@@ -14,11 +15,13 @@ import {
   CreateStudentDto,
   UpdateStudentDto,
   EnrollStudentDto,
+  RecordAdvanceDto,
+  AllocateAdvanceDto,
   BulkImportRowDto,
   BulkValidateDto,
   BulkImportDto,
 } from './dto/create-student.dto';
-import { Gender, StudentStatus } from '@prisma/client';
+import { Gender, StudentStatus, PaymentMethod, InvoiceStatus, UserRoleType, Prisma } from '@prisma/client';
 import { FeesService } from '../fees/fees.service';
 import {
   parseFlexibleDate,
@@ -38,18 +41,101 @@ export class StudentsService {
     private readonly feesService: FeesService,
   ) {}
 
-  async findAll(query: {
-    search?: string;
-    batchId?: string;
-    classId?: string;
-    page?: number;
-    limit?: number;
-  }) {
+  /**
+   * Resolves the student query filter condition for a staff member based on their active assignments
+   */
+  async getStaffAssignedStudentCondition(userId: string): Promise<Prisma.StudentWhereInput> {
+    const [courseAssignments, classSchedules] = await Promise.all([
+      this.prisma.staffCourseAssignment.findMany({
+        where: { userId, isActive: true },
+        select: { classId: true, batchId: true, subjectId: true },
+      }),
+      this.prisma.classSchedule.findMany({
+        where: { staffId: userId, isActive: true },
+        select: { classId: true, batchId: true, subjectId: true },
+      }),
+    ]);
+
+    const allAssignments = [...courseAssignments, ...classSchedules];
+    if (allAssignments.length === 0) {
+      return { id: '__NO_ASSIGNED_STUDENTS__' };
+    }
+
+    const conditions: Prisma.StudentWhereInput[] = [];
+
+    for (const a of allAssignments) {
+      if (a.batchId && a.subjectId) {
+        conditions.push({
+          batchEnrollments: {
+            some: {
+              batchId: a.batchId,
+              subjectId: a.subjectId,
+              isActive: true,
+            },
+          },
+        });
+      } else if (a.batchId) {
+        conditions.push({
+          batchEnrollments: {
+            some: {
+              batchId: a.batchId,
+              isActive: true,
+            },
+          },
+        });
+      } else if (a.classId && a.subjectId) {
+        conditions.push({
+          batchEnrollments: {
+            some: {
+              batch: { classId: a.classId },
+              subjectId: a.subjectId,
+              isActive: true,
+            },
+          },
+        });
+      } else if (a.classId) {
+        conditions.push({
+          batchEnrollments: {
+            some: {
+              batch: { classId: a.classId },
+              isActive: true,
+            },
+          },
+        });
+      }
+    }
+
+    return conditions.length > 0 ? { OR: conditions } : { id: '__NO_ASSIGNED_STUDENTS__' };
+  }
+
+  async findAll(
+    query: {
+      search?: string;
+      batchId?: string;
+      classId?: string;
+      page?: number;
+      limit?: number;
+    },
+    user?: any,
+  ) {
     const page = Math.max(1, Number(query.page) || 1);
     const limit = Math.min(500, Math.max(1, Number(query.limit) || 100));
     const skip = (page - 1) * limit;
 
     const where: any = {};
+
+    // 1. Role-based assignment boundary: Non-admin staff/teachers can ONLY view their assigned students
+    const roles: string[] = user?.roles || [];
+    const isPrivileged =
+      roles.includes(UserRoleType.SUPER_ADMIN) || roles.includes(UserRoleType.ACADEMY_ADMIN);
+
+    if (!isPrivileged && user?.id) {
+      const assignedCondition = await this.getStaffAssignedStudentCondition(user.id);
+      where.AND = [
+        ...(Array.isArray(where.AND) ? where.AND : where.AND ? [where.AND] : []),
+        assignedCondition,
+      ];
+    }
 
     if (query.search) {
       const q = query.search.trim();
@@ -100,7 +186,11 @@ export class StudentsService {
       }
     }
 
-    if (query.batchId) {
+    if (query.batchId && query.classId) {
+      where.batchEnrollments = {
+        some: { batchId: query.batchId, batch: { classId: query.classId }, isActive: true },
+      };
+    } else if (query.batchId) {
       where.batchEnrollments = {
         some: { batchId: query.batchId, isActive: true },
       };
@@ -199,7 +289,25 @@ export class StudentsService {
     };
   }
 
-  async findOne(id: string) {
+  async findOne(id: string, user?: any) {
+    const roles: string[] = user?.roles || [];
+    const isPrivileged =
+      roles.includes(UserRoleType.SUPER_ADMIN) || roles.includes(UserRoleType.ACADEMY_ADMIN);
+
+    if (!isPrivileged && user?.id) {
+      const assignedCondition = await this.getStaffAssignedStudentCondition(user.id);
+      const isAssigned = await this.prisma.student.findFirst({
+        where: {
+          id,
+          AND: [assignedCondition],
+        },
+        select: { id: true },
+      });
+      if (!isAssigned) {
+        throw new ForbiddenException('You do not have permission to access this student record');
+      }
+    }
+
     const student = await this.prisma.student.findUnique({
       where: { id },
       include: {
@@ -239,12 +347,16 @@ export class StudentsService {
       throw new NotFoundException(`Student with ID ${id} not found`);
     }
 
+    const advanceSummary = await this.getStudentAdvanceSummary(id);
+
     return {
       ...student,
       fullName: student.lastName && student.lastName !== '-' ? `${student.firstName} ${student.lastName}` : student.firstName,
       dobFormatted: student.dob.toISOString().split('T')[0],
       activeEnrollments: student.batchEnrollments.filter((e) => e.isActive),
       historicalEnrollments: student.batchEnrollments.filter((e) => !e.isActive),
+      advanceSummary,
+      availableAdvanceBalance: advanceSummary.availableBalance,
     };
   }
 
@@ -440,6 +552,47 @@ export class StudentsService {
         }
       }
 
+      // 5B. Record admission advance if amount > 0
+      let advanceRecord: any = null;
+      if (dto.advanceAmount && Number(dto.advanceAmount) > 0) {
+        const advAmount = new Prisma.Decimal(dto.advanceAmount);
+        if (advAmount.gt(0)) {
+          const advanceCount = await tx.studentAdvance.count();
+          const receiptNumber = `ADV-${new Date().getFullYear()}-${String(advanceCount + 1).padStart(5, '0')}`;
+          const paymentMethod = dto.advancePaymentMethod || PaymentMethod.CASH;
+          const paymentDate = dto.advancePaymentDate ? new Date(dto.advancePaymentDate) : new Date();
+
+          advanceRecord = await tx.studentAdvance.create({
+            data: {
+              receiptNumber,
+              studentId: student.id,
+              amount: advAmount,
+              paymentMethod,
+              paymentDate,
+              reference: dto.advanceReference && dto.advanceReference.trim() ? dto.advanceReference.trim() : null,
+              notes: dto.advanceNotes && dto.advanceNotes.trim() ? dto.advanceNotes.trim() : 'Admission payment & advance',
+              recordedById: actorId || (await this.resolveSystemAdminId(tx)),
+            },
+          });
+
+          await tx.auditLog.create({
+            data: {
+              actorId,
+              action: 'STUDENT_ADVANCE_COLLECTED_AT_ADMISSION',
+              entityType: 'StudentAdvance',
+              entityId: advanceRecord.id,
+              details: {
+                studentId: student.id,
+                receiptNumber,
+                amount: advAmount.toNumber(),
+                paymentMethod,
+                paymentDate: paymentDate.toISOString(),
+              },
+            },
+          });
+        }
+      }
+
       // 6. Record audit log
       await tx.auditLog.create({
         data: {
@@ -466,6 +619,7 @@ export class StudentsService {
           name: b.name,
           className: b.class.name,
         })),
+        advance: advanceRecord,
       };
 
       return {
@@ -729,7 +883,22 @@ export class StudentsService {
     });
   }
 
-  async getStudentEnrollments(studentId: string) {
+  async getStudentEnrollments(studentId: string, user?: any) {
+    const roles: string[] = user?.roles || [];
+    const isPrivileged =
+      roles.includes(UserRoleType.SUPER_ADMIN) || roles.includes(UserRoleType.ACADEMY_ADMIN);
+
+    if (!isPrivileged && user?.id) {
+      const assignedCondition = await this.getStaffAssignedStudentCondition(user.id);
+      const isAssigned = await this.prisma.student.findFirst({
+        where: { id: studentId, AND: [assignedCondition] },
+        select: { id: true },
+      });
+      if (!isAssigned) {
+        throw new ForbiddenException('You do not have permission to access this student record');
+      }
+    }
+
     const student = await this.prisma.student.findUnique({
       where: { id: studentId },
     });
@@ -1467,6 +1636,426 @@ export class StudentsService {
           name: `${student.firstName} ${student.lastName}`,
           attendanceCode: student.attendanceCode,
         },
+      };
+    });
+  }
+
+  // ----------------------------------------------------
+  // ADVANCE ACCOUNTING & ALLOCATION LOGIC
+  // ----------------------------------------------------
+
+  private async resolveSystemAdminId(tx: any): Promise<string> {
+    const adminUser = await tx.user.findFirst({
+      where: {
+        userRoles: {
+          some: {
+            role: {
+              name: {
+                in: ['SUPER_ADMIN', 'ACADEMY_ADMIN'],
+              },
+            },
+          },
+        },
+      },
+      select: { id: true },
+    });
+    if (adminUser) return adminUser.id;
+    const fallbackUser = await tx.user.findFirst({ select: { id: true } });
+    return fallbackUser?.id || '';
+  }
+
+  async getStudentAdvanceSummary(studentId: string, tx?: any, user?: any) {
+    const roles: string[] = user?.roles || [];
+    const isPrivileged =
+      roles.includes(UserRoleType.SUPER_ADMIN) || roles.includes(UserRoleType.ACADEMY_ADMIN);
+
+    if (!isPrivileged && user?.id) {
+      const assignedCondition = await this.getStaffAssignedStudentCondition(user.id);
+      const isAssigned = await this.prisma.student.findFirst({
+        where: { id: studentId, AND: [assignedCondition] },
+        select: { id: true },
+      });
+      if (!isAssigned) {
+        throw new ForbiddenException('You do not have permission to access this student record');
+      }
+    }
+
+    const db = tx || this.prisma;
+    const advances = await db.studentAdvance.findMany({
+      where: { studentId },
+      include: {
+        recordedBy: {
+          select: { id: true, firstName: true, lastName: true, email: true },
+        },
+        allocations: {
+          include: {
+            invoice: {
+              select: {
+                id: true,
+                invoiceNumber: true,
+                totalAmount: true,
+                balanceAmount: true,
+                status: true,
+              },
+            },
+            allocatedBy: {
+              select: { id: true, firstName: true, lastName: true, email: true },
+            },
+          },
+          orderBy: { allocatedAt: 'desc' },
+        },
+      },
+      orderBy: { paymentDate: 'desc' },
+    });
+
+    let totalCollected = new Prisma.Decimal(0);
+    let totalUtilized = new Prisma.Decimal(0);
+
+    const enrichedAdvances = advances.map((adv: any) => {
+      const advAmount = new Prisma.Decimal(adv.amount);
+      totalCollected = totalCollected.add(advAmount);
+
+      let advUtilized = new Prisma.Decimal(0);
+      const allocations = adv.allocations || [];
+      for (const alloc of allocations) {
+        advUtilized = advUtilized.add(new Prisma.Decimal(alloc.allocatedAmount));
+      }
+      totalUtilized = totalUtilized.add(advUtilized);
+
+      const advRemaining = advAmount.sub(advUtilized);
+      const advDate = adv.paymentDate ? new Date(adv.paymentDate).toISOString() : new Date().toISOString();
+
+      return {
+        id: adv.id,
+        receiptNumber: adv.receiptNumber,
+        amount: advAmount.toNumber(),
+        paymentMethod: adv.paymentMethod || 'CASH',
+        paymentDate: advDate,
+        reference: adv.reference,
+        notes: adv.notes,
+        recordedBy: adv.recordedBy || null,
+        createdAt: adv.createdAt ? new Date(adv.createdAt).toISOString() : advDate,
+        utilizedAmount: advUtilized.toNumber(),
+        availableBalance: advRemaining.toNumber(),
+        allocations: allocations.map((al: any) => ({
+          id: al.id,
+          invoiceId: al.invoiceId,
+          invoiceNumber: al.invoice?.invoiceNumber || 'INV',
+          allocatedAmount: new Prisma.Decimal(al.allocatedAmount).toNumber(),
+          allocatedAt: al.allocatedAt ? new Date(al.allocatedAt).toISOString() : new Date().toISOString(),
+          allocatedBy: al.allocatedBy || null,
+          notes: al.notes,
+        })),
+      };
+    });
+
+    const availableBalance = totalCollected.sub(totalUtilized);
+
+    // Compile combined unified timeline history
+    const history: Array<{
+      id: string;
+      type: 'COLLECTION' | 'ALLOCATION';
+      date: string;
+      amount: number;
+      paymentMethod?: string;
+      reference?: string;
+      notes?: string;
+      receiptNumber?: string;
+      invoiceNumber?: string;
+      invoiceId?: string;
+      actorName: string;
+    }> = [];
+
+    for (const adv of advances) {
+      const advDate = adv.paymentDate ? new Date(adv.paymentDate).toISOString() : new Date().toISOString();
+      const actorName = adv.recordedBy
+        ? `${adv.recordedBy.firstName || ''} ${adv.recordedBy.lastName || ''}`.trim()
+        : 'System Admin';
+
+      history.push({
+        id: adv.id,
+        type: 'COLLECTION',
+        date: advDate,
+        amount: new Prisma.Decimal(adv.amount).toNumber(),
+        paymentMethod: adv.paymentMethod || 'CASH',
+        reference: adv.reference || undefined,
+        notes: adv.notes || undefined,
+        receiptNumber: adv.receiptNumber,
+        actorName: actorName || 'System Admin',
+      });
+
+      for (const al of adv.allocations || []) {
+        const alDate = al.allocatedAt ? new Date(al.allocatedAt).toISOString() : new Date().toISOString();
+        const allocActorName = al.allocatedBy
+          ? `${al.allocatedBy.firstName || ''} ${al.allocatedBy.lastName || ''}`.trim()
+          : 'System Admin';
+
+        history.push({
+          id: al.id,
+          type: 'ALLOCATION',
+          date: alDate,
+          amount: new Prisma.Decimal(al.allocatedAmount).toNumber(),
+          invoiceNumber: al.invoice?.invoiceNumber || undefined,
+          invoiceId: al.invoiceId,
+          notes: al.notes || undefined,
+          reference: adv.receiptNumber,
+          actorName: allocActorName || 'System Admin',
+        });
+      }
+    }
+
+    // Sort history chronologically newest first
+    history.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+    return {
+      totalCollected: totalCollected.toNumber(),
+      totalUtilized: totalUtilized.toNumber(),
+      availableBalance: availableBalance.toNumber(),
+      advances: enrichedAdvances,
+      history,
+    };
+  }
+
+  async recordAdvance(studentId: string, dto: RecordAdvanceDto, actorId: string) {
+    const student = await this.prisma.student.findUnique({
+      where: { id: studentId },
+    });
+    if (!student) {
+      throw new NotFoundException(`Student ${studentId} not found`);
+    }
+
+    const amount = new Prisma.Decimal(dto.amount);
+    if (amount.lte(0)) {
+      throw new BadRequestException('Advance amount must be greater than zero');
+    }
+    if (amount.gt(new Prisma.Decimal(10000000))) {
+      throw new BadRequestException('Advance amount exceeds maximum allowed limit (₹1,00,00,000)');
+    }
+    if (amount.decimalPlaces() > 2) {
+      throw new BadRequestException('Advance amount cannot have more than 2 decimal places');
+    }
+
+    const paymentDate = new Date(dto.paymentDate);
+    if (isNaN(paymentDate.getTime())) {
+      throw new BadRequestException('Invalid payment date format');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      // Prevent duplicate entry on rapid retries (same student, amount, reference within last 5 seconds)
+      const fiveSecondsAgo = new Date(Date.now() - 5000);
+      const duplicateRecent = await tx.studentAdvance.findFirst({
+        where: {
+          studentId,
+          amount,
+          reference: dto.reference && dto.reference.trim() ? dto.reference.trim() : null,
+          createdAt: { gte: fiveSecondsAgo },
+        },
+      });
+
+      if (duplicateRecent) {
+        this.logger.warn(`Duplicate advance submission detected for student ${studentId}`);
+        return {
+          advance: duplicateRecent,
+          receiptNumber: duplicateRecent.receiptNumber,
+          isDuplicateRetry: true,
+          summary: await this.getStudentAdvanceSummary(studentId, tx),
+        };
+      }
+
+      const advanceCount = await tx.studentAdvance.count();
+      const receiptNumber = `ADV-${new Date().getFullYear()}-${String(advanceCount + 1).padStart(5, '0')}`;
+
+      const advance = await tx.studentAdvance.create({
+        data: {
+          receiptNumber,
+          studentId,
+          amount,
+          paymentMethod: dto.paymentMethod,
+          paymentDate,
+          reference: dto.reference && dto.reference.trim() ? dto.reference.trim() : null,
+          notes: dto.notes && dto.notes.trim() ? dto.notes.trim() : null,
+          recordedById: actorId,
+        },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          actorId,
+          action: 'STUDENT_ADVANCE_COLLECTED',
+          entityType: 'StudentAdvance',
+          entityId: advance.id,
+          details: {
+            studentId,
+            receiptNumber,
+            amount: amount.toNumber(),
+            paymentMethod: dto.paymentMethod,
+            paymentDate: paymentDate.toISOString(),
+            reference: dto.reference && dto.reference.trim() ? dto.reference.trim() : null,
+          },
+        },
+      });
+
+      const summary = await this.getStudentAdvanceSummary(studentId, tx);
+
+      return {
+        advance,
+        receiptNumber: advance.receiptNumber,
+        isDuplicateRetry: false,
+        summary,
+      };
+    });
+  }
+
+  async allocateAdvance(studentId: string, dto: AllocateAdvanceDto, actorId: string) {
+    const student = await this.prisma.student.findUnique({
+      where: { id: studentId },
+    });
+    if (!student) {
+      throw new NotFoundException(`Student ${studentId} not found`);
+    }
+
+    const allocAmount = new Prisma.Decimal(dto.amount);
+    if (allocAmount.lte(0)) {
+      throw new BadRequestException('Allocation amount must be greater than zero');
+    }
+    if (allocAmount.decimalPlaces() > 2) {
+      throw new BadRequestException('Allocation amount cannot have more than 2 decimal places');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      // 1. Pessimistic row-level lock on student to prevent concurrent double-spend
+      await tx.$queryRawUnsafe('SELECT id FROM students WHERE id = $1 FOR UPDATE', studentId);
+
+      // 2. Fetch and validate invoice
+      const invoice = await tx.feeInvoice.findUnique({
+        where: { id: dto.invoiceId },
+      });
+      if (!invoice) {
+        throw new NotFoundException(`Invoice ${dto.invoiceId} not found`);
+      }
+      if (invoice.studentId !== studentId) {
+        throw new BadRequestException(`Invoice ${invoice.invoiceNumber} does not belong to student ${studentId}`);
+      }
+      if (!([InvoiceStatus.UNPAID, InvoiceStatus.PARTIAL] as InvoiceStatus[]).includes(invoice.status)) {
+        throw new BadRequestException(
+          `Invoice ${invoice.invoiceNumber} is already ${invoice.status} and cannot receive allocations`,
+        );
+      }
+
+      const remainingInvoiceBalance = new Prisma.Decimal(invoice.balanceAmount);
+      if (allocAmount.gt(remainingInvoiceBalance)) {
+        throw new BadRequestException(
+          `Allocation amount (₹${allocAmount.toString()}) exceeds invoice remaining balance (₹${remainingInvoiceBalance.toString()}) for invoice ${invoice.invoiceNumber}`,
+        );
+      }
+
+      // 3. Fetch advances and calculate current available balance inside the lock
+      const advances = await tx.studentAdvance.findMany({
+        where: { studentId },
+        include: { allocations: true },
+        orderBy: { paymentDate: 'asc' }, // FIFO: oldest advance first
+      });
+
+      let totalCollected = new Prisma.Decimal(0);
+      let totalUtilized = new Prisma.Decimal(0);
+
+      for (const adv of advances) {
+        const advAmount = new Prisma.Decimal(adv.amount);
+        totalCollected = totalCollected.add(advAmount);
+        for (const al of adv.allocations || []) {
+          totalUtilized = totalUtilized.add(new Prisma.Decimal(al.allocatedAmount));
+        }
+      }
+
+      const availableAdvance = totalCollected.sub(totalUtilized);
+
+      if (allocAmount.gt(availableAdvance)) {
+        throw new BadRequestException(
+          `Allocation amount (₹${allocAmount.toString()}) exceeds student's available advance balance (₹${availableAdvance.toString()})`,
+        );
+      }
+
+      // 4. Distribute allocation across available advances (FIFO)
+      let remainingToAllocate = allocAmount;
+      const createdAllocations: any[] = [];
+
+      for (const adv of advances) {
+        if (remainingToAllocate.isZero()) break;
+
+        const advAmount = new Prisma.Decimal(adv.amount);
+        const advAllocated = (adv.allocations || []).reduce(
+          (sum: Prisma.Decimal, a: any) => sum.add(new Prisma.Decimal(a.allocatedAmount)),
+          new Prisma.Decimal(0),
+        );
+        const advAvailable = advAmount.sub(advAllocated);
+
+        if (advAvailable.gt(0)) {
+          const allocationChunk = Prisma.Decimal.min(remainingToAllocate, advAvailable);
+
+          const allocationRecord = await tx.studentAdvanceAllocation.create({
+            data: {
+              advanceId: adv.id,
+              invoiceId: invoice.id,
+              allocatedAmount: allocationChunk,
+              allocatedById: actorId,
+              notes: dto.notes?.trim() || `Allocated to ${invoice.invoiceNumber}`,
+            },
+          });
+
+          createdAllocations.push(allocationRecord);
+          remainingToAllocate = remainingToAllocate.sub(allocationChunk);
+        }
+      }
+
+      // 5. Update FeeInvoice balance and status
+      const newBalance = remainingInvoiceBalance.sub(allocAmount);
+      const newPaid = new Prisma.Decimal(invoice.paidAmount || 0).add(allocAmount);
+      const newStatus = newBalance.isZero() ? InvoiceStatus.PAID : InvoiceStatus.PARTIAL;
+
+      const updatedInvoice = await tx.feeInvoice.update({
+        where: { id: invoice.id },
+        data: {
+          paidAmount: newPaid,
+          balanceAmount: newBalance,
+          status: newStatus,
+        },
+      });
+
+      // 6. Record audit log
+      await tx.auditLog.create({
+        data: {
+          actorId,
+          action: 'STUDENT_ADVANCE_ALLOCATED_TO_INVOICE',
+          entityType: 'StudentAdvanceAllocation',
+          entityId: createdAllocations[0]?.id,
+          details: {
+            studentId,
+            invoiceId: invoice.id,
+            invoiceNumber: invoice.invoiceNumber,
+            allocatedAmount: allocAmount.toNumber(),
+            previousBalance: remainingInvoiceBalance.toNumber(),
+            newBalance: newBalance.toNumber(),
+            newInvoiceStatus: newStatus,
+            advancesCount: createdAllocations.length,
+          },
+        },
+      });
+
+      const updatedSummary = await this.getStudentAdvanceSummary(studentId, tx);
+
+      return {
+        success: true,
+        allocatedAmount: allocAmount.toNumber(),
+        invoice: {
+          id: updatedInvoice.id,
+          invoiceNumber: updatedInvoice.invoiceNumber,
+          totalAmount: new Prisma.Decimal(updatedInvoice.totalAmount).toNumber(),
+          paidAmount: newPaid.toNumber(),
+          balanceAmount: newBalance.toNumber(),
+          status: updatedInvoice.status,
+        },
+        allocations: createdAllocations,
+        summary: updatedSummary,
       };
     });
   }

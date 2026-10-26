@@ -16,6 +16,8 @@ import {
   CreateStudentDto,
   UpdateStudentDto,
   EnrollStudentDto,
+  RecordAdvanceDto,
+  AllocateAdvanceDto,
   BulkValidateDto,
   BulkImportDto,
 } from './dto/create-student.dto';
@@ -47,8 +49,9 @@ export class StudentsController {
       page?: number;
       limit?: number;
     },
+    @CurrentUser() user: any,
   ) {
-    return this.studentsService.findAll(query);
+    return this.studentsService.findAll(query, user);
   }
 
   @Get('csv-template')
@@ -86,8 +89,8 @@ export class StudentsController {
     UserRoleType.ACCOUNTANT,
     UserRoleType.STAFF,
   )
-  async findOne(@Param('id') id: string) {
-    return this.studentsService.findOne(id);
+  async findOne(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.studentsService.findOne(id, user);
   }
 
   @Post()
@@ -109,7 +112,7 @@ export class StudentsController {
     return this.studentsService.update(id, updateDto, actorId);
   }
 
-  @Post(':id/enroll')
+  @Post([':id/enroll', ':id/enrollments'])
   @Roles(UserRoleType.SUPER_ADMIN, UserRoleType.ACADEMY_ADMIN)
   async enroll(
     @Param('id') id: string,
@@ -127,8 +130,8 @@ export class StudentsController {
     UserRoleType.ACCOUNTANT,
     UserRoleType.STAFF,
   )
-  async getEnrollments(@Param('id') id: string) {
-    return this.studentsService.getStudentEnrollments(id);
+  async getEnrollments(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.studentsService.getStudentEnrollments(id, user);
   }
 
   @Delete(':id/enrollments/:enrollmentId')
@@ -139,6 +142,42 @@ export class StudentsController {
     @CurrentUser('id') actorId: string,
   ) {
     return this.studentsService.deactivateEnrollment(id, enrollmentId, actorId);
+  }
+
+  // ----------------------------------------------------
+  // Student Advance & Fee Allocation Endpoints
+  // ----------------------------------------------------
+
+  @Get(':id/advances')
+  @Roles(
+    UserRoleType.SUPER_ADMIN,
+    UserRoleType.ACADEMY_ADMIN,
+    UserRoleType.TEACHER,
+    UserRoleType.ACCOUNTANT,
+    UserRoleType.STAFF,
+  )
+  async getAdvances(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.studentsService.getStudentAdvanceSummary(id, undefined, user);
+  }
+
+  @Post(':id/advances')
+  @Roles(UserRoleType.SUPER_ADMIN, UserRoleType.ACADEMY_ADMIN)
+  async recordAdvance(
+    @Param('id') id: string,
+    @Body() dto: RecordAdvanceDto,
+    @CurrentUser('id') actorId: string,
+  ) {
+    return this.studentsService.recordAdvance(id, dto, actorId);
+  }
+
+  @Post(':id/advances/allocate')
+  @Roles(UserRoleType.SUPER_ADMIN, UserRoleType.ACADEMY_ADMIN)
+  async allocateAdvance(
+    @Param('id') id: string,
+    @Body() dto: AllocateAdvanceDto,
+    @CurrentUser('id') actorId: string,
+  ) {
+    return this.studentsService.allocateAdvance(id, dto, actorId);
   }
 
   @Delete(':id')

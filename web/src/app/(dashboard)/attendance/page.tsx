@@ -1090,52 +1090,36 @@ export default function AttendancePage() {
     return (
       <div className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden animate-in fade-in duration-200 mt-6">
         {/* Header with Title & Stats */}
-        <div className="border-b border-gray-200 bg-gray-50/70 p-4 sm:p-5">
-          <div className="flex flex-wrap items-center justify-between gap-4">
-            <div>
-              <div className="flex items-center gap-2">
-                <h3 className="text-base font-bold text-gray-900">
+        <div className="border-b border-gray-200 bg-gray-50/70 p-3.5 sm:p-5">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="text-sm sm:text-base font-bold text-gray-900 truncate">
                   {selectedTodayAttendanceClass.className} – {selectedTodayAttendanceClass.batchName}
                 </h3>
                 {selectedTodayAttendanceClass.subjectName && (
-                  <span className="rounded-md bg-orange-100 px-2 py-0.5 text-xs font-bold text-[#FF8500]">
+                  <span className="rounded-md bg-orange-100 px-2 py-0.5 text-xs font-bold text-[#FF8500] shrink-0">
                     {selectedTodayAttendanceClass.subjectName}
                   </span>
                 )}
+                <span className="inline-flex items-center gap-1 rounded-md bg-orange-100/80 px-2 py-0.5 text-[11px] font-bold text-[#D96B00] border border-orange-200/60 shrink-0">
+                  <Clock className="h-3 w-3" /> Auto-closes 09:30 PM
+                </span>
               </div>
-              <p className="text-xs text-gray-500 mt-1 flex items-center gap-2">
-                <Clock className="h-3.5 w-3.5 text-gray-400" />
-                {selectedTodayAttendanceClass.startTime} – {selectedTodayAttendanceClass.endTime}
+              <p className="text-xs text-gray-500 mt-1 flex items-center gap-1.5 flex-wrap">
+                <Clock className="h-3.5 w-3.5 text-gray-400 shrink-0" />
+                <span>{selectedTodayAttendanceClass.startTime} – {selectedTodayAttendanceClass.endTime}</span>
                 {selectedTodayAttendanceClass.teacherName && (
                   <>
-                    <span>•</span>
+                    <span className="text-gray-300">•</span>
                     <span>Faculty: {selectedTodayAttendanceClass.teacherName}</span>
                   </>
                 )}
               </p>
             </div>
 
-            {/* Stats pills & Close */}
-            <div className="flex items-center gap-2">
-              <div className="flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-1.5 shadow-2xs">
-                <Users className="h-4 w-4 text-gray-400" />
-                <span className="text-xs text-gray-500">Total:</span>
-                <span className="text-xs font-bold text-gray-800">{todayAttendanceStudents.length}</span>
-              </div>
-              <div className="flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 shadow-2xs">
-                <CheckCircle2 className="h-4 w-4 text-emerald-600" />
-                <span className="text-xs text-emerald-700">Present:</span>
-                <span className="text-xs font-bold text-emerald-800">
-                  {todayAttendanceStudents.filter((s) => s.status === 'PRESENT').length}
-                </span>
-              </div>
-              <div className="flex items-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-3 py-1.5 shadow-2xs">
-                <XCircle className="h-4 w-4 text-rose-600" />
-                <span className="text-xs text-rose-700">Absent:</span>
-                <span className="text-xs font-bold text-rose-800">
-                  {todayAttendanceStudents.filter((s) => s.status === 'ABSENT').length}
-                </span>
-              </div>
+            {/* Top Right: Close button */}
+            <div className="flex items-center justify-end gap-2 shrink-0">
               <button
                 type="button"
                 onClick={() => {
@@ -1151,24 +1135,47 @@ export default function AttendancePage() {
             </div>
           </div>
 
+          {/* Stats pills: 3-col grid on mobile, flex on desktop */}
+          <div className="grid grid-cols-3 gap-2 sm:flex sm:items-center sm:gap-2 mt-3">
+            <div className="flex items-center justify-center sm:justify-start gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 shadow-2xs text-center sm:text-left">
+              <Users className="h-3.5 w-3.5 text-gray-400 shrink-0" />
+              <span className="text-[11px] sm:text-xs text-gray-500">Total:</span>
+              <span className="text-xs sm:text-sm font-bold text-gray-800">{todayAttendanceStudents.length}</span>
+            </div>
+            <div className="flex items-center justify-center sm:justify-start gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 shadow-2xs text-center sm:text-left">
+              <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+              <span className="text-[11px] sm:text-xs text-emerald-700">Present:</span>
+              <span className="text-xs sm:text-sm font-bold text-emerald-800">
+                {todayAttendanceStudents.filter((s) => s.status === 'PRESENT').length}
+              </span>
+            </div>
+            <div className="flex items-center justify-center sm:justify-start gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1.5 shadow-2xs text-center sm:text-left">
+              <XCircle className="h-3.5 w-3.5 text-rose-600 shrink-0" />
+              <span className="text-[11px] sm:text-xs text-rose-700">Absent:</span>
+              <span className="text-xs sm:text-sm font-bold text-rose-800">
+                {todayAttendanceStudents.filter((s) => s.status === 'ABSENT').length}
+              </span>
+            </div>
+          </div>
+
           {/* Actions & Search Bar */}
-          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-gray-200">
-            <div className="relative min-w-[240px] max-w-sm flex-1">
+          <div className="mt-3 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 pt-3 border-t border-gray-200">
+            <div className="relative flex-1 min-w-0">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-gray-400" />
               <input
                 type="text"
                 value={todayAttendanceSearch}
                 onChange={(e) => setTodayAttendanceSearch(e.target.value)}
-                placeholder="Search student by name or code..."
-                className="w-full pl-9 pr-3 py-1.5 text-xs rounded-lg border border-gray-300 bg-white focus:outline-none focus:border-[#FF8500]"
+                placeholder="Search student by name..."
+                className="w-full pl-9 pr-3 py-2 text-xs rounded-lg border border-gray-300 bg-white focus:outline-none focus:border-[#FF8500]"
               />
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="grid grid-cols-2 gap-2 sm:flex sm:items-center">
               <button
                 type="button"
                 onClick={() => handleSetAllStudentsStatus('PRESENT')}
-                className="px-3 py-1.5 text-xs font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 rounded-lg transition active:scale-95 flex items-center gap-1.5"
+                className="px-3 py-2 text-xs font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 rounded-lg transition active:scale-95 flex items-center justify-center gap-1.5"
               >
                 <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
                 Mark All Present
@@ -1176,7 +1183,7 @@ export default function AttendancePage() {
               <button
                 type="button"
                 onClick={() => handleSetAllStudentsStatus('ABSENT')}
-                className="px-3 py-1.5 text-xs font-bold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-300 rounded-lg transition active:scale-95 flex items-center gap-1.5"
+                className="px-3 py-2 text-xs font-bold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-300 rounded-lg transition active:scale-95 flex items-center justify-center gap-1.5"
               >
                 <XCircle className="h-3.5 w-3.5 text-rose-600" />
                 Mark All Absent
@@ -1371,32 +1378,38 @@ export default function AttendancePage() {
         )}
 
         {/* Bottom Submit Bar */}
-        <div className="border-t border-gray-200 bg-gray-50/80 p-4 flex flex-wrap items-center justify-between gap-3">
-          <div className="text-xs text-gray-600">
-            <span className="font-bold text-gray-900">{todayAttendanceStudents.length}</span> total students:{' '}
-            <span className="font-bold text-emerald-700">
-              {todayAttendanceStudents.filter((s) => s.status === 'PRESENT').length} Present
-            </span>
-            ,{' '}
-            <span className="font-bold text-rose-700">
-              {todayAttendanceStudents.filter((s) => s.status === 'ABSENT').length} Absent
-            </span>
+        <div className="border-t border-gray-200 bg-gray-50/90 p-3.5 sm:p-4 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+          <div className="flex flex-col gap-0.5 text-xs text-gray-600">
+            <div>
+              <span className="font-bold text-gray-900">{todayAttendanceStudents.length}</span> total students:{' '}
+              <span className="font-bold text-emerald-700">
+                {todayAttendanceStudents.filter((s) => s.status === 'PRESENT').length} Present
+              </span>
+              ,{' '}
+              <span className="font-bold text-rose-700">
+                {todayAttendanceStudents.filter((s) => s.status === 'ABSENT').length} Absent
+              </span>
+            </div>
+            <p className="text-[11px] text-gray-500 flex items-center gap-1">
+              <Clock className="h-3 w-3 text-[#FF8500] shrink-0" />
+              <span>Attendance auto-closes at 09:30 PM • No manual close needed</span>
+            </p>
           </div>
 
           <Button
             onClick={handleSubmitTodayAttendance}
             disabled={submittingTodayAttendance || todayAttendanceStudents.length === 0}
-            className="bg-[#FF8500] hover:bg-[#e67700] text-white font-bold text-xs px-6 py-2.5 shadow-md flex items-center gap-2 transition"
+            className="w-full sm:w-auto bg-[#FF8500] hover:bg-[#e67700] text-white font-bold text-xs sm:text-sm py-2.5 sm:py-3 px-6 shadow-md flex items-center justify-center gap-2 transition active:scale-98"
           >
             {submittingTodayAttendance ? (
               <>
                 <RefreshCw className="h-4 w-4 animate-spin" />
-                <span>Submitting Attendance...</span>
+                <span>Saving Attendance...</span>
               </>
             ) : (
               <>
                 <Check className="h-4 w-4" />
-                <span>Submit Attendance & Generate Absentee Message</span>
+                <span>Save Attendance & Generate Absentee Notice</span>
               </>
             )}
           </Button>
@@ -1459,10 +1472,16 @@ export default function AttendancePage() {
             </button>
           </div>
 
-          {/* Academy Timezone & Date Indicator */}
-          <div className="flex items-center gap-2 self-start sm:self-auto rounded-lg bg-white px-2.5 py-1 text-[11px] sm:text-xs font-medium text-gray-600 border border-gray-200 shadow-sm shrink-0">
-            <Clock className="h-3.5 w-3.5 text-[#FF8500]" />
-            <span>Timezone: <strong className="text-black">{timezone}</strong></span>
+          {/* Academy Timezone & Auto-Close Policy Indicator */}
+          <div className="flex items-center gap-2 flex-wrap self-start sm:self-auto">
+            <div className="flex items-center gap-1.5 rounded-lg bg-white px-2.5 py-1 text-[11px] sm:text-xs font-medium text-gray-600 border border-gray-200 shadow-sm shrink-0">
+              <Clock className="h-3.5 w-3.5 text-[#FF8500]" />
+              <span>Timezone: <strong className="text-black">{timezone}</strong></span>
+            </div>
+            <div className="flex items-center gap-1.5 rounded-lg bg-orange-50 px-2.5 py-1 text-[11px] sm:text-xs font-bold text-[#D96B00] border border-orange-200 shadow-2xs shrink-0">
+              <CheckCircle2 className="h-3.5 w-3.5 text-[#FF8500]" />
+              <span>Auto-closes: 09:30 PM</span>
+            </div>
           </div>
         </div>
 
@@ -1472,70 +1491,82 @@ export default function AttendancePage() {
         {activeTab === 'SCANNER' && (
           <div className="space-y-6">
             {/* Date Navigator Banner */}
-            <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
-              <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-orange-50 text-[#FF8500]">
-                  <CalendarDays className="h-5 w-5" />
-                </div>
-                <div>
-                  <h2 className="text-base font-bold text-gray-900">
-                    {dateFormatted || 'Academy Schedule'}
-                  </h2>
-                  <p className="text-xs text-gray-500">
-                    Operating under academy-local timetable ({timezone})
-                  </p>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-xl border border-gray-200 bg-white p-3.5 sm:p-4 shadow-sm">
+              <div className="flex items-center justify-between sm:justify-start gap-3">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-orange-50 text-[#FF8500] shrink-0">
+                    <CalendarDays className="h-5 w-5" />
+                  </div>
+                  <div className="min-w-0">
+                    <h2 className="text-sm sm:text-base font-bold text-gray-900 truncate">
+                      {dateFormatted || 'Academy Schedule'}
+                    </h2>
+                    <p className="text-[11px] sm:text-xs text-gray-500 flex items-center gap-1.5 flex-wrap">
+                      <span className="font-semibold text-orange-950">Auto-closes daily at 09:30 PM</span>
+                      <span className="hidden sm:inline">•</span>
+                      <span className="hidden sm:inline text-gray-400">Timetable: {timezone}</span>
+                    </p>
+                  </div>
                 </div>
               </div>
 
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => shiftDate(-1)}
-                  className="rounded-lg border border-gray-200 bg-white p-2 text-gray-600 hover:bg-gray-50 hover:text-black transition-colors"
-                  title="Previous Day"
-                >
-                  <ChevronLeft className="h-4 w-4" />
-                </button>
+              <div className="flex items-center justify-between sm:justify-end gap-1.5 w-full sm:w-auto pt-2 sm:pt-0 border-t sm:border-t-0 border-gray-100">
+                <div className="flex items-center gap-1 flex-1 sm:flex-initial">
+                  <button
+                    onClick={() => shiftDate(-1)}
+                    className="rounded-lg border border-gray-200 bg-white p-2 text-gray-600 hover:bg-gray-50 hover:text-black transition-colors shrink-0"
+                    title="Previous Day"
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                  </button>
 
-                <input
-                  type="date"
-                  value={selectedDate}
-                  onChange={(e) => {
-                    setSelectedDate(e.target.value);
-                    loadTodayData(e.target.value);
-                  }}
-                  className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-semibold text-gray-800 focus:border-[#FF8500] focus:outline-none"
-                />
+                  <input
+                    type="date"
+                    value={selectedDate}
+                    onChange={(e) => {
+                      setSelectedDate(e.target.value);
+                      loadTodayData(e.target.value);
+                    }}
+                    className="w-full sm:w-auto rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-800 focus:border-[#FF8500] focus:outline-none min-w-0"
+                  />
 
-                <button
-                  onClick={() => shiftDate(1)}
-                  className="rounded-lg border border-gray-200 bg-white p-2 text-gray-600 hover:bg-gray-50 hover:text-black transition-colors"
-                  title="Next Day"
-                >
-                  <ChevronRight className="h-4 w-4" />
-                </button>
+                  <button
+                    onClick={() => shiftDate(1)}
+                    className="rounded-lg border border-gray-200 bg-white p-2 text-gray-600 hover:bg-gray-50 hover:text-black transition-colors shrink-0"
+                    title="Next Day"
+                  >
+                    <ChevronRight className="h-4 w-4" />
+                  </button>
+                </div>
 
                 <Button
                   variant="outline"
                   size="sm"
                   onClick={() => loadTodayData(selectedDate)}
                   disabled={loadingToday}
-                  className="text-xs ml-2"
+                  className="text-xs shrink-0 px-2.5 py-1.5 h-auto flex items-center gap-1"
                 >
-                  <RefreshCw className={`h-3.5 w-3.5 mr-1 ${loadingToday ? 'animate-spin' : ''}`} />
-                  Refresh
+                  <RefreshCw className={`h-3.5 w-3.5 ${loadingToday ? 'animate-spin' : ''}`} />
+                  <span className="hidden sm:inline">Refresh</span>
                 </Button>
               </div>
             </div>
+
             {/* Class Selection Section */}
-            <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
-              <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+            <div className="rounded-xl border border-gray-200 bg-white p-4 sm:p-5 shadow-sm">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
                 <div>
-                  <h3 className="text-base font-bold text-gray-900 flex items-center gap-2">
-                    <CalendarDays className="h-5 w-5 text-[#FF8500]" />
-                    Today's Classes ({scheduledClasses.length})
-                  </h3>
-                  <p className="text-xs text-gray-500 mt-0.5">
-                    Click any class below to open all enrolled students and mark attendance.
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h3 className="text-sm sm:text-base font-bold text-gray-900 flex items-center gap-2">
+                      <CalendarDays className="h-4 sm:h-5 w-4 sm:w-5 text-[#FF8500]" />
+                      Today's Classes ({scheduledClasses.length})
+                    </h3>
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-orange-100 text-[#D96B00] border border-orange-200/60">
+                      Auto-closes 09:30 PM
+                    </span>
+                  </div>
+                  <p className="text-xs text-gray-500 mt-1">
+                    Select a class to mark attendance and immediately generate WhatsApp absentee notice.
                   </p>
                 </div>
                 {selectedTodayAttendanceClass && (
@@ -1544,7 +1575,7 @@ export default function AttendancePage() {
                       setSelectedTodayAttendanceClass(null);
                       setTodayAttendanceStudents([]);
                     }}
-                    className="text-xs font-semibold text-gray-500 hover:text-gray-800 flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-50"
+                    className="self-start sm:self-auto text-xs font-semibold text-gray-500 hover:text-gray-800 flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-50"
                   >
                     <X className="h-3.5 w-3.5" />
                     Deselect Class
@@ -1571,6 +1602,7 @@ export default function AttendancePage() {
                       selectedTodayAttendanceClass?.batchId === item.batchId;
                     const isOpen = item.sessionStatus === 'OPEN';
                     const isClosed = item.sessionStatus === 'CLOSED';
+                    const isMarked = item.presentCount > 0 || item.absentCount > 0;
 
                     return (
                       <div
@@ -1589,18 +1621,22 @@ export default function AttendancePage() {
                             </span>
                             <span
                               className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold shrink-0 ${
-                                isOpen
+                                isMarked
                                   ? 'bg-emerald-100 text-emerald-800'
                                   : isClosed
                                   ? 'bg-gray-100 text-gray-700'
                                   : 'bg-amber-100 text-amber-800'
                               }`}
                             >
-                              {isOpen ? 'Live' : isClosed ? 'Closed' : 'Scheduled'}
+                              {isMarked
+                                ? `Marked (${item.presentCount}P / ${item.absentCount}A)`
+                                : isClosed
+                                ? 'Closed (09:30 PM)'
+                                : 'Pending'}
                             </span>
                           </div>
 
-                          <div className="mt-1 flex items-center gap-1.5 text-xs text-gray-600">
+                          <div className="mt-1 flex items-center gap-1.5 text-xs text-gray-600 flex-wrap">
                             <span className="font-medium text-gray-800">{item.batchName}</span>
                             {item.subjectName && (
                               <>
@@ -1621,6 +1657,11 @@ export default function AttendancePage() {
                               <span className="truncate">{item.teacherName}</span>
                             </div>
                           )}
+
+                          <div className="mt-2 flex items-center gap-1 text-[11px] text-gray-400">
+                            <Clock className="h-3 w-3 text-orange-400 shrink-0" />
+                            <span>Auto-closes 09:30 PM</span>
+                          </div>
                         </div>
 
                         <div className="mt-4 pt-3 border-t border-gray-100 flex items-center justify-between">
@@ -1631,11 +1672,11 @@ export default function AttendancePage() {
                           <span
                             className={`text-xs font-bold px-2.5 py-1 rounded-md transition ${
                               isSelected
-                                ? 'bg-[#FF8500] text-white'
+                                ? 'bg-[#FF8500] text-white shadow-2xs'
                                 : 'bg-gray-100 text-gray-700 hover:bg-[#FF8500] hover:text-white'
                             }`}
                           >
-                            {isSelected ? 'Selected' : 'Open Sheet →'}
+                            {isSelected ? 'Sheet Open ✓' : isMarked ? 'Edit / View →' : 'Take Attendance →'}
                           </span>
                         </div>
                       </div>
@@ -2744,17 +2785,17 @@ export default function AttendancePage() {
                 />
               </div>
 
-              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-gray-100">
+              <div className="flex flex-col-reverse sm:flex-row items-stretch sm:items-center justify-between gap-2.5 pt-3 border-t border-gray-100">
                 <Button
                   variant="outline"
                   size="sm"
                   onClick={() => setSubmittedAbsenteeModalData(null)}
-                  className="text-xs"
+                  className="w-full sm:w-auto text-xs py-2 sm:py-1.5"
                 >
-                  Close
+                  Done / Close
                 </Button>
 
-                <div className="flex items-center gap-2">
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full sm:w-auto">
                   <Button
                     variant="outline"
                     size="sm"
@@ -2762,7 +2803,7 @@ export default function AttendancePage() {
                       navigator.clipboard.writeText(submittedAbsenteeModalData.message);
                       showToast('Copied absentee message to clipboard!');
                     }}
-                    className="text-xs flex items-center gap-1.5 font-bold text-gray-700 hover:text-black"
+                    className="w-full sm:w-auto text-xs py-2 sm:py-1.5 flex items-center justify-center gap-1.5 font-bold text-gray-700 hover:text-black border-gray-300"
                   >
                     <Copy className="h-3.5 w-3.5 text-gray-500" />
                     <span>Copy Message</span>
@@ -2784,7 +2825,7 @@ export default function AttendancePage() {
                         window.open(url, '_blank');
                       }
                     }}
-                    className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1.5 shadow-sm"
+                    className="w-full sm:w-auto bg-[#25D366] hover:bg-[#20ba59] text-white text-xs sm:text-sm font-bold py-2.5 sm:py-2 px-4 flex items-center justify-center gap-2 shadow-sm active:scale-98"
                   >
                     <MessageCircle className="h-4 w-4" />
                     <span>Send via WhatsApp</span>

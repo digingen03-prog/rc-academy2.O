@@ -299,7 +299,32 @@ export class AttendanceService {
       ? resolvedClasses.filter((c) => c.teacherId === actorId)
       : resolvedClasses;
 
-    // 4. Load attendance sessions for today
+    // 4. Auto-close sessions at 09:30 PM policy for today/past dates
+    const now = new Date();
+    const tzFormatter = new Intl.DateTimeFormat('en-GB', {
+      timeZone: timezone,
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+    const currentTimeStr = tzFormatter.format(now);
+    const { dateStr: todayDateStr } = await this.getAcademyTodayDateString();
+    const isPastDateOrPast930PM =
+      dateStr < todayDateStr || (dateStr === todayDateStr && currentTimeStr >= '21:30');
+
+    if (isPastDateOrPast930PM) {
+      await this.prisma.attendanceSession.updateMany({
+        where: {
+          date: dateObj,
+          status: SessionStatus.OPEN,
+        },
+        data: {
+          status: SessionStatus.CLOSED,
+        },
+      });
+    }
+
+    // Load attendance sessions for today
     const sessionsToday = await this.prisma.attendanceSession.findMany({
       where: { date: dateObj },
       include: {
@@ -450,6 +475,8 @@ export class AttendanceService {
         isSubstituted: cls.isSubstituted || false,
         sessionId: matchedSession ? matchedSession.id : null,
         sessionStatus: sessionStatus as 'NOT_STARTED' | 'OPEN' | 'CLOSED' | 'CANCELLED',
+        isAutoClosed: isPastDateOrPast930PM,
+        autoClosePolicy: '09:30 PM',
         eligibleStudentCount,
         presentCount,
         absentCount,
@@ -469,6 +496,8 @@ export class AttendanceService {
       date: dateStr,
       dateFormatted,
       timezone,
+      autoClosePolicy: '09:30 PM',
+      isAutoClosed: isPastDateOrPast930PM,
       summary: {
         classesScheduledToday,
         sessionsCompleted,
@@ -1001,7 +1030,11 @@ export class AttendanceService {
       }
 
       if (specifiedSession.status === SessionStatus.CLOSED) {
-        throw new BadRequestException(`Attendance session is closed. No new scans permitted.`);
+        await this.prisma.attendanceSession.update({
+          where: { id: specifiedSession.id },
+          data: { status: SessionStatus.OPEN },
+        });
+        specifiedSession.status = SessionStatus.OPEN;
       }
 
       targetBatchId = specifiedSession.batchId;
@@ -1057,7 +1090,11 @@ export class AttendanceService {
     }
 
     if (session.status === SessionStatus.CLOSED) {
-      throw new BadRequestException(`Attendance session is closed. No new scans permitted.`);
+      await this.prisma.attendanceSession.update({
+        where: { id: session.id },
+        data: { status: SessionStatus.OPEN },
+      });
+      session.status = SessionStatus.OPEN;
     }
 
     // 4. Atomically check for duplicate record

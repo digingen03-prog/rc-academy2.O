@@ -1621,6 +1621,11 @@ export class FeesService {
             subject: true,
           },
         },
+        guardians: {
+          include: {
+            guardian: true,
+          },
+        },
         feeInvoices: {
           where: { status: { not: InvoiceStatus.CANCELLED } },
           include: {
@@ -1914,6 +1919,8 @@ export class FeesService {
         email: student.email,
         phone: student.phone,
         status: student.status,
+        parentName: (student as any).guardians?.[0]?.guardian?.fullName || null,
+        parentPhone: (student as any).guardians?.[0]?.guardian?.phone || null,
       },
       enrolledCourses: activeEnrollments,
       courseFees: courseAccounts,
@@ -1941,44 +1948,63 @@ export class FeesService {
     page?: number;
     limit?: number;
   }) {
+    const hasExplicitPage = query.page !== undefined && query.page !== null && String(query.page) !== '';
     const page = Math.max(1, Number(query.page) || 1);
-    const limit = Math.max(1, Math.min(100, Number(query.limit) || 20));
-    const skip = (page - 1) * limit;
 
-    const whereStudent: any = {};
+    const hasLimit = query.limit !== undefined && query.limit !== null && String(query.limit) !== '';
+    const parsedLimit = hasLimit ? Number(query.limit) : null;
+    // If limit is not specified or <= 0, do not truncate to 20 or 100 — allow fetching all students (up to 10000)
+    const limit = (parsedLimit !== null && parsedLimit > 0) ? Math.min(10000, parsedLimit) : undefined;
+    const skip = limit && hasExplicitPage ? (page - 1) * limit : undefined;
+
+    const andConditions: any[] = [];
     if (query.search) {
-      whereStudent.OR = [
-        { firstName: { contains: query.search, mode: 'insensitive' } },
-        { lastName: { contains: query.search, mode: 'insensitive' } },
-        { studentCode: { contains: query.search, mode: 'insensitive' } },
-        { admissionNumber: { contains: query.search, mode: 'insensitive' } },
-      ];
+      andConditions.push({
+        OR: [
+          { firstName: { contains: query.search, mode: 'insensitive' } },
+          { lastName: { contains: query.search, mode: 'insensitive' } },
+          { studentCode: { contains: query.search, mode: 'insensitive' } },
+          { admissionNumber: { contains: query.search, mode: 'insensitive' } },
+        ],
+      });
     }
 
     if (query.subjectId) {
-      whereStudent.batchEnrollments = {
-        some: {
-          subjectId: query.subjectId,
-          isActive: true,
-          ...(query.classId ? { batch: { classId: query.classId } } : {}),
+      andConditions.push({
+        batchEnrollments: {
+          some: {
+            subjectId: query.subjectId,
+            isActive: true,
+            ...(query.classId ? { batch: { classId: query.classId } } : {}),
+          },
         },
-      };
+      });
     } else if (query.batchId) {
-      whereStudent.batchEnrollments = {
-        some: { batchId: query.batchId, isActive: true },
-      };
+      andConditions.push({
+        batchEnrollments: {
+          some: { batchId: query.batchId, isActive: true },
+        },
+      });
     } else if (query.classId) {
-      whereStudent.batchEnrollments = {
-        some: { batch: { classId: query.classId }, isActive: true },
-      };
+      andConditions.push({
+        OR: [
+          { batchEnrollments: { some: { batch: { classId: query.classId }, isActive: true } } },
+          { feeInvoices: { some: { classId: query.classId } } },
+        ],
+      });
     }
 
-    const [total, students] = await Promise.all([
+    const whereStudent: any = andConditions.length > 0 ? { AND: andConditions } : {};
+
+    // If query.status is specified, we must fetch all matching students first because overallStatus
+    // is computed dynamically in business logic across invoices and configs.
+    const shouldPaginateInDb = !query.status && hasExplicitPage && limit !== undefined;
+
+    const [totalStudentsInDb, students] = await Promise.all([
       this.prisma.student.count({ where: whereStudent }),
       this.prisma.student.findMany({
         where: whereStudent,
-        skip,
-        take: limit,
+        ...(shouldPaginateInDb ? { skip, take: limit } : {}),
         orderBy: { createdAt: 'desc' },
         include: {
           batchEnrollments: {
@@ -2028,7 +2054,33 @@ export class FeesService {
       let hasOverdue = false;
       const now = new Date();
 
-      for (const inv of s.feeInvoices) {
+      let targetInvoices = s.feeInvoices;
+      if (query.billingCycle) {
+        const cycle = query.billingCycle.trim();
+        const cycleLower = cycle.toLowerCase();
+        const parsedDate = new Date(cycle);
+        const hasValidDate = !isNaN(parsedDate.getTime());
+
+        targetInvoices = s.feeInvoices.filter((inv) => {
+          const bp = (inv.billingPeriod || '').toLowerCase();
+          if (bp === cycleLower || bp.includes(cycleLower)) return true;
+          if (hasValidDate) {
+            const startOfMonth = new Date(parsedDate.getFullYear(), parsedDate.getMonth(), 1);
+            const endOfMonth = new Date(parsedDate.getFullYear(), parsedDate.getMonth() + 1, 0, 23, 59, 59, 999);
+            const invDue = new Date(inv.dueDate);
+            const invCreated = new Date(inv.createdAt);
+            if (
+              (invDue >= startOfMonth && invDue <= endOfMonth) ||
+              (invCreated >= startOfMonth && invCreated <= endOfMonth)
+            ) {
+              return true;
+            }
+          }
+          return false;
+        });
+      }
+
+      for (const inv of targetInvoices) {
         billed = billed.add(inv.totalAmount);
         paid = paid.add(inv.paidAmount);
         balance = balance.add(inv.balanceAmount);
@@ -2050,7 +2102,7 @@ export class FeesService {
       }
 
       for (const [classId, enrollments] of enrolledClassesMap.entries()) {
-        const hasInvoice = s.feeInvoices.some((inv) => inv.classId === classId);
+        const hasInvoice = targetInvoices.some((inv) => inv.classId === classId);
         if (!hasInvoice) {
           const primaryEn = enrollments[0];
           const subjectIds = enrollments.map((e) => e.subjectId).filter(Boolean) as string[];
@@ -2168,15 +2220,28 @@ export class FeesService {
         email: s.email,
         phone: s.phone,
         status: s.status,
-        enrolledCourses: s.batchEnrollments.map((e) => ({
-          courseId: e.batch.class.id,
-          courseName: e.batch.class.name,
-          courseCode: e.batch.class.code,
-          batchId: e.batchId,
-          batchName: e.batch.name,
-          subjectId: e.subjectId || null,
-          subjectName: e.subject?.name || null,
-        })),
+        enrolledCourses: [
+          ...s.batchEnrollments.map((e) => ({
+            courseId: e.batch.class.id,
+            courseName: e.batch.class.name,
+            courseCode: e.batch.class.code,
+            batchId: e.batchId,
+            batchName: e.batch.name,
+            subjectId: e.subjectId || null,
+            subjectName: e.subject?.name || null,
+          })),
+          ...s.feeInvoices
+            .filter((inv) => Boolean(inv.class) && !s.batchEnrollments.some((e) => e.batch?.class?.id === inv.classId))
+            .map((inv) => ({
+              courseId: inv.class!.id,
+              courseName: inv.class!.name,
+              courseCode: inv.class!.code,
+              batchId: inv.batchId || null,
+              batchName: inv.batch?.name || null,
+              subjectId: inv.subjectId || null,
+              subjectName: inv.subject?.name || null,
+            })),
+        ],
         courseInvoicesCount: s.feeInvoices.length,
         consolidatedBilled: billed.toNumber(),
         consolidatedPaid: paid.toNumber(),
@@ -2186,13 +2251,21 @@ export class FeesService {
       };
     });
 
+    const filteredItems = query.status ? items.filter((i) => i.overallStatus === query.status) : items;
+    const finalTotal = query.status ? filteredItems.length : totalStudentsInDb;
+
+    let paginatedItems = filteredItems;
+    if (!shouldPaginateInDb && hasExplicitPage && limit !== undefined && skip !== undefined) {
+      paginatedItems = filteredItems.slice(skip, skip + limit);
+    }
+
     return {
-      items: query.status ? items.filter((i) => i.overallStatus === query.status) : items,
+      items: paginatedItems,
       meta: {
         page,
-        limit,
-        total,
-        totalPages: Math.ceil(total / limit),
+        limit: limit || finalTotal,
+        total: finalTotal,
+        totalPages: limit ? Math.ceil(finalTotal / limit) : 1,
       },
     };
   }

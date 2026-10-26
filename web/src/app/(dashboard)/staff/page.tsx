@@ -22,10 +22,22 @@ import {
   DollarSign,
   Receipt,
   BookOpen,
+  Percent,
+  Sparkles,
+  Edit2,
+  Sliders,
 } from 'lucide-react';
 import { ApiClient } from '@/lib/api/api-client';
+import { useAuthUser } from '@/lib/auth/use-role';
 import { Header } from '@/components/layout/header';
 import { ResponsivePageContainer } from '@/components/layout/responsive-container';
+import {
+  SettlementFormState,
+  defaultSettlementState,
+  buildSettlementPayload,
+  parseSettlementToForm,
+  getSettlementBadgeDisplay,
+} from '@/lib/utils/staff-settlement';
 
 interface StaffAssignment {
   id: string;
@@ -34,12 +46,17 @@ interface StaffAssignment {
   courseCode: string;
   batchId: string | null;
   batchName: string | null;
+  batchCode: string | null;
   subjectId: string | null;
   subjectName: string | null;
   subjectCode: string | null;
   role: string | null;
   staffSharePercentage: number;
   compensationRule: string;
+  settlementConfig?: any;
+  settlementRuleSummary?: string;
+  settlementRuleBadge?: string;
+  settlementRuleMode?: string;
   isActive: boolean;
   startDate?: string;
   endDate?: string | null;
@@ -76,6 +93,9 @@ interface CourseOption {
 }
 
 export default function StaffPage() {
+  const { user } = useAuthUser();
+  const isSuperAdmin = user?.roles?.includes('SUPER_ADMIN') ?? true;
+
   const [staffList, setStaffList] = useState<StaffMember[]>([]);
   const [courses, setCourses] = useState<CourseOption[]>([]);
   const [loading, setLoading] = useState(true);
@@ -89,6 +109,8 @@ export default function StaffPage() {
     name: string;
     code: string;
     role: string;
+    email?: string;
+    password?: string;
   } | null>(null);
   const [showAssignModal, setShowAssignModal] = useState<StaffMember | null>(null);
   const [showSalaryModal, setShowSalaryModal] = useState<StaffMember | null>(null);
@@ -142,6 +164,10 @@ export default function StaffPage() {
     compensationRule: 'REVENUE_SHARE_70_30',
   });
 
+  const [editingAssignmentId, setEditingAssignmentId] = useState<string | null>(null);
+  const [settlementForm, setSettlementForm] = useState<SettlementFormState>(defaultSettlementState);
+  const [onboardSettlementForm, setOnboardSettlementForm] = useState<SettlementFormState>(defaultSettlementState);
+
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
@@ -153,6 +179,7 @@ export default function StaffPage() {
     setShowOnboardModal(false);
     setShowSuccessCodeModal(null);
     setShowAssignModal(null);
+    setEditingAssignmentId(null);
     setShowSalaryModal(null);
     setShowAccrueModal(null);
     setShowAdjustmentModal(null);
@@ -234,8 +261,14 @@ export default function StaffPage() {
   const handleOnboardStaff = async (e: React.FormEvent) => {
     e.preventDefault();
     const isFaculty = form.staffCategory === 'FACULTY';
+    const isAdmin = form.role === 'ACADEMY_ADMIN' || form.role === 'SUPER_ADMIN';
+
     if (!form.name.trim() || !form.phone.trim() || !form.role) {
       setErrorMsg('Please fill mandatory fields: Name, Mobile Number, and Role.');
+      return;
+    }
+    if (isAdmin && !form.email.trim()) {
+      setErrorMsg('An Email Address is required for Administrator accounts so they can sign into the portal.');
       return;
     }
     if (isFaculty && !form.courseId) {
@@ -252,16 +285,18 @@ export default function StaffPage() {
       const lastName = parts.slice(1).join(' ') || '.';
       const cleanPhone = form.phone.trim();
       const generatedEmail = `staff_${cleanPhone.replace(/\D/g, '') || Date.now()}@rcacademy.local`;
+      const finalEmail = form.email.trim() || generatedEmail;
+      const plainPassword = form.password?.trim() || (isAdmin ? 'Admin@12345' : 'Staff@12345');
 
       const payload: any = {
         name: form.name.trim(),
         firstName,
         lastName,
-        email: form.email.trim() || generatedEmail,
+        email: finalEmail,
         phone: cleanPhone,
         role: form.role,
-        designation: form.designation.trim() || undefined,
-        password: form.password || undefined,
+        designation: form.designation.trim() || (form.role === 'SUPER_ADMIN' ? 'Super Administrator' : form.role === 'ACADEMY_ADMIN' ? 'Academy Administrator' : undefined),
+        password: plainPassword,
         staffCategory: form.staffCategory,
         compensationModel: form.compensationModel,
         fixedSalaryAmount: Number(form.fixedSalaryAmount) || 0,
@@ -274,8 +309,9 @@ export default function StaffPage() {
                   subjectId: form.subjectId || undefined,
                   batchId: form.batchId || undefined,
                   role: 'LEAD_INSTRUCTOR',
-                  staffSharePercentage: Number(form.staffSharePercentage) || 70,
-                  compensationRule: 'REVENUE_SHARE_70_30',
+                  staffSharePercentage: buildSettlementPayload(onboardSettlementForm).staffSharePercentage,
+                  compensationRule: buildSettlementPayload(onboardSettlementForm).compensationRule,
+                  settlementConfig: buildSettlementPayload(onboardSettlementForm).settlementConfig,
                 },
               ],
             }
@@ -309,6 +345,8 @@ export default function StaffPage() {
         name: res.fullName || `${res.firstName || firstName} ${res.lastName || lastName}`,
         code: res.attendanceCode,
         role: res.role,
+        email: res.email || finalEmail,
+        password: plainPassword,
       });
 
       await fetchData();
@@ -377,6 +415,33 @@ export default function StaffPage() {
     }
   };
 
+  const handleOpenAssignModal = (staff: StaffMember, assignment?: StaffAssignment) => {
+    setShowAssignModal(staff);
+    if (assignment) {
+      setEditingAssignmentId(assignment.id);
+      setAssignForm({
+        courseId: assignment.courseId,
+        subjectId: assignment.subjectId || '',
+        batchId: assignment.batchId || '',
+        role: assignment.role || 'INSTRUCTOR',
+        staffSharePercentage: assignment.staffSharePercentage || 70,
+        compensationRule: assignment.compensationRule || 'REVENUE_SHARE_70_30',
+      });
+      setSettlementForm(parseSettlementToForm(assignment.compensationRule, assignment.staffSharePercentage));
+    } else {
+      setEditingAssignmentId(null);
+      setAssignForm({
+        courseId: '',
+        subjectId: '',
+        batchId: '',
+        role: 'INSTRUCTOR',
+        staffSharePercentage: 70,
+        compensationRule: 'REVENUE_SHARE_70_30',
+      });
+      setSettlementForm(defaultSettlementState);
+    }
+  };
+
   const handleAddAssignment = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!showAssignModal || !assignForm.courseId) return;
@@ -384,6 +449,8 @@ export default function StaffPage() {
     try {
       setSubmitting(true);
       setErrorMsg(null);
+      const settlement = buildSettlementPayload(settlementForm);
+
       await ApiClient.fetch(`/staff/${showAssignModal.id}/assignments`, {
         method: 'POST',
         body: JSON.stringify({
@@ -393,15 +460,17 @@ export default function StaffPage() {
               subjectId: assignForm.subjectId || undefined,
               batchId: assignForm.batchId || undefined,
               role: assignForm.role,
-              staffSharePercentage: Number(assignForm.staffSharePercentage) || 70,
-              compensationRule: assignForm.compensationRule || 'REVENUE_SHARE_70_30',
+              staffSharePercentage: settlement.staffSharePercentage,
+              compensationRule: settlement.compensationRule,
+              settlementConfig: settlement.settlementConfig,
             },
           ],
         }),
       });
 
-      setSuccessMsg(`Assignment updated for ${showAssignModal.fullName}`);
+      setSuccessMsg(`Assignment & settlement rule saved for ${showAssignModal.fullName}`);
       setShowAssignModal(null);
+      setEditingAssignmentId(null);
       setAssignForm({
         courseId: '',
         subjectId: '',
@@ -410,6 +479,7 @@ export default function StaffPage() {
         staffSharePercentage: 70,
         compensationRule: 'REVENUE_SHARE_70_30',
       });
+      setSettlementForm(defaultSettlementState);
       await fetchData();
     } catch (err: any) {
       setErrorMsg(err.message || 'Failed to assign course/subject');
@@ -590,8 +660,9 @@ export default function StaffPage() {
               className="text-xs bg-neutral-50 border border-neutral-200 rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-[#FF8500]"
             >
               <option value="ALL">All Roles</option>
-              <option value="TEACHER">Teachers</option>
-              <option value="ACADEMY_ADMIN">Admins</option>
+              <option value="SUPER_ADMIN">👑 Super Admins</option>
+              <option value="ACADEMY_ADMIN">🛡️ Academy Admins</option>
+              <option value="TEACHER">Teachers / Faculty</option>
               <option value="ACCOUNTANT">Accountants</option>
               <option value="STAFF">General Staff</option>
             </select>
@@ -629,11 +700,19 @@ export default function StaffPage() {
                         {staff.fullName}
                       </h3>
                       <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
-                        staff.staffCategory === 'FACULTY' || staff.compensationModel === 'REVENUE_SHARING' || staff.roles.includes('TEACHER')
+                        staff.roles.includes('SUPER_ADMIN')
+                          ? 'bg-amber-100 text-amber-800 border border-amber-300'
+                          : staff.roles.includes('ACADEMY_ADMIN')
+                          ? 'bg-sky-100 text-sky-800 border border-sky-300'
+                          : staff.staffCategory === 'FACULTY' || staff.compensationModel === 'REVENUE_SHARING' || staff.roles.includes('TEACHER')
                           ? 'bg-purple-100 text-purple-700 border border-purple-200'
                           : 'bg-blue-100 text-blue-700 border border-blue-200'
                       }`}>
-                        {staff.staffCategory === 'FACULTY' || staff.compensationModel === 'REVENUE_SHARING' || staff.roles.includes('TEACHER')
+                        {staff.roles.includes('SUPER_ADMIN')
+                          ? 'Super Admin'
+                          : staff.roles.includes('ACADEMY_ADMIN')
+                          ? 'Academy Admin'
+                          : staff.staffCategory === 'FACULTY' || staff.compensationModel === 'REVENUE_SHARING' || staff.roles.includes('TEACHER')
                           ? 'Faculty'
                           : 'General Staff'}
                       </span>
@@ -700,7 +779,7 @@ export default function StaffPage() {
                         Teaching Assignments ({staff.assignments.length})
                       </span>
                       <button
-                        onClick={() => setShowAssignModal(staff)}
+                        onClick={() => handleOpenAssignModal(staff)}
                         className="text-[#FF8500] hover:text-[#CC6B00] text-[11px] font-semibold"
                       >
                         + Assign
@@ -720,7 +799,7 @@ export default function StaffPage() {
                               <div className="font-semibold text-black truncate">
                                 {as.courseName} ({as.courseCode})
                               </div>
-                              <div className="text-[10px] text-neutral-500 flex items-center gap-1.5 mt-0.5">
+                              <div className="text-[10px] text-neutral-500 flex items-center gap-1.5 mt-0.5 flex-wrap">
                                 {as.subjectName ? (
                                   <span className="text-[#CC6B00] font-medium bg-[#FFF4E5] px-1 rounded">
                                     {as.subjectName}
@@ -731,18 +810,38 @@ export default function StaffPage() {
                                 <span>•</span>
                                 <span>{as.batchName ? as.batchName : 'All Batches'}</span>
                                 <span>•</span>
-                                <span className="font-semibold text-emerald-700">
-                                  {as.staffSharePercentage || 70}% Pool
-                                </span>
+                                {(() => {
+                                  const badge = getSettlementBadgeDisplay(as);
+                                  return (
+                                    <span
+                                      className={`font-semibold px-1.5 py-0.5 rounded text-[10px] inline-flex items-center gap-1 border ${badge.badgeClass}`}
+                                      title={badge.tooltip}
+                                    >
+                                      {badge.mode === 'STUDENT_TIER_BASED' && <Layers className="w-2.5 h-2.5 text-purple-600 shrink-0" />}
+                                      {badge.mode === 'PER_STUDENT_FIXED' && <UserCheck className="w-2.5 h-2.5 text-teal-600 shrink-0" />}
+                                      {badge.mode === 'REVENUE_SHARE_PERCENTAGE' && <Percent className="w-2.5 h-2.5 text-emerald-600 shrink-0" />}
+                                      <span className="truncate max-w-[170px]">{badge.text}</span>
+                                    </span>
+                                  );
+                                })()}
                               </div>
                             </div>
-                            <button
-                              onClick={() => handleRemoveAssignment(staff.id, as.id)}
-                              className="text-neutral-400 hover:text-rose-600 p-1 ml-1"
-                              title="Deactivate assignment"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
+                            <div className="flex items-center gap-0.5 ml-1 shrink-0">
+                              <button
+                                onClick={() => handleOpenAssignModal(staff, as)}
+                                className="text-neutral-400 hover:text-black p-1 rounded hover:bg-neutral-200 transition"
+                                title="Edit assignment & settlement rule"
+                              >
+                                <Edit2 className="w-3 h-3" />
+                              </button>
+                              <button
+                                onClick={() => handleRemoveAssignment(staff.id, as.id)}
+                                className="text-neutral-400 hover:text-rose-600 p-1 rounded hover:bg-rose-50 transition"
+                                title="Deactivate assignment"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
                           </div>
                         ))}
                       </div>
@@ -1083,12 +1182,37 @@ export default function StaffPage() {
               <CheckCircle2 className="w-6 h-6 text-[#FF8500]" />
             </div>
 
-            <h2 className="text-lg font-bold text-black">Staff Onboarded Successfully</h2>
+            <h2 className="text-lg font-bold text-black">
+              {showSuccessCodeModal.role?.includes('ADMIN') ? 'Administrator Created Successfully' : 'Staff Onboarded Successfully'}
+            </h2>
             <p className="text-xs text-neutral-500 mt-1">
-              {showSuccessCodeModal.name} ({showSuccessCodeModal.role})
+              {showSuccessCodeModal.name} ({showSuccessCodeModal.role === 'SUPER_ADMIN' ? 'Super Admin' : showSuccessCodeModal.role === 'ACADEMY_ADMIN' ? 'Academy Admin' : showSuccessCodeModal.role})
             </p>
 
-            <div className="my-5 p-4 bg-[#FFF4E5]/60 border-2 border-dashed border-[#FF8500] rounded-xl">
+            {/* Login Credentials Box if email is present */}
+            {showSuccessCodeModal.email && (
+              <div className="my-3 p-3 bg-neutral-50 border border-neutral-200 rounded-xl text-left text-xs space-y-1.5 shadow-2xs">
+                <div className="text-[10px] font-bold uppercase text-neutral-500 tracking-wider flex items-center justify-between">
+                  <span>Portal Login Credentials</span>
+                  <span className="text-emerald-600 font-semibold">Active</span>
+                </div>
+                <div className="flex justify-between items-center text-neutral-700">
+                  <span className="text-neutral-400">Login Email:</span>
+                  <span className="font-mono font-semibold text-black select-all">{showSuccessCodeModal.email}</span>
+                </div>
+                {showSuccessCodeModal.password && (
+                  <div className="flex justify-between items-center text-neutral-700">
+                    <span className="text-neutral-400">Password:</span>
+                    <span className="font-mono font-semibold text-black select-all">{showSuccessCodeModal.password}</span>
+                  </div>
+                )}
+                <div className="text-[10px] text-neutral-400 pt-1 border-t border-neutral-200/60">
+                  Can sign in at <span className="font-semibold text-neutral-600">/login</span> immediately.
+                </div>
+              </div>
+            )}
+
+            <div className="my-4 p-4 bg-[#FFF4E5]/60 border-2 border-dashed border-[#FF8500] rounded-xl">
               <div className="text-[11px] uppercase tracking-wider font-semibold text-neutral-600 mb-1">
                 Generated Attendance Code
               </div>
@@ -1101,8 +1225,7 @@ export default function StaffPage() {
             </div>
 
             <p className="text-xs text-neutral-600 mb-5 leading-relaxed">
-              The staff member can now use this 3-digit code to instant clock in and clock out on the
-              Smart Attendance Terminal.
+              The staff member can use this 3-digit code on the Smart Attendance Terminal, and use their email/password for the management portal.
             </p>
 
             <button
@@ -1159,7 +1282,7 @@ export default function StaffPage() {
                   <label className="block text-xs font-bold text-neutral-800 uppercase tracking-wider mb-2">
                     Staff Category & Compensation Model <span className="text-rose-500">*</span>
                   </label>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     <button
                       type="button"
                       onClick={() => {
@@ -1186,7 +1309,7 @@ export default function StaffPage() {
                         )}
                       </div>
                       <p className="text-[11px] text-neutral-500 leading-tight">
-                        Calculated from eligible collected fees for assigned subjects (default 70% faculty / 30% academy share).
+                        Calculated from eligible collected fees for assigned subjects (default 70% share).
                       </p>
                     </button>
 
@@ -1197,11 +1320,42 @@ export default function StaffPage() {
                           ...form,
                           staffCategory: 'GENERAL',
                           compensationModel: 'FIXED_SALARY',
-                          role: form.role === 'TEACHER' ? 'STAFF' : form.role,
+                          role: 'ACADEMY_ADMIN',
+                          fixedSalaryAmount: 0,
                         });
                       }}
                       className={`p-3.5 rounded-xl border text-left transition flex flex-col justify-between ${
-                        form.staffCategory === 'GENERAL'
+                        form.role === 'ACADEMY_ADMIN' || form.role === 'SUPER_ADMIN'
+                          ? 'bg-amber-50/70 border-amber-400 ring-2 ring-amber-500/20'
+                          : 'bg-white border-neutral-200 hover:border-neutral-300'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between w-full mb-1">
+                        <span className="font-bold text-sm text-amber-950 flex items-center gap-1.5">
+                          <Shield className="w-4 h-4 text-amber-600" />
+                          Administrator
+                        </span>
+                        {(form.role === 'ACADEMY_ADMIN' || form.role === 'SUPER_ADMIN') && (
+                          <span className="w-2 h-2 rounded-full bg-amber-600" />
+                        )}
+                      </div>
+                      <p className="text-[11px] text-neutral-500 leading-tight">
+                        Leadership & branch operations. Full access to exams, students, and dashboard.
+                      </p>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setForm({
+                          ...form,
+                          staffCategory: 'GENERAL',
+                          compensationModel: 'FIXED_SALARY',
+                          role: 'STAFF',
+                        });
+                      }}
+                      className={`p-3.5 rounded-xl border text-left transition flex flex-col justify-between ${
+                        form.staffCategory === 'GENERAL' && form.role !== 'ACADEMY_ADMIN' && form.role !== 'SUPER_ADMIN'
                           ? 'bg-blue-50/70 border-blue-400 ring-2 ring-blue-500/20'
                           : 'bg-white border-neutral-200 hover:border-neutral-300'
                       }`}
@@ -1211,16 +1365,31 @@ export default function StaffPage() {
                           <Briefcase className="w-4 h-4 text-blue-600" />
                           General Staff
                         </span>
-                        {form.staffCategory === 'GENERAL' && (
+                        {form.staffCategory === 'GENERAL' && form.role !== 'ACADEMY_ADMIN' && form.role !== 'SUPER_ADMIN' && (
                           <span className="w-2 h-2 rounded-full bg-blue-600" />
                         )}
                       </div>
                       <p className="text-[11px] text-neutral-500 leading-tight">
-                        Fixed agreed salary (e.g. Admin, Accountant, Office staff). Not calculated from student course fees.
+                        Fixed agreed salary (Accountants, support, reception). Not based on course fees.
                       </p>
                     </button>
                   </div>
                 </div>
+
+                {/* Administrator Privilege Banner if Admin role selected */}
+                {(form.role === 'SUPER_ADMIN' || form.role === 'ACADEMY_ADMIN') && (
+                  <div className="p-3 bg-amber-50/80 border border-amber-200 rounded-xl text-xs text-amber-900 flex items-start gap-2.5">
+                    <Shield className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="font-bold">
+                        {form.role === 'SUPER_ADMIN' ? '👑 Super Admin Role Selected' : '🛡️ Academy Admin Role Selected'}
+                      </span>
+                      <p className="text-[11px] text-amber-800 mt-0.5 leading-relaxed">
+                        This user can sign in at <code className="font-mono font-bold text-amber-950 bg-amber-100/70 px-1 py-0.5 rounded">/login</code> to access system controls. An Email Address is required as their login username.
+                      </p>
+                    </div>
+                  </div>
+                )}
 
                 {/* Basic Staff Info */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -1263,30 +1432,42 @@ export default function StaffPage() {
                       value={form.role}
                       onChange={(e) => {
                         const newRole = e.target.value;
+                        const isTeaching = newRole === 'TEACHER';
                         setForm({
                           ...form,
                           role: newRole,
-                          staffCategory: newRole === 'TEACHER' ? 'FACULTY' : form.staffCategory,
-                          compensationModel: newRole === 'TEACHER' ? 'REVENUE_SHARING' : form.compensationModel,
+                          staffCategory: isTeaching ? 'FACULTY' : 'GENERAL',
+                          compensationModel: isTeaching ? 'REVENUE_SHARING' : 'FIXED_SALARY',
                         });
                       }}
                       className="w-full px-3.5 py-2.5 text-sm bg-neutral-50 border border-neutral-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#FF8500]/20 focus:border-[#FF8500] transition"
                     >
                       <option value="TEACHER">Teacher / Faculty</option>
-                      <option value="ACADEMY_ADMIN">Academy Admin</option>
+                      {isSuperAdmin && <option value="SUPER_ADMIN">👑 Super Admin (Full Academy Ownership)</option>}
+                      <option value="ACADEMY_ADMIN">🛡️ Academy Admin (Operational Management)</option>
                       <option value="ACCOUNTANT">Accountant</option>
                       <option value="STAFF">General Staff</option>
                     </select>
                   </div>
 
-                  {/* Email Address (Optional) */}
+                  {/* Email Address */}
                   <div>
-                    <label className="block text-xs font-semibold text-neutral-700 uppercase tracking-wider mb-1.5">
-                      Email Address <span className="text-neutral-400 font-normal normal-case">(optional)</span>
+                    <label className="block text-xs font-semibold text-neutral-800 uppercase tracking-wider mb-1.5">
+                      Email Address{' '}
+                      {form.role === 'SUPER_ADMIN' || form.role === 'ACADEMY_ADMIN' ? (
+                        <span className="text-rose-500 font-bold">* (Login ID)</span>
+                      ) : (
+                        <span className="text-neutral-400 font-normal normal-case">(optional)</span>
+                      )}
                     </label>
                     <input
                       type="email"
-                      placeholder="e.g. ramesh@example.com (optional)"
+                      required={form.role === 'SUPER_ADMIN' || form.role === 'ACADEMY_ADMIN'}
+                      placeholder={
+                        form.role === 'SUPER_ADMIN' || form.role === 'ACADEMY_ADMIN'
+                          ? 'e.g. admin.branch@rcacademy.com'
+                          : 'e.g. ramesh@example.com (optional)'
+                      }
                       value={form.email}
                       onChange={(e) => setForm({ ...form, email: e.target.value })}
                       className="w-full px-3.5 py-2.5 text-sm bg-neutral-50 border border-neutral-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#FF8500]/20 focus:border-[#FF8500] transition"
@@ -1300,21 +1481,30 @@ export default function StaffPage() {
                     </label>
                     <input
                       type="text"
-                      placeholder="e.g. Senior Faculty / HOD"
+                      placeholder={
+                        form.role === 'SUPER_ADMIN'
+                          ? 'e.g. Super Administrator'
+                          : form.role === 'ACADEMY_ADMIN'
+                          ? 'e.g. Academy Administrator / Branch Head'
+                          : 'e.g. Senior Faculty / HOD'
+                      }
                       value={form.designation}
                       onChange={(e) => setForm({ ...form, designation: e.target.value })}
                       className="w-full px-3.5 py-2.5 text-sm bg-neutral-50 border border-neutral-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#FF8500]/20 focus:border-[#FF8500] transition"
                     />
                   </div>
 
-                  {/* Initial Password (Optional) */}
+                  {/* Initial Password */}
                   <div>
-                    <label className="block text-xs font-semibold text-neutral-700 uppercase tracking-wider mb-1.5">
-                      Initial Password <span className="text-neutral-400 font-normal normal-case">(optional - default: Staff@12345)</span>
+                    <label className="block text-xs font-semibold text-neutral-800 uppercase tracking-wider mb-1.5">
+                      Initial Password{' '}
+                      <span className="text-neutral-400 font-normal normal-case">
+                        (default: {form.role === 'SUPER_ADMIN' || form.role === 'ACADEMY_ADMIN' ? 'Admin@12345' : 'Staff@12345'})
+                      </span>
                     </label>
                     <input
                       type="password"
-                      placeholder="Leave empty for default (Staff@12345)"
+                      placeholder={`Leave blank to use default (${form.role === 'SUPER_ADMIN' || form.role === 'ACADEMY_ADMIN' ? 'Admin@12345' : 'Staff@12345'})`}
                       value={form.password}
                       onChange={(e) => setForm({ ...form, password: e.target.value })}
                       className="w-full px-3.5 py-2.5 text-sm bg-neutral-50 border border-neutral-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#FF8500]/20 focus:border-[#FF8500] transition"
@@ -1456,20 +1646,120 @@ export default function StaffPage() {
                       </div>
                     </div>
 
-                    {/* Revenue Share % (Optional) */}
-                    <div className="pt-1">
-                      <label className="block text-[11px] font-semibold text-neutral-700 uppercase tracking-wider mb-1.5">
-                        Faculty Revenue Share % <span className="text-neutral-400 font-normal normal-case">(optional - default 70%)</span>
-                      </label>
-                      <input
-                        type="number"
-                        min="0"
-                        max="100"
-                        value={form.staffSharePercentage}
-                        onChange={(e) => setForm({ ...form, staffSharePercentage: Number(e.target.value) })}
-                        className="w-full max-w-[200px] px-3 py-2 text-sm bg-white border border-neutral-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#FF8500]/20 focus:border-[#FF8500]"
-                        placeholder="70"
-                      />
+                    {/* Settlement Rule Configuration */}
+                    <div className="pt-2 border-t border-neutral-100 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <label className="block text-[11px] font-semibold text-neutral-700 uppercase tracking-wider">
+                          Initial Settlement Rule
+                        </label>
+                        <span className="text-[10px] font-bold text-purple-700 bg-purple-50 px-2 py-0.5 rounded border border-purple-200">
+                          {onboardSettlementForm.mode === 'STUDENT_TIER_BASED' ? 'Tier-Based Bundle' : onboardSettlementForm.mode === 'PER_STUDENT_FIXED' ? 'Per Student' : 'Revenue Share %'}
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setOnboardSettlementForm({ ...onboardSettlementForm, mode: 'STUDENT_TIER_BASED' })}
+                          className={`p-2 rounded-lg border text-left text-xs font-semibold transition ${
+                            onboardSettlementForm.mode === 'STUDENT_TIER_BASED'
+                              ? 'bg-purple-50 border-purple-400 text-purple-950'
+                              : 'bg-white border-neutral-200 text-neutral-600'
+                          }`}
+                        >
+                          Tier-Based
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setOnboardSettlementForm({ ...onboardSettlementForm, mode: 'PER_STUDENT_FIXED' })}
+                          className={`p-2 rounded-lg border text-left text-xs font-semibold transition ${
+                            onboardSettlementForm.mode === 'PER_STUDENT_FIXED'
+                              ? 'bg-teal-50 border-teal-400 text-teal-950'
+                              : 'bg-white border-neutral-200 text-neutral-600'
+                          }`}
+                        >
+                          ₹ / Student
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setOnboardSettlementForm({ ...onboardSettlementForm, mode: 'REVENUE_SHARE_PERCENTAGE' })}
+                          className={`p-2 rounded-lg border text-left text-xs font-semibold transition ${
+                            onboardSettlementForm.mode === 'REVENUE_SHARE_PERCENTAGE'
+                              ? 'bg-emerald-50 border-emerald-400 text-emerald-950'
+                              : 'bg-white border-neutral-200 text-neutral-600'
+                          }`}
+                        >
+                          Flat %
+                        </button>
+                      </div>
+
+                      {onboardSettlementForm.mode === 'STUDENT_TIER_BASED' && (
+                        <div className="grid grid-cols-2 gap-2 p-2 bg-neutral-50 rounded-lg border border-neutral-200 text-xs">
+                          <div>
+                            <span className="text-[10px] text-neutral-500 font-semibold block">All-Subjects Bundle:</span>
+                            <div className="relative mt-1">
+                              <input
+                                type="number"
+                                min="0"
+                                value={onboardSettlementForm.allSubjectsValue}
+                                onChange={(e) => setOnboardSettlementForm({ ...onboardSettlementForm, allSubjectsValue: Number(e.target.value) })}
+                                className="w-full px-2 py-1 bg-white border border-neutral-200 rounded text-xs font-semibold pr-6"
+                              />
+                              <span className="absolute right-2 top-1 text-[10px] text-neutral-400">
+                                {onboardSettlementForm.allSubjectsType === 'PERCENTAGE' ? '%' : '₹'}
+                              </span>
+                            </div>
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-neutral-500 font-semibold block">Single Subject:</span>
+                            <div className="relative mt-1">
+                              <input
+                                type="number"
+                                min="0"
+                                value={onboardSettlementForm.singleSubjectValue}
+                                onChange={(e) => setOnboardSettlementForm({ ...onboardSettlementForm, singleSubjectValue: Number(e.target.value) })}
+                                className="w-full px-2 py-1 bg-white border border-neutral-200 rounded text-xs font-semibold pr-6"
+                              />
+                              <span className="absolute right-2 top-1 text-[10px] text-neutral-400">
+                                {onboardSettlementForm.singleSubjectType === 'PERCENTAGE' ? '%' : '₹'}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {onboardSettlementForm.mode === 'PER_STUDENT_FIXED' && (
+                        <div className="p-2 bg-neutral-50 rounded-lg border border-neutral-200 text-xs">
+                          <span className="text-[10px] text-neutral-500 font-semibold block">Fixed ₹ per Student:</span>
+                          <div className="relative mt-1 max-w-[200px]">
+                            <span className="absolute left-2.5 top-1 text-xs text-neutral-400">₹</span>
+                            <input
+                              type="number"
+                              min="0"
+                              value={onboardSettlementForm.perStudentAmount}
+                              onChange={(e) => setOnboardSettlementForm({ ...onboardSettlementForm, perStudentAmount: Number(e.target.value) })}
+                              className="w-full pl-6 pr-2 py-1 bg-white border border-neutral-200 rounded text-xs font-semibold"
+                            />
+                          </div>
+                        </div>
+                      )}
+
+                      {onboardSettlementForm.mode === 'REVENUE_SHARE_PERCENTAGE' && (
+                        <div className="p-2 bg-neutral-50 rounded-lg border border-neutral-200 text-xs">
+                          <span className="text-[10px] text-neutral-500 font-semibold block">Staff Pool Share %:</span>
+                          <div className="relative mt-1 max-w-[200px]">
+                            <input
+                              type="number"
+                              min="0"
+                              max="100"
+                              value={onboardSettlementForm.staffSharePercentage}
+                              onChange={(e) => setOnboardSettlementForm({ ...onboardSettlementForm, staffSharePercentage: Number(e.target.value) })}
+                              className="w-full px-2 py-1 bg-white border border-neutral-200 rounded text-xs font-semibold pr-6"
+                            />
+                            <span className="absolute right-2 top-1 text-[10px] text-neutral-400">%</span>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}
@@ -1514,151 +1804,617 @@ export default function StaffPage() {
         <div
           className="fixed inset-0 z-backdrop bg-black/80 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 transition-all duration-200"
           onClick={(e) => {
-            if (e.target === e.currentTarget) setShowAssignModal(null);
+            if (e.target === e.currentTarget) {
+              setShowAssignModal(null);
+              setEditingAssignmentId(null);
+            }
           }}
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="relative z-modal bg-white rounded-t-2xl sm:rounded-xl max-w-md w-full border-t sm:border border-neutral-200 shadow-xl overflow-hidden animate-in slide-in-from-bottom-4 sm:zoom-in-95 duration-150 pb-[env(safe-area-inset-bottom)]"
+            className="relative z-modal bg-white rounded-t-2xl sm:rounded-2xl max-w-2xl w-full border-t sm:border border-neutral-200 shadow-2xl max-h-[92vh] flex flex-col overflow-hidden animate-in slide-in-from-bottom-4 sm:zoom-in-95 duration-150 pb-[env(safe-area-inset-bottom)]"
           >
             {/* Native Mobile Drag Handle */}
             <div className="w-10 h-1 bg-neutral-300 rounded-full mx-auto mt-2 sm:hidden shrink-0" />
-            <div className="p-4 border-b border-neutral-100 flex items-center justify-between">
+            <div className="p-4 sm:px-6 border-b border-neutral-100 flex items-center justify-between shrink-0 bg-neutral-50/50">
               <div>
                 <h2 className="font-bold text-black text-base flex items-center gap-2">
                   <Layers className="w-4 h-4 text-[#FF8500]" />
-                  Assign Course & Subject
+                  {editingAssignmentId ? 'Edit Teaching Assignment & Settlement Rule' : 'Assign Course & Settlement Rule'}
                 </h2>
-                <p className="text-xs text-neutral-500 mt-0.5">Faculty: {showAssignModal.fullName}</p>
+                <p className="text-xs text-neutral-500 mt-0.5">
+                  Faculty: <strong className="text-neutral-800">{showAssignModal.fullName}</strong>
+                </p>
               </div>
               <button
-                onClick={() => setShowAssignModal(null)}
-                className="p-1 rounded-lg text-neutral-400 hover:text-black hover:bg-neutral-100 transition"
+                onClick={() => {
+                  setShowAssignModal(null);
+                  setEditingAssignmentId(null);
+                }}
+                className="p-1 rounded-lg text-neutral-400 hover:text-black hover:bg-neutral-100 transition cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <form onSubmit={handleAddAssignment} className="p-4 space-y-4">
-              <div>
-                <label className="block text-xs font-semibold text-neutral-700 uppercase tracking-wider mb-1">
-                  Class / Academic Level <span className="text-rose-500">*</span>
-                </label>
-                <select
-                  required
-                  value={assignForm.courseId}
-                  onChange={(e) => setAssignForm({ ...assignForm, courseId: e.target.value, subjectId: '', batchId: '' })}
-                  className="w-full px-3 py-2 text-sm bg-neutral-50 border border-neutral-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#FF8500]"
-                >
-                  <option value="">Select course/class...</option>
-                  {courses.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name} ({c.code})
-                    </option>
-                  ))}
-                </select>
-              </div>
+            <form onSubmit={handleAddAssignment} className="p-4 sm:p-6 space-y-5 overflow-y-auto flex-1">
+              {/* 1. Academic Scope */}
+              <div className="space-y-3">
+                <div className="text-xs font-bold text-neutral-800 uppercase tracking-wider flex items-center gap-1.5 pb-1 border-b border-neutral-100">
+                  <BookOpen className="w-3.5 h-3.5 text-neutral-600" />
+                  <span>Academic Assignment Scope</span>
+                </div>
 
-              <div>
-                <label className="block text-xs font-semibold text-neutral-700 uppercase tracking-wider mb-1">
-                  Subject (e.g. Maths, Science)
-                </label>
-                <select
-                  value={assignForm.subjectId}
-                  disabled={!assignForm.courseId}
-                  onChange={(e) => setAssignForm({ ...assignForm, subjectId: e.target.value })}
-                  className="w-full px-3 py-2 text-sm bg-neutral-50 border border-neutral-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#FF8500] disabled:bg-neutral-100 disabled:text-neutral-400"
-                >
-                  <option value="">All Subjects / General</option>
-                  {selectedAssignCourseObj?.subjects?.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.name} ({s.code})
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-neutral-700 uppercase tracking-wider mb-1">
-                  Select Batch (Optional)
-                </label>
-                <select
-                  value={assignForm.batchId}
-                  disabled={!assignForm.courseId}
-                  onChange={(e) => setAssignForm({ ...assignForm, batchId: e.target.value })}
-                  className="w-full px-3 py-2 text-sm bg-neutral-50 border border-neutral-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#FF8500] disabled:bg-neutral-100 disabled:text-neutral-400"
-                >
-                  <option value="">All Batches (Class-Wide)</option>
-                  {selectedAssignCourseObj?.batches.map((b) => (
-                    <option key={b.id} value={b.id}>
-                      {b.name} {b.code ? `(${b.code})` : ''}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-semibold text-neutral-700 uppercase tracking-wider mb-1">
-                    Staff Pool Share %
-                  </label>
-                  <div className="relative">
-                    <input
-                      type="number"
-                      min={0}
-                      max={100}
-                      step={0.5}
-                      value={assignForm.staffSharePercentage}
-                      onChange={(e) => setAssignForm({ ...assignForm, staffSharePercentage: Number(e.target.value) })}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-neutral-700 uppercase tracking-wider mb-1">
+                      Class / Academic Level <span className="text-rose-500">*</span>
+                    </label>
+                    <select
+                      required
+                      value={assignForm.courseId}
+                      onChange={(e) => setAssignForm({ ...assignForm, courseId: e.target.value, subjectId: '', batchId: '' })}
                       className="w-full px-3 py-2 text-sm bg-neutral-50 border border-neutral-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#FF8500]"
-                    />
-                    <span className="absolute right-3 top-2 text-xs text-neutral-400">%</span>
+                    >
+                      <option value="">Select course/class...</option>
+                      {courses.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name} ({c.code})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-neutral-700 uppercase tracking-wider mb-1">
+                      Subject (Specialization)
+                    </label>
+                    <select
+                      value={assignForm.subjectId}
+                      disabled={!assignForm.courseId}
+                      onChange={(e) => setAssignForm({ ...assignForm, subjectId: e.target.value })}
+                      className="w-full px-3 py-2 text-sm bg-neutral-50 border border-neutral-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#FF8500] disabled:bg-neutral-100 disabled:text-neutral-400"
+                    >
+                      <option value="">All Subjects / General</option>
+                      {selectedAssignCourseObj?.subjects?.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.name} ({s.code})
+                        </option>
+                      ))}
+                    </select>
                   </div>
                 </div>
 
-                <div>
-                  <label className="block text-xs font-semibold text-neutral-700 uppercase tracking-wider mb-1">
-                    Compensation Rule
-                  </label>
-                  <select
-                    value={assignForm.compensationRule}
-                    onChange={(e) => setAssignForm({ ...assignForm, compensationRule: e.target.value })}
-                    className="w-full px-3 py-2 text-sm bg-neutral-50 border border-neutral-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#FF8500]"
-                  >
-                    <option value="REVENUE_SHARE_70_30">70/30 Standard</option>
-                    <option value="FULL_POOL_100">100% Direct</option>
-                    <option value="CUSTOM_CONTRACT">Custom Contract</option>
-                  </select>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-neutral-700 uppercase tracking-wider mb-1">
+                      Select Batch (Optional)
+                    </label>
+                    <select
+                      value={assignForm.batchId}
+                      disabled={!assignForm.courseId}
+                      onChange={(e) => setAssignForm({ ...assignForm, batchId: e.target.value })}
+                      className="w-full px-3 py-2 text-sm bg-neutral-50 border border-neutral-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#FF8500] disabled:bg-neutral-100 disabled:text-neutral-400"
+                    >
+                      <option value="">All Batches (Class-Wide)</option>
+                      {selectedAssignCourseObj?.batches.map((b) => (
+                        <option key={b.id} value={b.id}>
+                          {b.name} {b.code ? `(${b.code})` : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-neutral-700 uppercase tracking-wider mb-1">
+                      Role / Designation in Subject
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. LEAD_INSTRUCTOR, SUBJECT_EXPERT"
+                      value={assignForm.role}
+                      onChange={(e) => setAssignForm({ ...assignForm, role: e.target.value })}
+                      className="w-full px-3 py-2 text-sm bg-neutral-50 border border-neutral-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#FF8500]"
+                    />
+                  </div>
                 </div>
               </div>
 
-              <div>
-                <label className="block text-xs font-semibold text-neutral-700 uppercase tracking-wider mb-1">
-                  Role in Subject
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. LEAD_INSTRUCTOR, SUBJECT_EXPERT"
-                  value={assignForm.role}
-                  onChange={(e) => setAssignForm({ ...assignForm, role: e.target.value })}
-                  className="w-full px-3 py-2 text-sm bg-neutral-50 border border-neutral-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#FF8500]"
-                />
+              {/* 2. Staff Settlement & Compensation Rule Section */}
+              <div className="space-y-3 pt-2">
+                <div className="flex items-center justify-between pb-1 border-b border-neutral-100">
+                  <div className="flex items-center gap-1.5">
+                    <Percent className="w-3.5 h-3.5 text-[#FF8500]" />
+                    <span className="text-xs font-bold text-neutral-800 uppercase tracking-wider">
+                      Staff Settlement Configuration Rule
+                    </span>
+                  </div>
+                  <span className="text-[10px] font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+                    Fee-Config Aligned
+                  </span>
+                </div>
+
+                {/* Mode Selector Tabs */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setSettlementForm({ ...settlementForm, mode: 'STUDENT_TIER_BASED' })}
+                    className={`p-2.5 rounded-xl border text-left transition flex flex-col justify-between cursor-pointer ${
+                      settlementForm.mode === 'STUDENT_TIER_BASED'
+                        ? 'bg-purple-50/90 border-purple-500 ring-2 ring-purple-400/20'
+                        : 'bg-white border-neutral-200 hover:border-neutral-300'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="font-bold text-xs text-purple-950 flex items-center gap-1">
+                        <Layers className="w-3.5 h-3.5 text-purple-600" />
+                        Student Tier-Based
+                      </span>
+                      {settlementForm.mode === 'STUDENT_TIER_BASED' && (
+                        <span className="w-2 h-2 rounded-full bg-purple-600" />
+                      )}
+                    </div>
+                    <p className="text-[10px] text-neutral-500 leading-tight">
+                      All-Subject bundle vs Single-Subject rates (fee config matched)
+                    </p>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setSettlementForm({ ...settlementForm, mode: 'PER_STUDENT_FIXED' })}
+                    className={`p-2.5 rounded-xl border text-left transition flex flex-col justify-between cursor-pointer ${
+                      settlementForm.mode === 'PER_STUDENT_FIXED'
+                        ? 'bg-teal-50/90 border-teal-500 ring-2 ring-teal-400/20'
+                        : 'bg-white border-neutral-200 hover:border-neutral-300'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="font-bold text-xs text-teal-950 flex items-center gap-1">
+                        <UserCheck className="w-3.5 h-3.5 text-teal-600" />
+                        Per Student Fixed
+                      </span>
+                      {settlementForm.mode === 'PER_STUDENT_FIXED' && (
+                        <span className="w-2 h-2 rounded-full bg-teal-600" />
+                      )}
+                    </div>
+                    <p className="text-[10px] text-neutral-500 leading-tight">
+                      Fixed ₹ amount earned per paying student
+                    </p>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setSettlementForm({ ...settlementForm, mode: 'REVENUE_SHARE_PERCENTAGE' })}
+                    className={`p-2.5 rounded-xl border text-left transition flex flex-col justify-between cursor-pointer ${
+                      settlementForm.mode === 'REVENUE_SHARE_PERCENTAGE'
+                        ? 'bg-emerald-50/90 border-emerald-500 ring-2 ring-emerald-400/20'
+                        : 'bg-white border-neutral-200 hover:border-neutral-300'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="font-bold text-xs text-emerald-950 flex items-center gap-1">
+                        <Percent className="w-3.5 h-3.5 text-emerald-600" />
+                        Revenue Share %
+                      </span>
+                      {settlementForm.mode === 'REVENUE_SHARE_PERCENTAGE' && (
+                        <span className="w-2 h-2 rounded-full bg-emerald-600" />
+                      )}
+                    </div>
+                    <p className="text-[10px] text-neutral-500 leading-tight">
+                      Standard percentage of collected fees (e.g. 70/30 pool)
+                    </p>
+                  </button>
+                </div>
+
+                {/* Mode 1: STUDENT_TIER_BASED */}
+                {settlementForm.mode === 'STUDENT_TIER_BASED' && (
+                  <div className="space-y-3 p-3.5 bg-neutral-50 rounded-xl border border-neutral-200">
+                    {/* Presets */}
+                    <div className="flex items-center justify-between flex-wrap gap-1.5">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-neutral-500">
+                        Recommended Presets:
+                      </span>
+                      <div className="flex items-center gap-1 flex-wrap">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setSettlementForm({
+                              ...settlementForm,
+                              allSubjectsType: 'PERCENTAGE',
+                              allSubjectsValue: 25,
+                              singleSubjectType: 'PERCENTAGE',
+                              singleSubjectValue: 70,
+                            })
+                          }
+                          className="px-2 py-0.5 text-[10px] font-semibold bg-white border border-neutral-200 rounded-md hover:border-purple-300 hover:bg-purple-50 transition text-neutral-700 cursor-pointer"
+                        >
+                          25% All-Sub / 70% Single
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setSettlementForm({
+                              ...settlementForm,
+                              allSubjectsType: 'FIXED_AMOUNT',
+                              allSubjectsValue: 1000,
+                              singleSubjectType: 'FIXED_AMOUNT',
+                              singleSubjectValue: 1500,
+                            })
+                          }
+                          className="px-2 py-0.5 text-[10px] font-semibold bg-white border border-neutral-200 rounded-md hover:border-purple-300 hover:bg-purple-50 transition text-neutral-700 cursor-pointer"
+                        >
+                          ₹1,000 All-Sub / ₹1,500 Single
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setSettlementForm({
+                              ...settlementForm,
+                              allSubjectsType: 'PERCENTAGE',
+                              allSubjectsValue: 25,
+                              singleSubjectType: 'FIXED_AMOUNT',
+                              singleSubjectValue: 1200,
+                            })
+                          }
+                          className="px-2 py-0.5 text-[10px] font-semibold bg-white border border-neutral-200 rounded-md hover:border-purple-300 hover:bg-purple-50 transition text-neutral-700 cursor-pointer"
+                        >
+                          25% All-Sub / ₹1,200 Single
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Tier A: All-Subject Students */}
+                    <div className="p-3 bg-white rounded-lg border border-purple-200 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-1.5">
+                          <span className="w-2 h-2 rounded-full bg-purple-600" />
+                          <label className="text-xs font-bold text-purple-950">
+                            All-Subject Enrolled Students (Bundle Package)
+                          </label>
+                        </div>
+                        <span className="text-[10px] font-semibold text-purple-700 bg-purple-100 px-2 py-0.5 rounded">
+                          Full Cohort Tier
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-neutral-500">
+                        When a student is enrolled in all course subjects, payout is calculated as:
+                      </p>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                        <div className="flex items-center gap-1 bg-neutral-100 p-1 rounded-lg">
+                          <button
+                            type="button"
+                            onClick={() => setSettlementForm({ ...settlementForm, allSubjectsType: 'PERCENTAGE' })}
+                            className={`flex-1 py-1 text-xs font-semibold rounded-md transition cursor-pointer ${
+                              settlementForm.allSubjectsType === 'PERCENTAGE'
+                                ? 'bg-white text-purple-950 shadow-xs'
+                                : 'text-neutral-500 hover:text-black'
+                            }`}
+                          >
+                            Percentage (%)
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setSettlementForm({ ...settlementForm, allSubjectsType: 'FIXED_AMOUNT' })}
+                            className={`flex-1 py-1 text-xs font-semibold rounded-md transition cursor-pointer ${
+                              settlementForm.allSubjectsType === 'FIXED_AMOUNT'
+                                ? 'bg-white text-purple-950 shadow-xs'
+                                : 'text-neutral-500 hover:text-black'
+                            }`}
+                          >
+                            Per Student (₹)
+                          </button>
+                        </div>
+                        <div className="relative">
+                          <input
+                            type="number"
+                            min="0"
+                            step={settlementForm.allSubjectsType === 'PERCENTAGE' ? '0.5' : '50'}
+                            value={settlementForm.allSubjectsValue}
+                            onChange={(e) =>
+                              setSettlementForm({
+                                ...settlementForm,
+                                allSubjectsValue: Number(e.target.value),
+                              })
+                            }
+                            className="w-full px-3 py-1.5 text-sm bg-neutral-50 border border-neutral-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-purple-500 pr-8"
+                            placeholder={settlementForm.allSubjectsType === 'PERCENTAGE' ? '25' : '1000'}
+                          />
+                          <span className="absolute right-3 top-2 text-xs font-semibold text-neutral-400">
+                            {settlementForm.allSubjectsType === 'PERCENTAGE' ? '%' : '₹'}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Tier B: Single-Subject Students */}
+                    <div className="p-3 bg-white rounded-lg border border-purple-200 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-1.5">
+                          <span className="w-2 h-2 rounded-full bg-[#FF8500]" />
+                          <label className="text-xs font-bold text-neutral-900">
+                            Single-Subject Enrolled Students (Standalone)
+                          </label>
+                        </div>
+                        <span className="text-[10px] font-semibold text-orange-700 bg-orange-100 px-2 py-0.5 rounded">
+                          Individual Tier
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-neutral-500">
+                        When a student is enrolled only in this subject, payout is calculated as:
+                      </p>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                        <div className="flex items-center gap-1 bg-neutral-100 p-1 rounded-lg">
+                          <button
+                            type="button"
+                            onClick={() => setSettlementForm({ ...settlementForm, singleSubjectType: 'PERCENTAGE' })}
+                            className={`flex-1 py-1 text-xs font-semibold rounded-md transition cursor-pointer ${
+                              settlementForm.singleSubjectType === 'PERCENTAGE'
+                                ? 'bg-white text-orange-950 shadow-xs'
+                                : 'text-neutral-500 hover:text-black'
+                            }`}
+                          >
+                            Percentage (%)
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setSettlementForm({ ...settlementForm, singleSubjectType: 'FIXED_AMOUNT' })}
+                            className={`flex-1 py-1 text-xs font-semibold rounded-md transition cursor-pointer ${
+                              settlementForm.singleSubjectType === 'FIXED_AMOUNT'
+                                ? 'bg-white text-orange-950 shadow-xs'
+                                : 'text-neutral-500 hover:text-black'
+                            }`}
+                          >
+                            Per Student (₹)
+                          </button>
+                        </div>
+                        <div className="relative">
+                          <input
+                            type="number"
+                            min="0"
+                            step={settlementForm.singleSubjectType === 'PERCENTAGE' ? '0.5' : '50'}
+                            value={settlementForm.singleSubjectValue}
+                            onChange={(e) =>
+                              setSettlementForm({
+                                ...settlementForm,
+                                singleSubjectValue: Number(e.target.value),
+                              })
+                            }
+                            className="w-full px-3 py-1.5 text-sm bg-neutral-50 border border-neutral-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#FF8500] pr-8"
+                            placeholder={settlementForm.singleSubjectType === 'PERCENTAGE' ? '70' : '1500'}
+                          />
+                          <span className="absolute right-3 top-2 text-xs font-semibold text-neutral-400">
+                            {settlementForm.singleSubjectType === 'PERCENTAGE' ? '%' : '₹'}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Optional Tier C: 2-Subjects Bundle */}
+                    <div className="pt-1">
+                      <label className="flex items-center gap-2 cursor-pointer text-xs font-semibold text-neutral-700">
+                        <input
+                          type="checkbox"
+                          checked={settlementForm.includeTwoSubjects}
+                          onChange={(e) => setSettlementForm({ ...settlementForm, includeTwoSubjects: e.target.checked })}
+                          className="rounded text-[#FF8500] focus:ring-[#FF8500]"
+                        />
+                        <span>Configure specific rate for 2-Subject bundle students</span>
+                      </label>
+                      {settlementForm.includeTwoSubjects && (
+                        <div className="mt-2 p-3 bg-white rounded-lg border border-amber-200 space-y-2">
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            <div className="flex items-center gap-1 bg-neutral-100 p-1 rounded-lg">
+                              <button
+                                type="button"
+                                onClick={() => setSettlementForm({ ...settlementForm, twoSubjectsType: 'PERCENTAGE' })}
+                                className={`flex-1 py-1 text-xs font-semibold rounded-md transition cursor-pointer ${
+                                  settlementForm.twoSubjectsType === 'PERCENTAGE'
+                                    ? 'bg-white text-amber-950 shadow-xs'
+                                    : 'text-neutral-500 hover:text-black'
+                                }`}
+                              >
+                                Percentage (%)
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setSettlementForm({ ...settlementForm, twoSubjectsType: 'FIXED_AMOUNT' })}
+                                className={`flex-1 py-1 text-xs font-semibold rounded-md transition cursor-pointer ${
+                                  settlementForm.twoSubjectsType === 'FIXED_AMOUNT'
+                                    ? 'bg-white text-amber-950 shadow-xs'
+                                    : 'text-neutral-500 hover:text-black'
+                                }`}
+                              >
+                                Per Student (₹)
+                              </button>
+                            </div>
+                            <div className="relative">
+                              <input
+                                type="number"
+                                min="0"
+                                step={settlementForm.twoSubjectsType === 'PERCENTAGE' ? '0.5' : '50'}
+                                value={settlementForm.twoSubjectsValue}
+                                onChange={(e) =>
+                                  setSettlementForm({
+                                    ...settlementForm,
+                                    twoSubjectsValue: Number(e.target.value),
+                                  })
+                                }
+                                className="w-full px-3 py-1.5 text-sm bg-neutral-50 border border-neutral-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-amber-500 pr-8"
+                                placeholder="35"
+                              />
+                              <span className="absolute right-3 top-2 text-xs font-semibold text-neutral-400">
+                                {settlementForm.twoSubjectsType === 'PERCENTAGE' ? '%' : '₹'}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Mode 2: PER_STUDENT_FIXED */}
+                {settlementForm.mode === 'PER_STUDENT_FIXED' && (
+                  <div className="space-y-3 p-3.5 bg-neutral-50 rounded-xl border border-neutral-200">
+                    <div>
+                      <label className="block text-xs font-semibold text-neutral-700 uppercase tracking-wider mb-1">
+                        Fixed Fee Earned Per Student (₹)
+                      </label>
+                      <div className="relative max-w-xs">
+                        <span className="absolute left-3 top-2.5 text-sm font-semibold text-neutral-500">₹</span>
+                        <input
+                          type="number"
+                          min="0"
+                          step="50"
+                          value={settlementForm.perStudentAmount}
+                          onChange={(e) =>
+                            setSettlementForm({ ...settlementForm, perStudentAmount: Number(e.target.value) })
+                          }
+                          className="w-full pl-8 pr-3 py-2 text-sm bg-white border border-neutral-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-teal-500 font-semibold"
+                          placeholder="1000"
+                        />
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-neutral-500">
+                        Quick Presets:
+                      </span>
+                      {[500, 800, 1000, 1200, 1500, 2000].map((amt) => (
+                        <button
+                          key={amt}
+                          type="button"
+                          onClick={() => setSettlementForm({ ...settlementForm, perStudentAmount: amt })}
+                          className={`px-2 py-0.5 text-[11px] font-semibold rounded-md border transition cursor-pointer ${
+                            settlementForm.perStudentAmount === amt
+                              ? 'bg-teal-100 text-teal-800 border-teal-300'
+                              : 'bg-white text-neutral-700 border-neutral-200 hover:bg-neutral-100'
+                          }`}
+                        >
+                          ₹{amt.toLocaleString('en-IN')}
+                        </button>
+                      ))}
+                    </div>
+                    <p className="text-[11px] text-neutral-500 leading-snug">
+                      Faculty will receive this flat ₹ amount for every student who makes a payment towards this course.
+                    </p>
+                  </div>
+                )}
+
+                {/* Mode 3: REVENUE_SHARE_PERCENTAGE */}
+                {settlementForm.mode === 'REVENUE_SHARE_PERCENTAGE' && (
+                  <div className="space-y-3 p-3.5 bg-neutral-50 rounded-xl border border-neutral-200">
+                    <div>
+                      <label className="block text-xs font-semibold text-neutral-700 uppercase tracking-wider mb-1">
+                        Staff Pool Share %
+                      </label>
+                      <div className="relative max-w-xs">
+                        <input
+                          type="number"
+                          min="0"
+                          max="100"
+                          step="0.5"
+                          value={settlementForm.staffSharePercentage}
+                          onChange={(e) =>
+                            setSettlementForm({ ...settlementForm, staffSharePercentage: Number(e.target.value) })
+                          }
+                          className="w-full px-3 py-2 text-sm bg-white border border-neutral-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 font-semibold pr-8"
+                          placeholder="70"
+                        />
+                        <span className="absolute right-3 top-2.5 text-xs font-semibold text-neutral-400">%</span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-neutral-500">
+                        Standard Splits:
+                      </span>
+                      {[
+                        { label: '70/30 Standard', val: 70 },
+                        { label: '60/40 Custom', val: 60 },
+                        { label: '50/50 Equal', val: 50 },
+                        { label: '100% Direct', val: 100 },
+                      ].map((p) => (
+                        <button
+                          key={p.val}
+                          type="button"
+                          onClick={() => setSettlementForm({ ...settlementForm, staffSharePercentage: p.val })}
+                          className={`px-2 py-0.5 text-[11px] font-semibold rounded-md border transition cursor-pointer ${
+                            settlementForm.staffSharePercentage === p.val
+                              ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                              : 'bg-white text-neutral-700 border-neutral-200 hover:bg-neutral-100'
+                          }`}
+                        >
+                          {p.label}
+                        </button>
+                      ))}
+                    </div>
+                    <p className="text-[11px] text-neutral-500 leading-snug">
+                      Faculty receives {settlementForm.staffSharePercentage}% of total collected fees; the academy retains {100 - settlementForm.staffSharePercentage}%.
+                    </p>
+                  </div>
+                )}
+
+                {/* Live Simulation / Summary Box */}
+                <div className="p-3 bg-gradient-to-r from-neutral-900 to-neutral-800 text-white rounded-xl shadow-xs text-xs space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold flex items-center gap-1.5 text-amber-400">
+                      <Sparkles className="w-3.5 h-3.5" />
+                      <span>Live Settlement Projection</span>
+                    </span>
+                    <span className="text-[10px] text-neutral-400 font-mono">Real-Time</span>
+                  </div>
+
+                  {settlementForm.mode === 'STUDENT_TIER_BASED' && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 text-[11px]">
+                      <div className="bg-white/10 p-2 rounded-lg">
+                        <span className="text-neutral-400 block text-[10px]">All-Subject Bundle Student:</span>
+                        <strong className="text-emerald-400 font-mono">
+                          {settlementForm.allSubjectsType === 'PERCENTAGE'
+                            ? `${settlementForm.allSubjectsValue}% of bundle fee (e.g. ₹${((5000 * settlementForm.allSubjectsValue) / 100).toLocaleString('en-IN')} on ₹5,000)`
+                            : `₹${settlementForm.allSubjectsValue.toLocaleString('en-IN')} fixed per student`}
+                        </strong>
+                      </div>
+                      <div className="bg-white/10 p-2 rounded-lg">
+                        <span className="text-neutral-400 block text-[10px]">Single-Subject Student:</span>
+                        <strong className="text-amber-400 font-mono">
+                          {settlementForm.singleSubjectType === 'PERCENTAGE'
+                            ? `${settlementForm.singleSubjectValue}% of subject fee (e.g. ₹${((1500 * settlementForm.singleSubjectValue) / 100).toLocaleString('en-IN')} on ₹1,500)`
+                            : `₹${settlementForm.singleSubjectValue.toLocaleString('en-IN')} fixed per student`}
+                        </strong>
+                      </div>
+                    </div>
+                  )}
+
+                  {settlementForm.mode === 'PER_STUDENT_FIXED' && (
+                    <p className="text-[11px] text-neutral-300 pt-0.5">
+                      Fixed payout: Faculty earns exactly <strong className="text-emerald-400 font-mono">₹{settlementForm.perStudentAmount.toLocaleString('en-IN')}</strong> per student fee payment recorded.
+                    </p>
+                  )}
+
+                  {settlementForm.mode === 'REVENUE_SHARE_PERCENTAGE' && (
+                    <p className="text-[11px] text-neutral-300 pt-0.5">
+                      Pool split: Faculty receives <strong className="text-emerald-400 font-mono">{settlementForm.staffSharePercentage}%</strong> (₹{((5000 * settlementForm.staffSharePercentage) / 100).toLocaleString('en-IN')} on ₹5,000), Academy retains <strong className="text-amber-400 font-mono">{100 - settlementForm.staffSharePercentage}%</strong>.
+                    </p>
+                  )}
+                </div>
               </div>
 
-              <div className="flex items-center justify-end gap-2 pt-2 border-t border-neutral-100">
+              <div className="flex items-center justify-end gap-2 pt-3 border-t border-neutral-100">
                 <button
                   type="button"
-                  onClick={() => setShowAssignModal(null)}
-                  className="px-4 py-2 text-sm font-medium text-neutral-600 hover:bg-neutral-100 rounded-lg"
+                  onClick={() => {
+                    setShowAssignModal(null);
+                    setEditingAssignmentId(null);
+                  }}
+                  className="px-4 py-2 text-sm font-medium text-neutral-600 hover:bg-neutral-100 rounded-lg cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={submitting}
-                  className="px-4 py-2 text-sm font-semibold bg-[#FF8500] hover:bg-[#E67700] text-white rounded-lg transition disabled:opacity-50"
+                  className="px-5 py-2 text-sm font-semibold bg-[#FF8500] hover:bg-[#E67700] text-white rounded-lg transition disabled:opacity-50 cursor-pointer shadow-xs"
                 >
-                  {submitting ? 'Assigning...' : 'Save Assignment'}
+                  {submitting ? 'Saving...' : editingAssignmentId ? 'Update Assignment & Rule' : 'Save Assignment & Rule'}
                 </button>
               </div>
             </form>

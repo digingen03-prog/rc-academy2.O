@@ -3,6 +3,7 @@ import {
   NotFoundException,
   ConflictException,
   BadRequestException,
+  ForbiddenException,
   Logger,
 } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
@@ -19,6 +20,7 @@ import {
 } from './dto/staff.dto';
 import { UserRoleType, UserStatus, StaffCategory, CompensationModel, PayFrequency } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
+import { parseStaffSettlementRule } from './staff-settlement.helper';
 
 @Injectable()
 export class StaffService {
@@ -118,6 +120,15 @@ export class StaffService {
         role: a.role,
         staffSharePercentage: Number(a.staffSharePercentage),
         compensationRule: a.compensationRule,
+        ...(() => {
+          const parsed = parseStaffSettlementRule(a.compensationRule, Number(a.staffSharePercentage));
+          return {
+            settlementConfig: parsed.config,
+            settlementRuleSummary: parsed.displayText,
+            settlementRuleBadge: parsed.badgeText,
+            settlementRuleMode: parsed.mode,
+          };
+        })(),
         isActive: a.isActive,
         startDate: a.startDate,
         endDate: a.endDate,
@@ -184,6 +195,15 @@ export class StaffService {
         role: a.role,
         staffSharePercentage: Number(a.staffSharePercentage),
         compensationRule: a.compensationRule,
+        ...(() => {
+          const parsed = parseStaffSettlementRule(a.compensationRule, Number(a.staffSharePercentage));
+          return {
+            settlementConfig: parsed.config,
+            settlementRuleSummary: parsed.displayText,
+            settlementRuleBadge: parsed.badgeText,
+            settlementRuleMode: parsed.mode,
+          };
+        })(),
         isActive: a.isActive,
         startDate: a.startDate,
         endDate: a.endDate,
@@ -224,12 +244,29 @@ export class StaffService {
       throw new ConflictException(`User with email '${normalizedEmail}' already exists`);
     }
 
-    // Resolve Role
+    // Resolve Role (support 'ADMIN' -> 'ACADEMY_ADMIN' and 'SUPER_ADMIN')
+    let targetRoleName = (dto.role || '').trim().toUpperCase();
+    if (targetRoleName === 'ADMIN') {
+      targetRoleName = 'ACADEMY_ADMIN';
+    }
+
     const roleRecord = await this.prisma.role.findFirst({
-      where: { name: dto.role.toUpperCase() as UserRoleType },
+      where: { name: targetRoleName as UserRoleType },
     });
     if (!roleRecord) {
       throw new BadRequestException(`Role '${dto.role}' not recognized`);
+    }
+
+    // Only SUPER_ADMIN can create another SUPER_ADMIN
+    if (roleRecord.name === UserRoleType.SUPER_ADMIN && actorId) {
+      const actor = await this.prisma.user.findUnique({
+        where: { id: actorId },
+        include: { userRoles: { include: { role: true } } },
+      });
+      const isSuperAdmin = actor?.userRoles.some((ur) => ur.role.name === UserRoleType.SUPER_ADMIN);
+      if (!isSuperAdmin) {
+        throw new ForbiddenException('Only a Super Admin can create another Super Admin account.');
+      }
     }
 
     // Validate course/batch/subject assignments if provided
@@ -264,8 +301,10 @@ export class StaffService {
       }
     }
 
-    // Default password if not given
-    const plainPassword = dto.password || 'Staff@12345';
+    // Default password if not given: Admin accounts get Admin@12345, staff get Staff@12345
+    const isAdminRole =
+      roleRecord.name === UserRoleType.SUPER_ADMIN || roleRecord.name === UserRoleType.ACADEMY_ADMIN;
+    const plainPassword = dto.password?.trim() || (isAdminRole ? 'Admin@12345' : 'Staff@12345');
     const passwordHash = await bcrypt.hash(plainPassword, 10);
 
     return this.prisma.$transaction(async (tx) => {
@@ -325,6 +364,22 @@ export class StaffService {
       // 4. Create assignments
       if (dto.courseAssignments && dto.courseAssignments.length > 0) {
         for (const assign of dto.courseAssignments) {
+          const compRule = assign.settlementConfig
+            ? (typeof assign.settlementConfig === 'string' ? assign.settlementConfig : JSON.stringify(assign.settlementConfig))
+            : assign.compensationRule || 'REVENUE_SHARE_70_30';
+
+          let sharePercent = assign.staffSharePercentage !== undefined
+            ? new Decimal(assign.staffSharePercentage)
+            : new Decimal(70.0);
+
+          if (assign.settlementConfig && typeof assign.settlementConfig === 'object') {
+            if (assign.settlementConfig.mode === 'STUDENT_TIER_BASED' && assign.settlementConfig.singleSubject?.type === 'PERCENTAGE') {
+              sharePercent = new Decimal(assign.settlementConfig.singleSubject.value);
+            } else if (assign.settlementConfig.mode === 'REVENUE_SHARE_PERCENTAGE' && assign.settlementConfig.staffSharePercentage !== undefined) {
+              sharePercent = new Decimal(assign.settlementConfig.staffSharePercentage);
+            }
+          }
+
           await tx.staffCourseAssignment.create({
             data: {
               userId: user.id,
@@ -332,11 +387,8 @@ export class StaffService {
               batchId: assign.batchId || null,
               subjectId: assign.subjectId || null,
               role: assign.role || dto.role,
-              staffSharePercentage:
-                assign.staffSharePercentage !== undefined
-                  ? new Decimal(assign.staffSharePercentage)
-                  : new Decimal(70.0),
-              compensationRule: assign.compensationRule || 'REVENUE_SHARE_70_30',
+              staffSharePercentage: sharePercent,
+              compensationRule: compRule,
               startDate: assign.startDate ? new Date(assign.startDate) : new Date(),
               endDate: assign.endDate ? new Date(assign.endDate) : null,
               isActive: assign.isActive !== undefined ? assign.isActive : true,
@@ -403,12 +455,28 @@ export class StaffService {
 
       // Update role if changed
       if (dto.role) {
+        let targetRole = dto.role.trim().toUpperCase();
+        if (targetRole === 'ADMIN') {
+          targetRole = 'ACADEMY_ADMIN';
+        }
         const newRole = await tx.role.findFirst({
-          where: { name: dto.role.toUpperCase() as UserRoleType },
+          where: { name: targetRole as UserRoleType },
         });
         if (!newRole) {
           throw new BadRequestException(`Role '${dto.role}' not recognized`);
         }
+
+        if (newRole.name === UserRoleType.SUPER_ADMIN && actorId) {
+          const actor = await this.prisma.user.findUnique({
+            where: { id: actorId },
+            include: { userRoles: { include: { role: true } } },
+          });
+          const isSuperAdmin = actor?.userRoles.some((ur) => ur.role.name === UserRoleType.SUPER_ADMIN);
+          if (!isSuperAdmin) {
+            throw new ForbiddenException('Only a Super Admin can promote a user to Super Admin.');
+          }
+        }
+
         await tx.userRole.deleteMany({
           where: { userId: id },
         });
@@ -486,16 +554,32 @@ export class StaffService {
           },
         });
 
+        const compRule = assign.settlementConfig
+          ? (typeof assign.settlementConfig === 'string' ? assign.settlementConfig : JSON.stringify(assign.settlementConfig))
+          : assign.compensationRule;
+
+        let sharePercent = assign.staffSharePercentage !== undefined
+          ? new Decimal(assign.staffSharePercentage)
+          : undefined;
+
+        if (assign.settlementConfig && typeof assign.settlementConfig === 'object') {
+          if (assign.settlementConfig.mode === 'STUDENT_TIER_BASED' && assign.settlementConfig.singleSubject?.type === 'PERCENTAGE') {
+            sharePercent = new Decimal(assign.settlementConfig.singleSubject.value);
+          } else if (assign.settlementConfig.mode === 'REVENUE_SHARE_PERCENTAGE' && assign.settlementConfig.staffSharePercentage !== undefined) {
+            sharePercent = new Decimal(assign.settlementConfig.staffSharePercentage);
+          }
+        }
+
         if (existing) {
           const updated = await tx.staffCourseAssignment.update({
             where: { id: existing.id },
             data: {
               isActive: assign.isActive !== undefined ? assign.isActive : true,
               role: assign.role || existing.role,
-              ...(assign.staffSharePercentage !== undefined && {
-                staffSharePercentage: new Decimal(assign.staffSharePercentage),
+              ...(sharePercent !== undefined && {
+                staffSharePercentage: sharePercent,
               }),
-              ...(assign.compensationRule && { compensationRule: assign.compensationRule }),
+              ...(compRule && { compensationRule: compRule }),
               ...(assign.startDate && { startDate: new Date(assign.startDate) }),
               ...(assign.endDate !== undefined && {
                 endDate: assign.endDate ? new Date(assign.endDate) : null,
@@ -511,11 +595,8 @@ export class StaffService {
               subjectId: assign.subjectId || null,
               batchId: assign.batchId || null,
               role: assign.role || 'INSTRUCTOR',
-              staffSharePercentage:
-                assign.staffSharePercentage !== undefined
-                  ? new Decimal(assign.staffSharePercentage)
-                  : new Decimal(70.0),
-              compensationRule: assign.compensationRule || 'REVENUE_SHARE_70_30',
+              staffSharePercentage: sharePercent || new Decimal(70.0),
+              compensationRule: compRule || 'REVENUE_SHARE_70_30',
               startDate: assign.startDate ? new Date(assign.startDate) : new Date(),
               endDate: assign.endDate ? new Date(assign.endDate) : null,
               isActive: true,
@@ -563,15 +644,31 @@ export class StaffService {
       }
     }
 
+    const compRule = dto.settlementConfig
+      ? (typeof dto.settlementConfig === 'string' ? dto.settlementConfig : JSON.stringify(dto.settlementConfig))
+      : dto.compensationRule;
+
+    let sharePercent = dto.staffSharePercentage !== undefined
+      ? new Decimal(dto.staffSharePercentage)
+      : undefined;
+
+    if (dto.settlementConfig && typeof dto.settlementConfig === 'object') {
+      if (dto.settlementConfig.mode === 'STUDENT_TIER_BASED' && dto.settlementConfig.singleSubject?.type === 'PERCENTAGE') {
+        sharePercent = new Decimal(dto.settlementConfig.singleSubject.value);
+      } else if (dto.settlementConfig.mode === 'REVENUE_SHARE_PERCENTAGE' && dto.settlementConfig.staffSharePercentage !== undefined) {
+        sharePercent = new Decimal(dto.settlementConfig.staffSharePercentage);
+      }
+    }
+
     const updated = await this.prisma.staffCourseAssignment.update({
       where: { id: assignmentId },
       data: {
         ...(dto.role && { role: dto.role }),
         ...(dto.subjectId !== undefined && { subjectId: dto.subjectId || null }),
-        ...(dto.staffSharePercentage !== undefined && {
-          staffSharePercentage: new Decimal(dto.staffSharePercentage),
+        ...(sharePercent !== undefined && {
+          staffSharePercentage: sharePercent,
         }),
-        ...(dto.compensationRule && { compensationRule: dto.compensationRule }),
+        ...(compRule && { compensationRule: compRule }),
         ...(dto.isActive !== undefined && { isActive: dto.isActive }),
         ...(dto.startDate && { startDate: new Date(dto.startDate) }),
         ...(dto.endDate !== undefined && {

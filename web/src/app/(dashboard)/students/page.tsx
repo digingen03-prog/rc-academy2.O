@@ -5,6 +5,7 @@ import { usePathname } from 'next/navigation';
 import { Header } from '@/components/layout/header';
 import { ResponsivePageContainer } from '@/components/layout/responsive-container';
 import { ApiClient } from '@/lib/api/api-client';
+import { useAuthUser } from '@/lib/auth/use-role';
 import { Modal } from '@/components/ui/modal';
 import {
   Users,
@@ -42,6 +43,12 @@ import {
   ChevronLeft,
   Zap,
   Sparkles,
+  Wallet,
+  CreditCard,
+  Receipt,
+  Clock,
+  History,
+  ArrowUpRight,
 } from 'lucide-react';
 
 interface StudentEnrollment {
@@ -108,12 +115,30 @@ interface GuardianContactRow {
 }
 
 export default function StudentsPage() {
+  const { user: authUser, role } = useAuthUser();
+  const isPrivileged = role === 'SUPER_ADMIN' || role === 'ACADEMY_ADMIN';
+
   const [students, setStudents] = useState<Student[]>([]);
   const [courses, setCourses] = useState<CourseOption[]>([]);
   const [search, setSearch] = useState('');
+  const [courseFilter, setCourseFilter] = useState('');
   const [batchFilter, setBatchFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('ALL');
   const [loading, setLoading] = useState(true);
+
+  // Available batches based on selected courseFilter
+  const availableBatches = useMemo(() => {
+    if (courseFilter) {
+      const selectedCourse = courses.find((c) => c.id === courseFilter);
+      return selectedCourse ? selectedCourse.batches : [];
+    }
+    return courses.flatMap((c) =>
+      c.batches.map((b) => ({
+        ...b,
+        name: `${c.code || c.name} - ${b.name}`,
+      }))
+    );
+  }, [courses, courseFilter]);
 
   // Pagination states (Defaults to 100 per user request)
   const [currentPage, setCurrentPage] = useState(1);
@@ -234,6 +259,220 @@ export default function StudentsPage() {
   const [deletingStudent, setDeletingStudent] = useState(false);
   const [manualModalError, setManualModalError] = useState<string | null>(null);
 
+  // Student Advance & Fee Allocation State
+  const [advanceSummary, setAdvanceSummary] = useState<{
+    totalCollected: number;
+    totalUtilized: number;
+    availableBalance: number;
+    advances: any[];
+    history: any[];
+  } | null>(null);
+  const [loadingAdvance, setLoadingAdvance] = useState(false);
+
+  // Record additional advance for existing student
+  const [recordAdvanceForm, setRecordAdvanceForm] = useState({
+    amount: '',
+    paymentDate: new Date().toISOString().split('T')[0],
+    paymentMethod: 'CASH',
+    reference: '',
+    notes: '',
+  });
+  const [recordingAdvance, setRecordingAdvance] = useState(false);
+  const [recordAdvanceError, setRecordAdvanceError] = useState<string | null>(null);
+  const [recordAdvanceSuccess, setRecordAdvanceSuccess] = useState<string | null>(null);
+
+  // Allocate advance against fee invoice
+  const [showAllocateModal, setShowAllocateModal] = useState(false);
+  const [studentInvoices, setStudentInvoices] = useState<any[]>([]);
+  const [loadingInvoices, setLoadingInvoices] = useState(false);
+  const [allocationForm, setAllocationForm] = useState({
+    invoiceId: '',
+    amount: '',
+    notes: '',
+  });
+  const [allocatingAdvance, setAllocatingAdvance] = useState(false);
+  const [allocationError, setAllocationError] = useState<string | null>(null);
+  const [allocationSuccess, setAllocationSuccess] = useState<string | null>(null);
+
+  const fetchAdvanceSummary = async (studentId: string) => {
+    try {
+      setLoadingAdvance(true);
+      const summary = await ApiClient.fetch<any>(`/students/${studentId}/advances`);
+      setAdvanceSummary(summary);
+    } catch (_) {
+      // Ignore
+    } finally {
+      setLoadingAdvance(false);
+    }
+  };
+
+  const handleRecordAdvanceSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedStudentForEnrollments) return;
+
+    const amt = parseFloat(recordAdvanceForm.amount);
+    if (isNaN(amt) || amt <= 0) {
+      setRecordAdvanceError('Please enter a valid advance amount greater than ₹0');
+      return;
+    }
+    if (!recordAdvanceForm.paymentDate) {
+      setRecordAdvanceError('Please select a payment date');
+      return;
+    }
+
+    try {
+      setRecordingAdvance(true);
+      setRecordAdvanceError(null);
+      setRecordAdvanceSuccess(null);
+
+      const res: any = await ApiClient.fetch(`/students/${selectedStudentForEnrollments.id}/advances`, {
+        method: 'POST',
+        body: JSON.stringify({
+          amount: amt,
+          paymentDate: recordAdvanceForm.paymentDate,
+          paymentMethod: recordAdvanceForm.paymentMethod,
+          reference: recordAdvanceForm.reference?.trim() || undefined,
+          notes: recordAdvanceForm.notes?.trim() || undefined,
+        }),
+      });
+
+      setRecordAdvanceSuccess(
+        `Advance of ₹${amt.toLocaleString('en-IN')} recorded successfully! Receipt: ${res.receiptNumber || 'ADV'}`,
+      );
+      setRecordAdvanceForm({
+        amount: '',
+        paymentDate: new Date().toISOString().split('T')[0],
+        paymentMethod: 'CASH',
+        reference: '',
+        notes: '',
+      });
+
+      if (res.summary) {
+        setAdvanceSummary(res.summary);
+      } else {
+        await fetchAdvanceSummary(selectedStudentForEnrollments.id);
+      }
+      await loadData();
+    } catch (err: any) {
+      setRecordAdvanceError(err.message || 'Failed to record advance');
+    } finally {
+      setRecordingAdvance(false);
+    }
+  };
+
+  const openAllocationModal = async () => {
+    if (!selectedStudentForEnrollments) return;
+    setShowAllocateModal(true);
+    setAllocationError(null);
+    setAllocationSuccess(null);
+    setAllocationForm({ invoiceId: '', amount: '', notes: '' });
+
+    try {
+      setLoadingInvoices(true);
+      const invoices = await ApiClient.fetch<any[]>(
+        `/fees/invoices?studentId=${selectedStudentForEnrollments.id}`,
+      );
+      const outstanding = (invoices || []).filter(
+        (inv) =>
+          (inv.status === 'UNPAID' || inv.status === 'PARTIAL') &&
+          Number(inv.balanceAmount) > 0,
+      );
+      setStudentInvoices(outstanding);
+      if (outstanding.length > 0) {
+        const first = outstanding[0];
+        const avail = advanceSummary?.availableBalance || 0;
+        const maxAlloc = Math.min(avail, Number(first.balanceAmount));
+        setAllocationForm({
+          invoiceId: first.id,
+          amount: maxAlloc > 0 ? String(maxAlloc) : '',
+          notes: `Settled from available advance balance`,
+        });
+      }
+    } catch (err: any) {
+      setAllocationError(err.message || 'Failed to load outstanding invoices');
+    } finally {
+      setLoadingInvoices(false);
+    }
+  };
+
+  const handleAllocateAdvanceSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedStudentForEnrollments || !allocationForm.invoiceId) return;
+
+    const amt = parseFloat(allocationForm.amount);
+    if (isNaN(amt) || amt <= 0) {
+      setAllocationError('Please enter a valid allocation amount greater than ₹0');
+      return;
+    }
+
+    const available = advanceSummary?.availableBalance || 0;
+    if (amt > available) {
+      setAllocationError(
+        `Allocation amount (₹${amt}) cannot exceed available advance balance (₹${available})`,
+      );
+      return;
+    }
+
+    const targetInv = studentInvoices.find((i) => i.id === allocationForm.invoiceId);
+    if (targetInv && amt > Number(targetInv.balanceAmount)) {
+      setAllocationError(
+        `Allocation amount (₹${amt}) cannot exceed invoice balance (₹${targetInv.balanceAmount})`,
+      );
+      return;
+    }
+
+    try {
+      setAllocatingAdvance(true);
+      setAllocationError(null);
+      setAllocationSuccess(null);
+
+      const res: any = await ApiClient.fetch(
+        `/students/${selectedStudentForEnrollments.id}/advances/allocate`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            invoiceId: allocationForm.invoiceId,
+            amount: amt,
+            notes: allocationForm.notes?.trim() || undefined,
+          }),
+        },
+      );
+
+      setAllocationSuccess(
+        `₹${amt.toLocaleString('en-IN')} allocated successfully against invoice ${res.invoice?.invoiceNumber || ''}!`,
+      );
+      if (res.summary) {
+        setAdvanceSummary(res.summary);
+      } else {
+        await fetchAdvanceSummary(selectedStudentForEnrollments.id);
+      }
+
+      const updatedInvoices = await ApiClient.fetch<any[]>(
+        `/fees/invoices?studentId=${selectedStudentForEnrollments.id}`,
+      );
+      const outstanding = (updatedInvoices || []).filter(
+        (inv) =>
+          (inv.status === 'UNPAID' || inv.status === 'PARTIAL') &&
+          Number(inv.balanceAmount) > 0,
+      );
+      setStudentInvoices(outstanding);
+
+      const updatedEnrollments = await ApiClient.fetch<any>(
+        `/students/${selectedStudentForEnrollments.id}/enrollments`,
+      );
+      setEnrollmentsData(updatedEnrollments);
+
+      await loadData();
+      setTimeout(() => {
+        setShowAllocateModal(false);
+      }, 1500);
+    } catch (err: any) {
+      setAllocationError(err.message || 'Failed to allocate advance');
+    } finally {
+      setAllocatingAdvance(false);
+    }
+  };
+
   const pathname = usePathname();
 
   // Reset all modals when route changes
@@ -291,6 +530,11 @@ export default function StudentsPage() {
     phone: string;
     enrollments: CourseEnrollmentRow[];
     guardians: GuardianContactRow[];
+    advanceAmount: string;
+    advancePaymentDate: string;
+    advancePaymentMethod: string;
+    advanceReference: string;
+    advanceNotes: string;
   }>({
     name: '',
     schoolName: '',
@@ -300,6 +544,11 @@ export default function StudentsPage() {
     phone: '',
     enrollments: [{ courseId: '', batchId: '' }],
     guardians: [{ fullName: '', phone: '', relationship: 'Father', email: '' }],
+    advanceAmount: '0',
+    advancePaymentDate: new Date().toISOString().split('T')[0],
+    advancePaymentMethod: 'CASH',
+    advanceReference: '',
+    advanceNotes: '',
   });
   const [submittingManual, setSubmittingManual] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -379,6 +628,7 @@ export default function StudentsPage() {
       setErrorMsg(null);
       const queryParams = new URLSearchParams();
       if (search) queryParams.append('search', search);
+      if (courseFilter) queryParams.append('classId', courseFilter);
       if (batchFilter) queryParams.append('batchId', batchFilter);
       queryParams.append('page', String(currentPage));
       queryParams.append('limit', String(pageSize));
@@ -407,11 +657,11 @@ export default function StudentsPage() {
 
   useEffect(() => {
     loadData();
-  }, [search, batchFilter, currentPage, pageSize]);
+  }, [search, courseFilter, batchFilter, currentPage, pageSize]);
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [search, batchFilter, statusFilter, selectedSubjectFilter]);
+  }, [search, courseFilter, batchFilter, statusFilter, selectedSubjectFilter]);
 
   // Handle Manual Student Registration
   const handleManualSubmit = async (e: React.FormEvent) => {
@@ -492,6 +742,32 @@ export default function StudentsPage() {
         ...(validGuardians.length > 0 ? { guardians: validGuardians } : {}),
       };
 
+      // Validate advance amount if entered
+      const advNum = parseFloat(manualForm.advanceAmount || '0');
+      if (isNaN(advNum) || advNum < 0) {
+        setManualModalError('Advance amount must be a valid non-negative number');
+        return;
+      }
+      if (advNum > 0) {
+        if (!manualForm.advancePaymentDate) {
+          setManualModalError('Payment date is required when an advance amount is entered');
+          return;
+        }
+        if (!manualForm.advancePaymentMethod) {
+          setManualModalError('Payment method is required when an advance amount is entered');
+          return;
+        }
+        payload.advanceAmount = advNum;
+        payload.advancePaymentDate = manualForm.advancePaymentDate;
+        payload.advancePaymentMethod = manualForm.advancePaymentMethod;
+        if (manualForm.advanceReference?.trim()) {
+          payload.advanceReference = manualForm.advanceReference.trim();
+        }
+        if (manualForm.advanceNotes?.trim()) {
+          payload.advanceNotes = manualForm.advanceNotes.trim();
+        }
+      }
+
       const res: any = await ApiClient.fetch('/students', {
         method: 'POST',
         body: JSON.stringify(payload),
@@ -507,6 +783,11 @@ export default function StudentsPage() {
         phone: '',
         enrollments: [{ courseId: '', batchId: '', subjectId: '' }],
         guardians: [{ fullName: '', phone: '', relationship: 'Father', email: '' }],
+        advanceAmount: '0',
+        advancePaymentDate: new Date().toISOString().split('T')[0],
+        advancePaymentMethod: 'CASH',
+        advanceReference: '',
+        advanceNotes: '',
       });
 
       setShowCreatedCodeModal({
@@ -600,6 +881,11 @@ export default function StudentsPage() {
       setEnrollmentsData(data);
       if (fullStudent) {
         setSelectedStudentForEnrollments((prev) => ({ ...(prev || student), ...fullStudent }));
+        if (fullStudent.advanceSummary) {
+          setAdvanceSummary(fullStudent.advanceSummary);
+        } else {
+          fetchAdvanceSummary(student.id);
+        }
         const freshGuardians = extractGuardians(fullStudent.guardians || student.guardians);
         setEditForm({
           name: fullStudent.fullName || student.fullName || `${fullStudent.firstName} ${fullStudent.lastName && fullStudent.lastName !== '-' ? fullStudent.lastName : ''}`.trim(),
@@ -612,9 +898,12 @@ export default function StudentsPage() {
           address: fullStudent.address || '',
           guardians: freshGuardians.length > 0 ? freshGuardians : [{ fullName: '', phone: '', relationship: 'Father', email: '' }],
         });
+      } else {
+        fetchAdvanceSummary(student.id);
       }
     } catch (err: any) {
-      setErrorMsg(err.message || 'Failed to load student enrollments');
+      setErrorMsg(err.message || 'You do not have permission to access this student record');
+      setSelectedStudentForEnrollments(null);
     } finally {
       setLoadingEnrollments(false);
     }
@@ -694,6 +983,7 @@ export default function StudentsPage() {
       await ApiClient.fetch(`/students/${selectedStudentForEnrollments.id}/enrollments`, {
         method: 'POST',
         body: JSON.stringify({
+          courseId: newEnrollment.courseId || undefined,
           batchId: newEnrollment.batchId,
           subjectId: newEnrollment.subjectId || undefined,
         }),
@@ -1287,7 +1577,7 @@ export default function StudentsPage() {
     const totalStudents = students.length;
     const activeStudents = students.filter((s) => s.status === 'ACTIVE').length;
 
-    const classCountMap: Record<string, { name: string; count: number; code?: string }> = {};
+    const classCountMap: Record<string, { id?: string; name: string; count: number; code?: string }> = {};
     const subjectCountMap: Record<string, { name: string; count: number }> = {};
 
     students.forEach((s) => {
@@ -1297,7 +1587,7 @@ export default function StudentsPage() {
           if (e.className && !seenInStudentClasses.has(e.className)) {
             seenInStudentClasses.add(e.className);
             if (!classCountMap[e.className]) {
-              classCountMap[e.className] = { name: e.className, count: 0, code: e.classCode };
+              classCountMap[e.className] = { id: e.classId, name: e.className, count: 0, code: e.classCode };
             }
             classCountMap[e.className].count++;
           }
@@ -1312,7 +1602,7 @@ export default function StudentsPage() {
       } else if (s.currentBatch) {
         const cName = s.currentBatch.class?.name || 'Assigned Cohort';
         if (!classCountMap[cName]) {
-          classCountMap[cName] = { name: cName, count: 0 };
+          classCountMap[cName] = { id: s.currentBatch.class?.id, name: cName, count: 0, code: s.currentBatch.class?.code };
         }
         classCountMap[cName].count++;
       }
@@ -1328,6 +1618,12 @@ export default function StudentsPage() {
 
   const filteredStudents = students.filter((s) => {
     if (statusFilter !== 'ALL' && s.status !== statusFilter) return false;
+    if (courseFilter) {
+      const hasCourse =
+        s.enrollments?.some((e) => e.classId === courseFilter) ||
+        s.currentBatch?.class?.id === courseFilter;
+      if (!hasCourse) return false;
+    }
     if (batchFilter) {
       const hasEnrollment = s.enrollments?.some((e) => e.batchId === batchFilter);
       const hasCurrent = s.currentBatch?.id === batchFilter;
@@ -1350,8 +1646,12 @@ export default function StudentsPage() {
     <>
       {/* Header */}
       <Header
-        title="Student Directory & Admissions"
-        subtitle="Manage enrolled students, multi-course cohort allocations, unique 3-digit attendance codes, and bulk onboarding"
+        title={isPrivileged ? "Student Directory & Admissions" : "My Assigned Students"}
+        subtitle={
+          isPrivileged
+            ? "Manage enrolled students, multi-course cohort allocations, unique 3-digit attendance codes, and bulk onboarding"
+            : "View students enrolled in the courses and batches assigned to you"
+        }
       />
 
       <ResponsivePageContainer>
@@ -1412,34 +1712,149 @@ export default function StudentsPage() {
             )}
           </button>
 
-          <button
-            onClick={() => {
-              setBulkStep('UPLOAD');
-              setCsvContent('');
-              setCsvRawHeaders([]);
-              setCsvRawDataRows([]);
-              setValidationReport(null);
-              setImportSummary(null);
-              setShowBulkModal(true);
-            }}
-            className="inline-flex items-center gap-2 px-3.5 py-2 bg-[#FFF4E5] hover:bg-[#FFE8CC] text-[#CC6B00] text-sm font-semibold rounded-lg border border-[#FF8500]/30 transition shadow-2xs"
-          >
-            <Upload className="w-4 h-4 text-[#FF8500]" />
-            <span>Bulk Import CSV</span>
-          </button>
+          {isPrivileged && (
+            <>
+              <button
+                onClick={() => {
+                  setBulkStep('UPLOAD');
+                  setCsvContent('');
+                  setCsvRawHeaders([]);
+                  setCsvRawDataRows([]);
+                  setValidationReport(null);
+                  setImportSummary(null);
+                  setShowBulkModal(true);
+                }}
+                className="inline-flex items-center gap-2 px-3.5 py-2 bg-[#FFF4E5] hover:bg-[#FFE8CC] text-[#CC6B00] text-sm font-semibold rounded-lg border border-[#FF8500]/30 transition shadow-2xs"
+              >
+                <Upload className="w-4 h-4 text-[#FF8500]" />
+                <span>Bulk Import CSV</span>
+              </button>
 
-          <button
-            onClick={() => {
-              setErrorMsg(null);
-              setManualModalError(null);
-              setShowManualModal(true);
-            }}
-            className="inline-flex items-center gap-2 px-4 py-2 bg-[#FF8500] hover:bg-[#E67700] text-white text-sm font-semibold rounded-lg shadow-subtle transition"
-          >
-            <Plus className="w-4 h-4" />
-            <span>New Student</span>
-          </button>
+              <button
+                onClick={() => {
+                  setErrorMsg(null);
+                  setManualModalError(null);
+                  setShowManualModal(true);
+                }}
+                className="inline-flex items-center gap-2 px-4 py-2 bg-[#FF8500] hover:bg-[#E67700] text-white text-sm font-semibold rounded-lg shadow-subtle transition"
+              >
+                <Plus className="w-4 h-4" />
+                <span>New Student</span>
+              </button>
+            </>
+          )}
         </div>
+      </div>
+
+      {/* FILTER CONTROLS TOOLBAR: Class / Course, Batch, Status */}
+      <div className="bg-white border border-neutral-200 rounded-xl p-3 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-2.5 flex-1">
+          <div className="flex items-center gap-1.5 text-xs font-bold text-neutral-500 uppercase tracking-wider mr-1">
+            <SlidersHorizontal className="w-3.5 h-3.5 text-[#FF8500]" />
+            <span>Filters:</span>
+          </div>
+
+          {/* 1. Class / Course Filter */}
+          <div className="flex items-center gap-1.5 min-w-[210px] flex-1 sm:flex-initial">
+            <div className="relative w-full">
+              <BookOpen className="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-400 pointer-events-none" />
+              <select
+                value={courseFilter}
+                onChange={(e) => {
+                  const newCourse = e.target.value;
+                  setCourseFilter(newCourse);
+                  if (newCourse) {
+                    const courseObj = courses.find((c) => c.id === newCourse);
+                    const batchExists = courseObj?.batches.some((b) => b.id === batchFilter);
+                    if (!batchExists) setBatchFilter('');
+                  }
+                }}
+                className={`w-full pl-8 pr-7 py-2 text-xs font-semibold rounded-lg border transition appearance-none cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#FF8500]/20 focus:border-[#FF8500] ${
+                  courseFilter
+                    ? 'bg-orange-50/70 border-[#FF8500] text-[#CC6B00] ring-1 ring-[#FF8500]/20'
+                    : 'bg-neutral-50 border-neutral-200 text-neutral-700 hover:border-neutral-300'
+                }`}
+              >
+                <option value="">All Classes / Courses</option>
+                {courses.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name} {c.code ? `(${c.code})` : ''}
+                  </option>
+                ))}
+              </select>
+              <span className="absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none text-neutral-400 text-[10px]">▼</span>
+            </div>
+          </div>
+
+          {/* 2. Batch Filter */}
+          <div className="flex items-center gap-1.5 min-w-[190px] flex-1 sm:flex-initial">
+            <div className="relative w-full">
+              <Layers className="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-400 pointer-events-none" />
+              <select
+                value={batchFilter}
+                onChange={(e) => setBatchFilter(e.target.value)}
+                className={`w-full pl-8 pr-7 py-2 text-xs font-semibold rounded-lg border transition appearance-none cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#FF8500]/20 focus:border-[#FF8500] ${
+                  batchFilter
+                    ? 'bg-orange-50/70 border-[#FF8500] text-[#CC6B00] ring-1 ring-[#FF8500]/20'
+                    : 'bg-neutral-50 border-neutral-200 text-neutral-700 hover:border-neutral-300'
+                }`}
+              >
+                <option value="">{courseFilter ? 'All Batches in Course' : 'All Batches'}</option>
+                {availableBatches.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.name} {b.code ? `(${b.code})` : ''}
+                  </option>
+                ))}
+              </select>
+              <span className="absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none text-neutral-400 text-[10px]">▼</span>
+            </div>
+          </div>
+
+          {/* 3. Status Filter */}
+          <div className="flex items-center gap-1.5 min-w-[130px] flex-1 sm:flex-initial">
+            <div className="relative w-full">
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                className={`w-full px-3 py-2 text-xs font-semibold rounded-lg border transition appearance-none cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#FF8500]/20 focus:border-[#FF8500] ${
+                  statusFilter !== 'ALL'
+                    ? 'bg-orange-50/70 border-[#FF8500] text-[#CC6B00] ring-1 ring-[#FF8500]/20'
+                    : 'bg-neutral-50 border-neutral-200 text-neutral-700 hover:border-neutral-300'
+                }`}
+              >
+                <option value="ALL">All Status</option>
+                <option value="ACTIVE">Active Only</option>
+                <option value="ALUMNI">Alumni</option>
+                <option value="SUSPENDED">Suspended</option>
+                <option value="WITHDRAWN">Withdrawn</option>
+              </select>
+              <span className="absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none text-neutral-400 text-[10px]">▼</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Active Filters Summary & Reset Button */}
+        {(courseFilter || batchFilter || statusFilter !== 'ALL' || selectedSubjectFilter || search) && (
+          <div className="flex items-center gap-2 shrink-0">
+            <span className="text-[11px] font-medium text-neutral-500">
+              Showing <strong className="text-neutral-900">{filteredStudents.length}</strong> matching students
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                setCourseFilter('');
+                setBatchFilter('');
+                setStatusFilter('ALL');
+                setSelectedSubjectFilter('');
+                setSearch('');
+              }}
+              className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-bold text-rose-600 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-lg transition cursor-pointer"
+            >
+              <X className="w-3.5 h-3.5" />
+              <span>Reset Filters</span>
+            </button>
+          </div>
+        )}
       </div>
 
       {/* STUDENT ANALYSIS & COHORT OVERVIEW PANEL */}
@@ -1458,7 +1873,33 @@ export default function StudentsPage() {
               </div>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
+              {courseFilter && (
+                <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-blue-100 border border-blue-200 text-blue-900 text-xs font-semibold">
+                  <span>Class: {courses.find((c) => c.id === courseFilter)?.name || courseFilter}</span>
+                  <button
+                    type="button"
+                    onClick={() => setCourseFilter('')}
+                    className="p-0.5 hover:bg-blue-200 rounded-full cursor-pointer"
+                    title="Clear class filter"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+              )}
+              {batchFilter && (
+                <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-purple-100 border border-purple-200 text-purple-900 text-xs font-semibold">
+                  <span>Batch: {availableBatches.find((b) => b.id === batchFilter)?.name || batchFilter}</span>
+                  <button
+                    type="button"
+                    onClick={() => setBatchFilter('')}
+                    className="p-0.5 hover:bg-purple-200 rounded-full cursor-pointer"
+                    title="Clear batch filter"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+              )}
               {selectedSubjectFilter && (
                 <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-orange-100 border border-orange-200 text-orange-900 text-xs font-semibold">
                   <span>Subject: {selectedSubjectFilter}</span>
@@ -1471,15 +1912,6 @@ export default function StudentsPage() {
                     <X className="w-3 h-3" />
                   </button>
                 </div>
-              )}
-              {batchFilter && (
-                <button
-                  type="button"
-                  onClick={() => setBatchFilter('')}
-                  className="px-2.5 py-1 text-xs text-neutral-600 hover:text-black border border-neutral-200 rounded-lg"
-                >
-                  Clear Batch Filter
-                </button>
               )}
             </div>
           </div>
@@ -1564,19 +1996,38 @@ export default function StudentsPage() {
                 Class / Course Distribution
               </span>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                {analysisStats.classes.map((cls) => (
-                  <div
-                    key={cls.name}
-                    className="p-2.5 rounded-lg bg-neutral-50 border border-neutral-200 flex items-center justify-between text-xs"
-                  >
-                    <span className="font-medium text-neutral-800 truncate mr-1" title={cls.name}>
-                      {cls.name}
-                    </span>
-                    <span className="font-bold text-neutral-900 bg-white border border-neutral-200 px-2 py-0.5 rounded-md text-[11px]">
-                      {cls.count}
-                    </span>
-                  </div>
-                ))}
+                {analysisStats.classes.map((cls) => {
+                  const isSelected = cls.id ? courseFilter === cls.id : false;
+                  return (
+                    <button
+                      key={cls.name}
+                      type="button"
+                      onClick={() => {
+                        if (cls.id) {
+                          setCourseFilter(isSelected ? '' : cls.id);
+                        }
+                      }}
+                      className={`p-2.5 rounded-lg border flex items-center justify-between text-xs transition text-left cursor-pointer ${
+                        isSelected
+                          ? 'bg-[#FF8500] text-white border-[#FF8500] shadow-sm'
+                          : 'bg-neutral-50 hover:bg-[#FFF4E5] hover:text-[#CC6B00] hover:border-[#FF8500]/40 text-neutral-800 border-neutral-200'
+                      }`}
+                    >
+                      <span className="font-semibold truncate mr-1" title={cls.name}>
+                        {cls.name}
+                      </span>
+                      <span
+                        className={`font-bold px-2 py-0.5 rounded-md text-[11px] border shrink-0 ${
+                          isSelected
+                            ? 'bg-white/20 text-white border-transparent'
+                            : 'bg-white text-neutral-900 border-neutral-200'
+                        }`}
+                      >
+                        {cls.count}
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
           )}
@@ -1652,7 +2103,11 @@ export default function StudentsPage() {
           ) : filteredStudents.length === 0 ? (
             <div className="py-12 text-center text-neutral-400">
               <Users className="w-8 h-8 mx-auto mb-2 text-neutral-300" />
-              <p className="text-xs">No students found matching filters.</p>
+              <p className="text-xs font-medium text-neutral-600">
+                {isPrivileged
+                  ? 'No students found matching filters.'
+                  : 'No students assigned to your classes. You will see students once you are assigned to a course or batch.'}
+              </p>
             </div>
           ) : (
             filteredStudents.map((s, idx) => (
@@ -1752,13 +2207,15 @@ export default function StudentsPage() {
                       <Eye className="w-3.5 h-3.5" />
                       <span>View</span>
                     </button>
-                    <button
-                      onClick={() => setStudentToDelete(s)}
-                      className="p-1.5 text-neutral-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition"
-                      title={`Delete ${s.fullName}`}
-                    >
-                      <Trash2 className="w-4 h-4 text-rose-500" />
-                    </button>
+                    {isPrivileged && (
+                      <button
+                        onClick={() => setStudentToDelete(s)}
+                        className="p-1.5 text-neutral-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition"
+                        title={`Delete ${s.fullName}`}
+                      >
+                        <Trash2 className="w-4 h-4 text-rose-500" />
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>
@@ -1791,7 +2248,11 @@ export default function StudentsPage() {
                 <tr>
                   <td colSpan={6} className="py-12 text-center text-neutral-400">
                     <Users className="w-8 h-8 mx-auto mb-2 text-neutral-300" />
-                    No students found matching current filters.
+                    <p className="text-xs font-medium text-neutral-600">
+                      {isPrivileged
+                        ? 'No students found matching current filters.'
+                        : 'No students assigned to your classes. You will see students once you are assigned to a course or batch.'}
+                    </p>
                   </td>
                 </tr>
               ) : (
@@ -1925,14 +2386,16 @@ export default function StudentsPage() {
                           <Eye className="w-3.5 h-3.5" />
                           <span>View</span>
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => setStudentToDelete(s)}
-                          className="p-1.5 text-neutral-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg border border-transparent hover:border-rose-200 transition cursor-pointer"
-                          title={`Delete student ${s.fullName}`}
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
+                        {isPrivileged && (
+                          <button
+                            type="button"
+                            onClick={() => setStudentToDelete(s)}
+                            className="p-1.5 text-neutral-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg border border-transparent hover:border-rose-200 transition cursor-pointer"
+                            title={`Delete student ${s.fullName}`}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -2471,6 +2934,116 @@ export default function StudentsPage() {
                       </div>
                     </div>
                   ))}
+                </div>
+              </div>
+
+              {/* Section 4: Admission Payment & Advance */}
+              <div className="space-y-3 pt-2">
+                <div className="flex items-center justify-between border-b border-neutral-100 pb-2">
+                  <div className="flex items-center gap-2">
+                    <Wallet className="w-4 h-4 text-[#FF8500]" />
+                    <h3 className="text-xs font-bold text-neutral-900 uppercase tracking-wider">
+                      Admission Payment & Advance
+                    </h3>
+                  </div>
+                  <span className="text-[11px] text-neutral-400 font-medium">
+                    Optional advance collected at admission
+                  </span>
+                </div>
+
+                <div className="p-4 bg-white border border-neutral-200 rounded-xl shadow-2xs space-y-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 text-xs">
+                    {/* Advance Amount */}
+                    <div>
+                      <label className="block text-[11px] font-semibold text-neutral-700 uppercase tracking-wider mb-1">
+                        Advance Amount (₹)
+                      </label>
+                      <input
+                        type="number"
+                        min="0"
+                        step="any"
+                        value={manualForm.advanceAmount}
+                        onChange={(e) =>
+                          setManualForm({ ...manualForm, advanceAmount: e.target.value })
+                        }
+                        className="w-full px-3 py-2 text-xs sm:text-sm bg-neutral-50 border border-neutral-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#FF8500] focus:border-[#FF8500] focus:bg-white font-semibold text-neutral-900"
+                        placeholder="₹0 (Default)"
+                      />
+                      <span className="text-[10px] text-neutral-400 mt-0.5 block">
+                        Keep ₹0 if no advance is collected at admission.
+                      </span>
+                    </div>
+
+                    {/* Payment Date */}
+                    <div>
+                      <label className="block text-[11px] font-semibold text-neutral-700 uppercase tracking-wider mb-1">
+                        Payment Date {parseFloat(manualForm.advanceAmount || '0') > 0 && <span className="text-rose-500">*</span>}
+                      </label>
+                      <input
+                        type="date"
+                        disabled={parseFloat(manualForm.advanceAmount || '0') <= 0}
+                        value={manualForm.advancePaymentDate}
+                        onChange={(e) =>
+                          setManualForm({ ...manualForm, advancePaymentDate: e.target.value })
+                        }
+                        className="w-full px-3 py-2 text-xs sm:text-sm bg-neutral-50 border border-neutral-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#FF8500] focus:border-[#FF8500] focus:bg-white disabled:opacity-50 disabled:bg-neutral-100"
+                      />
+                    </div>
+
+                    {/* Payment Method */}
+                    <div>
+                      <label className="block text-[11px] font-semibold text-neutral-700 uppercase tracking-wider mb-1">
+                        Payment Method {parseFloat(manualForm.advanceAmount || '0') > 0 && <span className="text-rose-500">*</span>}
+                      </label>
+                      <select
+                        disabled={parseFloat(manualForm.advanceAmount || '0') <= 0}
+                        value={manualForm.advancePaymentMethod}
+                        onChange={(e) =>
+                          setManualForm({ ...manualForm, advancePaymentMethod: e.target.value })
+                        }
+                        className="w-full px-3 py-2 text-xs sm:text-sm bg-neutral-50 border border-neutral-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#FF8500] focus:border-[#FF8500] focus:bg-white disabled:opacity-50 disabled:bg-neutral-100"
+                      >
+                        <option value="CASH">Cash</option>
+                        <option value="UPI">UPI</option>
+                        <option value="BANK_TRANSFER">Bank Transfer</option>
+                        <option value="CHEQUE">Cheque</option>
+                      </select>
+                    </div>
+
+                    {/* Transaction Reference */}
+                    <div className="sm:col-span-1 md:col-span-2">
+                      <label className="block text-[11px] font-semibold text-neutral-700 uppercase tracking-wider mb-1">
+                        Transaction Reference <span className="text-[10px] text-neutral-400 font-normal">(Optional for UPI / Bank Transfer)</span>
+                      </label>
+                      <input
+                        type="text"
+                        disabled={parseFloat(manualForm.advanceAmount || '0') <= 0}
+                        value={manualForm.advanceReference}
+                        onChange={(e) =>
+                          setManualForm({ ...manualForm, advanceReference: e.target.value })
+                        }
+                        placeholder="e.g. UPI Ref / Bank UTR / Cheque #"
+                        className="w-full px-3 py-2 text-xs sm:text-sm bg-neutral-50 border border-neutral-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#FF8500] focus:border-[#FF8500] focus:bg-white disabled:opacity-50 disabled:bg-neutral-100"
+                      />
+                    </div>
+
+                    {/* Payment Notes */}
+                    <div className="sm:col-span-1">
+                      <label className="block text-[11px] font-semibold text-neutral-700 uppercase tracking-wider mb-1">
+                        Payment Notes <span className="text-[10px] text-neutral-400 font-normal">(Optional)</span>
+                      </label>
+                      <input
+                        type="text"
+                        disabled={parseFloat(manualForm.advanceAmount || '0') <= 0}
+                        value={manualForm.advanceNotes}
+                        onChange={(e) =>
+                          setManualForm({ ...manualForm, advanceNotes: e.target.value })
+                        }
+                        placeholder="e.g. Admission advance"
+                        className="w-full px-3 py-2 text-xs sm:text-sm bg-neutral-50 border border-neutral-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#FF8500] focus:border-[#FF8500] focus:bg-white disabled:opacity-50 disabled:bg-neutral-100"
+                      />
+                    </div>
+                  </div>
                 </div>
               </div>
 
@@ -3659,22 +4232,24 @@ export default function StudentsPage() {
                     </div>
                   )}
 
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSingleViewTab(singleViewTab === 'edit' ? 'details' : 'edit');
-                      setEditModalError(null);
-                      setEditModalSuccess(null);
-                    }}
-                    className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold border transition cursor-pointer ${
-                      singleViewTab === 'edit'
-                        ? 'bg-neutral-100 text-neutral-700 border-neutral-200 hover:bg-neutral-200'
-                        : 'bg-[#FFF4E5] text-[#CC6B00] border-[#FF8500]/30 hover:bg-[#FFE8CC]'
-                    }`}
-                  >
-                    <Edit2 className="w-3.5 h-3.5" />
-                    <span>{singleViewTab === 'edit' ? 'View Details' : 'Edit Profile'}</span>
-                  </button>
+                  {isPrivileged && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSingleViewTab(singleViewTab === 'edit' ? 'details' : 'edit');
+                        setEditModalError(null);
+                        setEditModalSuccess(null);
+                      }}
+                      className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold border transition cursor-pointer ${
+                        singleViewTab === 'edit'
+                          ? 'bg-neutral-100 text-neutral-700 border-neutral-200 hover:bg-neutral-200'
+                          : 'bg-[#FFF4E5] text-[#CC6B00] border-[#FF8500]/30 hover:bg-[#FFE8CC]'
+                      }`}
+                    >
+                      <Edit2 className="w-3.5 h-3.5" />
+                      <span>{singleViewTab === 'edit' ? 'View Details' : 'Edit Profile'}</span>
+                    </button>
+                  )}
 
                   <button
                     onClick={() => setSelectedStudentForEnrollments(null)}
@@ -3701,22 +4276,24 @@ export default function StudentsPage() {
                 <span>All Details</span>
               </button>
 
-              <button
-                type="button"
-                onClick={() => {
-                  setSingleViewTab('edit');
-                  setEditModalError(null);
-                  setEditModalSuccess(null);
-                }}
-                className={`py-3 px-3.5 text-xs font-semibold border-b-2 transition flex items-center gap-2 cursor-pointer shrink-0 ${
-                  singleViewTab === 'edit'
-                    ? 'border-[#FF8500] text-[#CC6B00] bg-white rounded-t-lg shadow-2xs font-bold'
-                    : 'border-transparent text-neutral-500 hover:text-neutral-900 hover:border-neutral-300'
-                }`}
-              >
-                <Edit2 className="w-3.5 h-3.5" />
-                <span>Edit Profile & Guardians</span>
-              </button>
+              {isPrivileged && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSingleViewTab('edit');
+                    setEditModalError(null);
+                    setEditModalSuccess(null);
+                  }}
+                  className={`py-3 px-3.5 text-xs font-semibold border-b-2 transition flex items-center gap-2 cursor-pointer shrink-0 ${
+                    singleViewTab === 'edit'
+                      ? 'border-[#FF8500] text-[#CC6B00] bg-white rounded-t-lg shadow-2xs font-bold'
+                      : 'border-transparent text-neutral-500 hover:text-neutral-900 hover:border-neutral-300'
+                  }`}
+                >
+                  <Edit2 className="w-3.5 h-3.5" />
+                  <span>Edit Profile & Guardians</span>
+                </button>
+              )}
 
               <button
                 type="button"
@@ -3959,6 +4536,150 @@ export default function StudentsPage() {
                               </div>
                             </div>
                           ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Card 4B: Student Advance Balance & Allocation */}
+                  <div className="p-4 bg-white border border-neutral-200 rounded-xl shadow-2xs space-y-4">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-neutral-100 pb-2">
+                      <h3 className="text-xs font-bold text-neutral-900 uppercase tracking-wider flex items-center gap-2">
+                        <Wallet className="w-3.5 h-3.5 text-[#FF8500]" />
+                        Student Advance Balance & Settlement
+                      </h3>
+                      {isPrivileged && (
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSingleViewTab('edit');
+                              setTimeout(() => {
+                                const el = document.getElementById('record-advance-section');
+                                if (el) el.scrollIntoView({ behavior: 'smooth' });
+                              }, 100);
+                            }}
+                            className="px-2.5 py-1 text-[11px] font-semibold text-[#CC6B00] bg-[#FFF4E5] hover:bg-[#FFE8CC] border border-[#FF8500]/30 rounded-lg transition flex items-center gap-1 cursor-pointer"
+                          >
+                            <Plus className="w-3 h-3" />
+                            <span>Record Advance</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={openAllocationModal}
+                            disabled={!advanceSummary || advanceSummary.availableBalance <= 0}
+                            className="px-2.5 py-1 text-[11px] font-semibold text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 disabled:hover:bg-emerald-600 rounded-lg transition flex items-center gap-1 cursor-pointer"
+                          >
+                            <CreditCard className="w-3 h-3" />
+                            <span>Allocate to Fee Invoice</span>
+                          </button>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* 3 Metrics Cards */}
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <div className="p-3 bg-neutral-50 rounded-xl border border-neutral-200/80">
+                        <span className="text-[11px] font-medium text-neutral-500 block">Total Advance Collected</span>
+                        <div className="text-base font-bold text-neutral-900 mt-1">
+                          ₹{(advanceSummary?.totalCollected || 0).toLocaleString('en-IN')}
+                        </div>
+                        <span className="text-[10px] text-neutral-400 mt-0.5 block">Lifetime received from student</span>
+                      </div>
+
+                      <div className="p-3 bg-neutral-50 rounded-xl border border-neutral-200/80">
+                        <span className="text-[11px] font-medium text-neutral-500 block">Advance Utilized</span>
+                        <div className="text-base font-bold text-neutral-700 mt-1">
+                          ₹{(advanceSummary?.totalUtilized || 0).toLocaleString('en-IN')}
+                        </div>
+                        <span className="text-[10px] text-neutral-400 mt-0.5 block">Allocated to fee invoices</span>
+                      </div>
+
+                      <div className="p-3 bg-gradient-to-br from-emerald-50 to-teal-50/50 rounded-xl border border-emerald-200">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[11px] font-semibold text-emerald-800">Available Advance Balance</span>
+                          <span className="px-1.5 py-0.5 bg-emerald-100 text-emerald-800 text-[9px] font-bold rounded">
+                            READY TO SETTLE
+                          </span>
+                        </div>
+                        <div className="text-lg font-extrabold text-emerald-700 mt-1">
+                          ₹{(advanceSummary?.availableBalance || 0).toLocaleString('en-IN')}
+                        </div>
+                        <span className="text-[10px] text-emerald-600 mt-0.5 block">Unallocated balance available</span>
+                      </div>
+                    </div>
+
+                    {/* Advance Transaction History Timeline / Table */}
+                    <div className="space-y-2 pt-1">
+                      <h4 className="text-[11px] font-bold text-neutral-700 uppercase tracking-wider flex items-center gap-1.5">
+                        <History className="w-3 h-3 text-neutral-400" />
+                        Advance Transaction History & Allocations
+                      </h4>
+
+                      {(!advanceSummary?.history || advanceSummary.history.length === 0) ? (
+                        <p className="text-xs text-neutral-400 italic p-3 bg-neutral-50 rounded-lg border border-dashed border-neutral-200">
+                          No advance transactions or fee allocations recorded yet for this student.
+                        </p>
+                      ) : (
+                        <div className="overflow-x-auto rounded-lg border border-neutral-200">
+                          <table className="w-full text-left text-xs">
+                            <thead className="bg-neutral-50 text-[10px] uppercase font-bold text-neutral-500 border-b border-neutral-200">
+                              <tr>
+                                <th className="px-3 py-2">Date</th>
+                                <th className="px-3 py-2">Type</th>
+                                <th className="px-3 py-2">Amount</th>
+                                <th className="px-3 py-2">Reference / Invoice</th>
+                                <th className="px-3 py-2">Recorded By</th>
+                                <th className="px-3 py-2">Notes</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-neutral-100 bg-white">
+                              {advanceSummary.history.map((tx: any) => (
+                                <tr key={tx.id} className="hover:bg-neutral-50/60 transition">
+                                  <td className="px-3 py-2 font-mono text-[11px] text-neutral-600 whitespace-nowrap">
+                                    {new Date(tx.date).toLocaleDateString('en-IN', {
+                                      day: '2-digit',
+                                      month: 'short',
+                                      year: 'numeric',
+                                    })}
+                                  </td>
+                                  <td className="px-3 py-2 whitespace-nowrap">
+                                    {tx.type === 'COLLECTION' ? (
+                                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                        <Plus className="w-2.5 h-2.5" />
+                                        Collection ({tx.paymentMethod})
+                                      </span>
+                                    ) : (
+                                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200">
+                                        <ArrowUpRight className="w-2.5 h-2.5" />
+                                        Fee Allocation
+                                      </span>
+                                    )}
+                                  </td>
+                                  <td className="px-3 py-2 font-bold whitespace-nowrap text-neutral-900">
+                                    {tx.type === 'COLLECTION' ? (
+                                      <span className="text-emerald-700">+₹{tx.amount.toLocaleString('en-IN')}</span>
+                                    ) : (
+                                      <span className="text-blue-700">-₹{tx.amount.toLocaleString('en-IN')}</span>
+                                    )}
+                                  </td>
+                                  <td className="px-3 py-2 font-mono text-[11px] text-neutral-600 whitespace-nowrap">
+                                    {tx.invoiceNumber ? (
+                                      <span className="font-semibold text-neutral-800">{tx.invoiceNumber}</span>
+                                    ) : (
+                                      <span>{tx.receiptNumber || tx.reference || '—'}</span>
+                                    )}
+                                  </td>
+                                  <td className="px-3 py-2 text-neutral-600 text-[11px] whitespace-nowrap">
+                                    {tx.actorName || 'System Admin'}
+                                  </td>
+                                  <td className="px-3 py-2 text-neutral-500 text-[11px] max-w-xs truncate">
+                                    {tx.notes || '—'}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
                         </div>
                       )}
                     </div>
@@ -4288,6 +5009,181 @@ export default function StudentsPage() {
                     </div>
                   </div>
 
+                  {/* Section 4: Student Advance Accounting & Record Collection */}
+                  <div id="record-advance-section" className="p-4 bg-white border border-neutral-200 rounded-xl shadow-2xs space-y-4">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-neutral-100 pb-2">
+                      <h3 className="text-xs font-bold text-neutral-900 uppercase tracking-wider flex items-center gap-2">
+                        <Wallet className="w-3.5 h-3.5 text-[#FF8500]" />
+                        4. Advance Accounting & Financial Ledger
+                      </h3>
+                      <button
+                        type="button"
+                        onClick={openAllocationModal}
+                        disabled={!advanceSummary || advanceSummary.availableBalance <= 0}
+                        className="px-2.5 py-1 text-[11px] font-semibold text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 disabled:hover:bg-emerald-600 rounded-lg transition flex items-center gap-1 cursor-pointer"
+                      >
+                        <CreditCard className="w-3 h-3" />
+                        <span>Allocate to Fee Invoice</span>
+                      </button>
+                    </div>
+
+                    {/* Summary Balance Cards */}
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <div className="p-3 bg-neutral-50 rounded-xl border border-neutral-200/80">
+                        <span className="text-[11px] font-medium text-neutral-500 block">Total Advance Collected</span>
+                        <div className="text-base font-bold text-neutral-900 mt-1">
+                          ₹{(advanceSummary?.totalCollected || 0).toLocaleString('en-IN')}
+                        </div>
+                      </div>
+                      <div className="p-3 bg-neutral-50 rounded-xl border border-neutral-200/80">
+                        <span className="text-[11px] font-medium text-neutral-500 block">Advance Utilized</span>
+                        <div className="text-base font-bold text-neutral-700 mt-1">
+                          ₹{(advanceSummary?.totalUtilized || 0).toLocaleString('en-IN')}
+                        </div>
+                      </div>
+                      <div className="p-3 bg-emerald-50 rounded-xl border border-emerald-200">
+                        <span className="text-[11px] font-semibold text-emerald-800 block">Available Advance Balance</span>
+                        <div className="text-base font-extrabold text-emerald-700 mt-1">
+                          ₹{(advanceSummary?.availableBalance || 0).toLocaleString('en-IN')}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Record Additional Advance Collection Form */}
+                    <div className="p-3.5 bg-neutral-50/80 border border-neutral-200 rounded-xl space-y-3">
+                      <div className="flex items-center justify-between">
+                        <h4 className="text-xs font-bold text-neutral-900 uppercase tracking-wider flex items-center gap-1.5">
+                          <Plus className="w-3.5 h-3.5 text-[#FF8500]" />
+                          Record Additional Advance Collection
+                        </h4>
+                        <span className="text-[10px] text-neutral-500">
+                          Creates an immutable financial transaction
+                        </span>
+                      </div>
+
+                      {recordAdvanceError && (
+                        <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-lg text-rose-700 text-xs flex items-center gap-2">
+                          <AlertCircle className="w-4 h-4 shrink-0" />
+                          <span>{recordAdvanceError}</span>
+                        </div>
+                      )}
+
+                      {recordAdvanceSuccess && (
+                        <div className="p-2.5 bg-emerald-50 border border-emerald-200 rounded-lg text-emerald-800 text-xs flex items-center gap-2">
+                          <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600" />
+                          <span>{recordAdvanceSuccess}</span>
+                        </div>
+                      )}
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 text-xs">
+                        {/* Amount */}
+                        <div>
+                          <label className="block text-[11px] font-semibold text-neutral-700 mb-1">
+                            Advance Amount (₹) <span className="text-rose-500">*</span>
+                          </label>
+                          <input
+                            type="number"
+                            min="0.01"
+                            step="any"
+                            value={recordAdvanceForm.amount}
+                            onChange={(e) =>
+                              setRecordAdvanceForm({ ...recordAdvanceForm, amount: e.target.value })
+                            }
+                            placeholder="e.g. 500"
+                            className="w-full px-3 py-2 text-xs bg-white border border-neutral-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#FF8500] font-semibold text-neutral-900"
+                          />
+                        </div>
+
+                        {/* Payment Date */}
+                        <div>
+                          <label className="block text-[11px] font-semibold text-neutral-700 mb-1">
+                            Payment Date <span className="text-rose-500">*</span>
+                          </label>
+                          <input
+                            type="date"
+                            value={recordAdvanceForm.paymentDate}
+                            onChange={(e) =>
+                              setRecordAdvanceForm({ ...recordAdvanceForm, paymentDate: e.target.value })
+                            }
+                            className="w-full px-3 py-2 text-xs bg-white border border-neutral-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#FF8500]"
+                          />
+                        </div>
+
+                        {/* Payment Method */}
+                        <div>
+                          <label className="block text-[11px] font-semibold text-neutral-700 mb-1">
+                            Payment Method <span className="text-rose-500">*</span>
+                          </label>
+                          <select
+                            value={recordAdvanceForm.paymentMethod}
+                            onChange={(e) =>
+                              setRecordAdvanceForm({ ...recordAdvanceForm, paymentMethod: e.target.value })
+                            }
+                            className="w-full px-3 py-2 text-xs bg-white border border-neutral-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#FF8500]"
+                          >
+                            <option value="CASH">Cash</option>
+                            <option value="UPI">UPI</option>
+                            <option value="BANK_TRANSFER">Bank Transfer</option>
+                            <option value="CHEQUE">Cheque</option>
+                          </select>
+                        </div>
+
+                        {/* Transaction Reference */}
+                        <div className="sm:col-span-2">
+                          <label className="block text-[11px] font-semibold text-neutral-700 mb-1">
+                            Transaction Reference <span className="text-neutral-400 font-normal">(Optional)</span>
+                          </label>
+                          <input
+                            type="text"
+                            value={recordAdvanceForm.reference}
+                            onChange={(e) =>
+                              setRecordAdvanceForm({ ...recordAdvanceForm, reference: e.target.value })
+                            }
+                            placeholder="e.g. UTR / UPI Ref / Cheque No"
+                            className="w-full px-3 py-2 text-xs bg-white border border-neutral-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#FF8500]"
+                          />
+                        </div>
+
+                        {/* Notes */}
+                        <div className="sm:col-span-1">
+                          <label className="block text-[11px] font-semibold text-neutral-700 mb-1">
+                            Payment Notes <span className="text-neutral-400 font-normal">(Optional)</span>
+                          </label>
+                          <input
+                            type="text"
+                            value={recordAdvanceForm.notes}
+                            onChange={(e) =>
+                              setRecordAdvanceForm({ ...recordAdvanceForm, notes: e.target.value })
+                            }
+                            placeholder="e.g. Collected during admission"
+                            className="w-full px-3 py-2 text-xs bg-white border border-neutral-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#FF8500]"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="flex justify-end pt-1">
+                        <button
+                          type="button"
+                          disabled={recordingAdvance || !recordAdvanceForm.amount}
+                          onClick={handleRecordAdvanceSubmit}
+                          className="px-4 py-2 bg-[#FF8500] hover:bg-[#E67700] text-white text-xs font-semibold rounded-lg shadow-subtle transition disabled:opacity-50 cursor-pointer flex items-center gap-1.5"
+                        >
+                          {recordingAdvance ? (
+                            <>
+                              <RefreshCw className="w-3 h-3 animate-spin" />
+                              <span>Recording Advance...</span>
+                            </>
+                          ) : (
+                            <>
+                              <Plus className="w-3 h-3" />
+                              <span>Record Advance Payment</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
                   {/* Form Submit / Cancel Bar */}
                   <div className="flex items-center justify-end gap-3 pt-2">
                     <button
@@ -4416,14 +5312,16 @@ export default function StudentsPage() {
                                     </div>
                                   </div>
 
-                                  <button
-                                    type="button"
-                                    disabled={endingEnrollmentId === en.id}
-                                    onClick={() => handleEndEnrollment(en.id)}
-                                    className="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-semibold rounded-lg border border-rose-200 transition disabled:opacity-50 shrink-0 self-start sm:self-center cursor-pointer"
-                                  >
-                                    {endingEnrollmentId === en.id ? 'Ending...' : 'End Enrollment'}
-                                  </button>
+                                    {isPrivileged && (
+                                      <button
+                                        type="button"
+                                        disabled={endingEnrollmentId === en.id}
+                                        onClick={() => handleEndEnrollment(en.id)}
+                                        className="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-semibold rounded-lg border border-rose-200 transition disabled:opacity-50 shrink-0 self-start sm:self-center cursor-pointer"
+                                      >
+                                        {endingEnrollmentId === en.id ? 'Ending...' : 'End Enrollment'}
+                                      </button>
+                                    )}
                                 </div>
                               );
                             })}
@@ -4432,7 +5330,8 @@ export default function StudentsPage() {
                       </div>
 
                       {/* Add New Enrollment Form */}
-                      <div className="p-4 bg-neutral-50/80 border border-neutral-200 rounded-xl space-y-3">
+                      {isPrivileged && (
+                        <div className="p-4 bg-neutral-50/80 border border-neutral-200 rounded-xl space-y-3">
                         <h3 className="text-xs font-bold text-neutral-900 uppercase tracking-wider flex items-center gap-2">
                           <Plus className="w-3.5 h-3.5 text-[#FF8500]" />
                           Add New Enrollment (Academic Subject or Skill Course)
@@ -4531,6 +5430,7 @@ export default function StudentsPage() {
                           </div>
                         </form>
                       </div>
+                      )}
 
                       {/* Historical / Inactive Enrollments */}
                       {(enrollmentsData?.historical || enrollmentsData?.historicalEnrollments || []).length > 0 && (
@@ -4683,6 +5583,203 @@ export default function StudentsPage() {
             </div>
           </div>
         )}
+      </Modal>
+
+      {/* Allocate Advance to Fee Invoice Modal */}
+      <Modal
+        isOpen={showAllocateModal}
+        onClose={() => setShowAllocateModal(false)}
+        title="Allocate Advance to Outstanding Fee Invoice"
+      >
+        <div className="space-y-4">
+          {allocationError && (
+            <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl flex items-center gap-2 text-rose-700 text-xs">
+              <AlertCircle className="w-4 h-4 shrink-0 text-rose-500" />
+              <span>{allocationError}</span>
+            </div>
+          )}
+
+          {allocationSuccess && (
+            <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl flex items-center gap-2 text-emerald-800 text-xs">
+              <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600" />
+              <span>{allocationSuccess}</span>
+            </div>
+          )}
+
+          {/* Student & Available Advance Banner */}
+          <div className="p-3.5 bg-gradient-to-r from-emerald-50 to-teal-50/40 border border-emerald-200 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <div className="text-xs font-bold text-neutral-900">
+                {selectedStudentForEnrollments?.fullName}
+              </div>
+              <div className="text-[11px] text-neutral-500 font-mono mt-0.5">
+                Code: {selectedStudentForEnrollments?.studentCode} | Adm: {selectedStudentForEnrollments?.admissionNumber}
+              </div>
+            </div>
+            <div className="text-right">
+              <span className="text-[10px] uppercase font-bold text-emerald-700 block tracking-wider">
+                Available Advance Balance
+              </span>
+              <div className="text-lg font-extrabold text-emerald-700">
+                ₹{(advanceSummary?.availableBalance || 0).toLocaleString('en-IN')}
+              </div>
+            </div>
+          </div>
+
+          {loadingInvoices ? (
+            <div className="py-8 text-center text-xs text-neutral-400">
+              <RefreshCw className="w-5 h-5 animate-spin mx-auto text-[#FF8500] mb-2" />
+              Loading student fee invoices...
+            </div>
+          ) : studentInvoices.length === 0 ? (
+            <div className="p-4 bg-neutral-50 border border-dashed border-neutral-200 rounded-xl text-center space-y-1">
+              <CheckCircle2 className="w-6 h-6 text-emerald-500 mx-auto mb-1" />
+              <div className="text-xs font-bold text-neutral-800">No Outstanding Invoices</div>
+              <p className="text-[11px] text-neutral-500">
+                This student has no unpaid or partial fee invoices with an outstanding balance.
+              </p>
+            </div>
+          ) : (
+            <form onSubmit={handleAllocateAdvanceSubmit} className="space-y-4 text-xs">
+              {/* Select Invoice Dropdown */}
+              <div>
+                <label className="block text-[11px] font-semibold text-neutral-700 uppercase tracking-wider mb-1.5">
+                  Select Outstanding Invoice *
+                </label>
+                <select
+                  required
+                  value={allocationForm.invoiceId}
+                  onChange={(e) => {
+                    const invId = e.target.value;
+                    const inv = studentInvoices.find((i) => i.id === invId);
+                    const avail = advanceSummary?.availableBalance || 0;
+                    const maxAlloc = inv ? Math.min(avail, Number(inv.balanceAmount)) : 0;
+                    setAllocationForm({
+                      ...allocationForm,
+                      invoiceId: invId,
+                      amount: maxAlloc > 0 ? String(maxAlloc) : '',
+                    });
+                  }}
+                  className="w-full px-3 py-2 text-xs bg-white border border-neutral-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#FF8500]"
+                >
+                  <option value="">Select an invoice to settle...</option>
+                  {studentInvoices.map((inv) => (
+                    <option key={inv.id} value={inv.id}>
+                      {inv.invoiceNumber} - {inv.class?.name || 'Course'} ({inv.batch?.name || 'Batch'}) - Balance Due: ₹{Number(inv.balanceAmount).toLocaleString('en-IN')} (Total: ₹{Number(inv.totalAmount).toLocaleString('en-IN')})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Selected Invoice Details Card */}
+              {allocationForm.invoiceId && (() => {
+                const inv = studentInvoices.find((i) => i.id === allocationForm.invoiceId);
+                if (!inv) return null;
+                return (
+                  <div className="p-3 bg-neutral-50 border border-neutral-200 rounded-lg grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-xs">
+                    <div>
+                      <span className="text-[10px] text-neutral-400 block">Total Invoice</span>
+                      <span className="font-semibold text-neutral-800">₹{Number(inv.totalAmount).toLocaleString('en-IN')}</span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] text-neutral-400 block">Already Paid</span>
+                      <span className="font-semibold text-emerald-700">₹{Number(inv.paidAmount).toLocaleString('en-IN')}</span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] text-neutral-400 block">Remaining Balance</span>
+                      <span className="font-bold text-rose-700">₹{Number(inv.balanceAmount).toLocaleString('en-IN')}</span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] text-neutral-400 block">Due Date</span>
+                      <span className="text-neutral-700">{new Date(inv.dueDate).toLocaleDateString('en-IN')}</span>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Amount to Allocate with Max button */}
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-[11px] font-semibold text-neutral-700 uppercase tracking-wider">
+                    Amount to Allocate (₹) *
+                  </label>
+                  {allocationForm.invoiceId && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const inv = studentInvoices.find((i) => i.id === allocationForm.invoiceId);
+                        const avail = advanceSummary?.availableBalance || 0;
+                        const max = inv ? Math.min(avail, Number(inv.balanceAmount)) : 0;
+                        setAllocationForm({ ...allocationForm, amount: String(max) });
+                      }}
+                      className="text-[11px] font-bold text-[#FF8500] hover:underline cursor-pointer"
+                    >
+                      Use Max Available
+                    </button>
+                  )}
+                </div>
+                <input
+                  type="number"
+                  required
+                  min="0.01"
+                  step="any"
+                  max={Math.min(
+                    advanceSummary?.availableBalance || 0,
+                    Number(studentInvoices.find((i) => i.id === allocationForm.invoiceId)?.balanceAmount || 9999999),
+                  )}
+                  value={allocationForm.amount}
+                  onChange={(e) => setAllocationForm({ ...allocationForm, amount: e.target.value })}
+                  placeholder="e.g. 1000"
+                  className="w-full px-3 py-2 text-sm bg-white border border-neutral-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#FF8500] font-bold text-neutral-900"
+                />
+                <span className="text-[10px] text-neutral-400 mt-1 block">
+                  Cannot exceed available advance balance or invoice remaining balance.
+                </span>
+              </div>
+
+              {/* Notes */}
+              <div>
+                <label className="block text-[11px] font-semibold text-neutral-700 uppercase tracking-wider mb-1.5">
+                  Allocation Notes (Optional)
+                </label>
+                <input
+                  type="text"
+                  value={allocationForm.notes}
+                  onChange={(e) => setAllocationForm({ ...allocationForm, notes: e.target.value })}
+                  placeholder="e.g. Advance allocated against Annual Term 1 fee"
+                  className="w-full px-3 py-2 text-xs bg-white border border-neutral-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#FF8500]"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-neutral-100">
+                <button
+                  type="button"
+                  onClick={() => setShowAllocateModal(false)}
+                  className="px-4 py-2 text-xs font-semibold text-neutral-600 hover:bg-neutral-100 rounded-lg transition cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={allocatingAdvance || !allocationForm.amount || parseFloat(allocationForm.amount) <= 0}
+                  className="px-5 py-2 text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg shadow-subtle transition disabled:opacity-50 cursor-pointer flex items-center gap-2"
+                >
+                  {allocatingAdvance ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      <span>Allocating Advance...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Check className="w-3.5 h-3.5" />
+                      <span>Confirm & Allocate Advance</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          )}
+        </div>
       </Modal>
     </>
   );

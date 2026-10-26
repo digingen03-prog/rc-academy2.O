@@ -55,12 +55,28 @@ import {
   RotateCw,
   Sun,
   Moon,
+  Bell,
+  MessageSquare,
+  Send,
 } from 'lucide-react';
 import { Modal } from '@/components/ui/modal';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ApiClient } from '@/lib/api/api-client';
 import { processPaymentProofFile, formatBytes } from '@/utils/image-compression';
+import {
+  openProfessionalInvoicePrintWindow,
+  ProfessionalInvoiceData,
+  InvoiceLineItem,
+} from '@/components/fees/professional-invoice';
+import {
+  SettlementRuleMode,
+  SettlementFormState,
+  defaultSettlementState,
+  buildSettlementPayload,
+  parseSettlementToForm,
+  getSettlementBadgeDisplay,
+} from '@/lib/utils/staff-settlement';
 
 // ----------------------------------------------------
 // Interfaces
@@ -185,6 +201,8 @@ interface StudentDetailedAccount {
     email?: string;
     phone?: string;
     status: string;
+    parentName?: string | null;
+    parentPhone?: string | null;
   };
   enrolledCourses: {
     enrollmentId: string;
@@ -342,6 +360,170 @@ interface OfficialReceiptData {
   }[];
 }
 
+// ----------------------------------------------------
+// Printable / Downloadable Simple Invoice Generator
+// ----------------------------------------------------
+interface SimpleInvoicePayload {
+  invoiceNumber: string;
+  date: string;
+  paymentDate?: string | null;
+  status: 'PAID' | 'PARTIAL' | 'UNPAID';
+  studentName: string;
+  studentCode: string;
+  admissionNumber?: string | null;
+  phone?: string | null;
+  email?: string | null;
+  parentName?: string | null;
+  parentPhone?: string | null;
+  courseOrClass?: string | null;
+  standard?: string | null;
+  batch?: string | null;
+  academicYear?: string | null;
+  items: {
+    description: string;
+    courseName?: string;
+    amount: number;
+    discount?: number;
+    paid: number;
+    balance: number;
+    billingPeriod?: string | null;
+  }[];
+  totalBilled: number;
+  totalDiscount?: number;
+  totalPaid: number;
+  totalBalance: number;
+  paymentMethod?: string;
+  paymentReference?: string | null;
+  recordedBy?: string | null;
+}
+
+function downloadOrPrintSimpleInvoice(data: SimpleInvoicePayload) {
+  const isPaid = data.status === 'PAID' || data.totalBalance <= 0;
+  openProfessionalInvoicePrintWindow({
+    documentTitle: isPaid ? 'OFFICIAL FEE RECEIPT' : 'FEE INVOICE',
+    invoiceNumber: data.invoiceNumber,
+    issueDate: data.date,
+    paymentDate: data.paymentDate || data.date,
+    paymentStatus: isPaid ? 'PAID' : data.status === 'PARTIAL' ? 'PARTIAL' : 'UNPAID',
+    student: {
+      fullName: data.studentName,
+      studentId: data.studentCode,
+      admissionNumber: data.admissionNumber,
+      phone: data.phone,
+      email: data.email,
+      parentName: data.parentName,
+      parentPhone: data.parentPhone,
+      courseOrClass: data.courseOrClass,
+      standard: data.standard,
+      batch: data.batch,
+      academicYear: data.academicYear,
+    },
+    items: data.items.map((item, idx) => ({
+      slNo: idx + 1,
+      description: item.description,
+      courseOrClass: item.courseName,
+      feeAmount: item.amount,
+      discountAmount: item.discount,
+      paidAmount: item.paid,
+      balanceAmount: item.balance,
+      billingPeriod: item.billingPeriod || null,
+    })),
+    summary: {
+      grossInvoiced: data.totalBilled,
+      totalDiscounts: data.totalDiscount,
+      totalPaid: data.totalPaid,
+      outstandingBalance: data.totalBalance,
+    },
+    paymentInfo: {
+      method: data.paymentMethod || 'CASH / UPI',
+      transactionRef: data.paymentReference,
+      receiptStatus: isPaid ? 'Full Clearance (Settled)' : 'Partial Settlement',
+      processedBy: data.recordedBy,
+    },
+  });
+}
+
+const BILLING_CYCLE_GROUPS = [
+  {
+    group: 'Standard Plan Types',
+    options: [
+      { label: 'Annual Tuition (All Year)', value: 'ANNUAL' },
+      { label: 'Monthly Tuition (All Months)', value: 'MONTHLY' },
+      { label: 'Term 1 Cycle', value: 'TERM_1' },
+      { label: 'Term 2 Cycle', value: 'TERM_2' },
+      { label: 'One-Time Registration', value: 'ONE_TIME' },
+    ],
+  },
+  {
+    group: 'Current & Future Months',
+    options: [
+      { label: 'October 2026 (Current)', value: 'October 2026' },
+      { label: 'November 2026', value: 'November 2026' },
+      { label: 'December 2026', value: 'December 2026' },
+      { label: 'January 2027', value: 'January 2027' },
+      { label: 'February 2027', value: 'February 2027' },
+      { label: 'March 2027', value: 'March 2027' },
+      { label: 'April 2027', value: 'April 2027' },
+      { label: 'May 2027', value: 'May 2027' },
+      { label: 'June 2027', value: 'June 2027' },
+      { label: 'July 2027', value: 'July 2027' },
+      { label: 'August 2027', value: 'August 2027' },
+      { label: 'September 2027', value: 'September 2027' },
+      { label: 'October 2027', value: 'October 2027' },
+      { label: 'November 2027', value: 'November 2027' },
+      { label: 'December 2027', value: 'December 2027' },
+    ],
+  },
+  {
+    group: 'Past Months (2026)',
+    options: [
+      { label: 'September 2026', value: 'September 2026' },
+      { label: 'August 2026', value: 'August 2026' },
+      { label: 'July 2026', value: 'July 2026' },
+      { label: 'June 2026', value: 'June 2026' },
+      { label: 'May 2026', value: 'May 2026' },
+      { label: 'April 2026', value: 'April 2026' },
+      { label: 'March 2026', value: 'March 2026' },
+      { label: 'February 2026', value: 'February 2026' },
+      { label: 'January 2026', value: 'January 2026' },
+    ],
+  },
+  {
+    group: 'Past Months (2025)',
+    options: [
+      { label: 'December 2025', value: 'December 2025' },
+      { label: 'November 2025', value: 'November 2025' },
+      { label: 'October 2025', value: 'October 2025' },
+      { label: 'September 2025', value: 'September 2025' },
+      { label: 'August 2025', value: 'August 2025' },
+      { label: 'July 2025', value: 'July 2025' },
+      { label: 'June 2025', value: 'June 2025' },
+      { label: 'May 2025', value: 'May 2025' },
+      { label: 'April 2025', value: 'April 2025' },
+      { label: 'March 2025', value: 'March 2025' },
+      { label: 'February 2025', value: 'February 2025' },
+      { label: 'January 2025', value: 'January 2025' },
+    ],
+  },
+  {
+    group: 'Past Months (2024)',
+    options: [
+      { label: 'December 2024', value: 'December 2024' },
+      { label: 'November 2024', value: 'November 2024' },
+      { label: 'October 2024', value: 'October 2024' },
+      { label: 'September 2024', value: 'September 2024' },
+      { label: 'August 2024', value: 'August 2024' },
+      { label: 'July 2024', value: 'July 2024' },
+      { label: 'June 2024', value: 'June 2024' },
+      { label: 'May 2024', value: 'May 2024' },
+      { label: 'April 2024', value: 'April 2024' },
+      { label: 'March 2024', value: 'March 2024' },
+      { label: 'February 2024', value: 'February 2024' },
+      { label: 'January 2024', value: 'January 2024' },
+    ],
+  },
+];
+
 export default function FeesPage() {
   const [activeTab, setActiveTab] = useState<
     'overview' | 'accounts' | 'configs' | 'invoices' | 'payments' | 'revenue_salary'
@@ -390,6 +572,14 @@ export default function FeesPage() {
   const [showReversalModal, setShowReversalModal] = useState(false);
   const [reversalTarget, setReversalTarget] = useState<PaymentRowItem | null>(null);
   const [reversalReason, setReversalReason] = useState('');
+
+  // Payment Reminder Modal States
+  const [showReminderModal, setShowReminderModal] = useState(false);
+  const [reminderStudent, setReminderStudent] = useState<StudentAccountSummary | null>(null);
+  const [reminderPhone, setReminderPhone] = useState('');
+  const [reminderMessage, setReminderMessage] = useState('');
+  const [reminderCopied, setReminderCopied] = useState(false);
+  const [reminderTone, setReminderTone] = useState<'GENTLE' | 'OVERDUE' | 'DETAILED'>('GENTLE');
 
   // Form States - Course Fee Config
   const [editingConfigId, setEditingConfigId] = useState<string | null>(null);
@@ -492,6 +682,46 @@ export default function FeesPage() {
     notes: '',
   });
 
+  // Staff Pay Rule States in /fees
+  const [showStaffPayRuleModal, setShowStaffPayRuleModal] = useState(false);
+  const [editingStaffAssignmentId, setEditingStaffAssignmentId] = useState<string | null>(null);
+  const [staffPayRuleForm, setStaffPayRuleForm] = useState<{
+    userId: string;
+    classId: string;
+    batchId: string;
+    subjectId: string;
+    role: string;
+    settlement: SettlementFormState;
+  }>({
+    userId: '',
+    classId: '',
+    batchId: '',
+    subjectId: '',
+    role: 'TEACHER',
+    settlement: { ...defaultSettlementState },
+  });
+  const [savingStaffPayRule, setSavingStaffPayRule] = useState(false);
+  const [deleteRuleTarget, setDeleteRuleTarget] = useState<any | null>(null);
+  const [deletingStaffPayRule, setDeletingStaffPayRule] = useState(false);
+
+  // Derived faculty assignments list with staff details
+  const facultyAssignments = useMemo(() => {
+    const list: any[] = [];
+    staffOptions.forEach((staff) => {
+      (staff.assignments || []).forEach((as: any) => {
+        list.push({
+          ...as,
+          staffId: staff.id,
+          staffName: `${staff.firstName} ${staff.lastName}`,
+          staffEmail: staff.email,
+          staffCode: staff.attendanceCode || staff.employeeId || '',
+          designation: staff.designation || 'Faculty',
+        });
+      });
+    });
+    return list;
+  }, [staffOptions]);
+
   // ====================================================
   // Data Fetching
   // ====================================================
@@ -508,14 +738,12 @@ export default function FeesPage() {
     }
   };
 
-  const fetchStudentAccounts = async () => {
+  const fetchStudentAccounts = async (cycleOverride?: string) => {
     try {
       const params = new URLSearchParams();
-      if (searchQuery) params.append('search', searchQuery);
-      if (filterCourseId) params.append('classId', filterCourseId);
-      if (filterSubjectId) params.append('subjectId', filterSubjectId);
-      if (filterBillingCycle) params.append('billingCycle', filterBillingCycle);
-      if (filterStatus) params.append('status', filterStatus);
+      const cycle = cycleOverride !== undefined ? cycleOverride : filterBillingCycle;
+      if (cycle) params.append('billingCycle', cycle);
+      params.append('limit', '10000');
 
       const data: any = await ApiClient.fetch(`/fees/student-accounts?${params.toString()}`);
       if (data && data.items) {
@@ -628,7 +856,7 @@ export default function FeesPage() {
     } else if (activeTab === 'revenue_salary') {
       fetchSalaryRevenueData();
     }
-  }, [activeTab, searchQuery, filterCourseId, filterSubjectId, filterBillingCycle, filterStatus]);
+  }, [activeTab, filterBillingCycle]);
 
   // Load detailed student account drilldown
   const handleOpenStudentDetail = async (studentId: string) => {
@@ -641,6 +869,262 @@ export default function FeesPage() {
     } finally {
       setLoadingStudentDetail(false);
     }
+  };
+
+  // ----------------------------------------------------
+  // Payment Reminder Generator
+  // ----------------------------------------------------
+  const generatePaymentReminderText = (
+    student: StudentAccountSummary,
+    tone: 'GENTLE' | 'OVERDUE' | 'DETAILED' = 'GENTLE'
+  ) => {
+    const courseNames =
+      student.enrolledCourses && student.enrolledCourses.length > 0
+        ? student.enrolledCourses
+            .map((c) => c.courseName + (c.subjectName ? ` (${c.subjectName})` : ''))
+            .join(', ')
+        : 'Enrolled Courses';
+
+    const balanceFormatted = `₹${student.consolidatedBalance.toLocaleString()}`;
+    const billedFormatted = `₹${student.consolidatedBilled.toLocaleString()}`;
+    const paidFormatted = `₹${student.consolidatedPaid.toLocaleString()}`;
+
+    if (tone === 'OVERDUE') {
+      return `⚠️ *URGENT FEE PAYMENT REMINDER – RC ACADEMY*\n\nDear Parent / Guardian of *${student.name}* (${student.studentCode}),\n\nThis is an urgent notice that tuition fees of *${balanceFormatted}* for *${courseNames}* are currently *OVERDUE*.\n\n📌 *Account Summary:*\n• Student: *${student.name}* (Adm: ${student.admissionNumber})\n• Pending Balance: *${balanceFormatted}*\n• Status: *OVERDUE*\n\nKindly clear the pending dues immediately to ensure uninterrupted class attendance and exam privileges.\n\n💳 *Payment Modes:*\n• Academy Counter: Cash, Card, or Cheque\n• Online UPI: rcacademy@upi\n\n_If already paid in the last 24 hours, kindly ignore this message and share the transaction slip._\n\nFor assistance: +91 98765 43210\n*RC Academy Accounts Office*`;
+    }
+
+    if (tone === 'DETAILED') {
+      return `*RC ACADEMY – DETAILED FEE STATEMENT & REMINDER*\n\nDear Parent / Guardian,\n\nPlease find the fee status summary for *${student.name}* (${student.studentCode}):\n\n📚 *Enrolled Course(s):* ${courseNames}\n💵 *Total Billed:* ${billedFormatted}\n✅ *Paid to Date:* ${paidFormatted}\n🔴 *Outstanding Balance:* *${balanceFormatted}*\n📌 *Account Status:* ${student.overallStatus}\n\nKindly arrange to clear the balance amount at your earliest convenience.\n\n💳 *Payment Methods:*\n• Academy Front Desk: Cash / Cheque / POS Card\n• UPI ID: rcacademy@upi\n\n_Please disregard this reminder if payment has already been completed._\n\n*RC Academy Administration*`;
+    }
+
+    // Default: GENTLE
+    return `*RC ACADEMY – FEE PAYMENT REMINDER*\n\nDear Parent / Guardian of *${student.name}* (${student.studentCode}),\n\nGreetings from RC Academy! 🌟\n\nThis is a friendly reminder regarding the pending tuition fee for *${courseNames}*.\n\n💰 *Outstanding Balance:* *${balanceFormatted}*\n📌 *Status:* ${student.overallStatus}\n\nKindly arrange to clear the outstanding dues at your earliest convenience.\n\n💳 *Payment Options:*\n• Pay at Academy Desk (Cash / Cheque / Card)\n• UPI: rcacademy@upi\n\n_If you have already processed the payment, please disregard this message._\n\nThank you for your cooperation!\n\nWarm regards,\n*Accounts Department*\n*RC Academy*`;
+  };
+
+  const handleOpenReminderModal = (account: StudentAccountSummary) => {
+    setReminderStudent(account);
+    setReminderPhone(account.phone || '');
+    setReminderTone('GENTLE');
+    setReminderCopied(false);
+    const msg = generatePaymentReminderText(account, 'GENTLE');
+    setReminderMessage(msg);
+    setShowReminderModal(true);
+  };
+
+  const handleToneChange = (tone: 'GENTLE' | 'OVERDUE' | 'DETAILED') => {
+    setReminderTone(tone);
+    if (reminderStudent) {
+      const msg = generatePaymentReminderText(reminderStudent, tone);
+      setReminderMessage(msg);
+    }
+  };
+
+  const handleCopyReminderMessage = async () => {
+    try {
+      await navigator.clipboard.writeText(reminderMessage);
+      setReminderCopied(true);
+      setTimeout(() => setReminderCopied(false), 3000);
+    } catch {
+      alert('Could not copy automatically. Please select text and copy manually.');
+    }
+  };
+
+  const getCleanReminderPhone = () => {
+    const raw = reminderPhone.replace(/[^0-9]/g, '');
+    if (!raw) return '';
+    return raw.length === 10 ? `91${raw}` : raw;
+  };
+
+  const getReminderWhatsAppUrl = () => {
+    const phone = getCleanReminderPhone();
+    if (phone) {
+      return `https://api.whatsapp.com/send?phone=${phone}&text=${encodeURIComponent(reminderMessage)}`;
+    }
+    return `https://api.whatsapp.com/send?text=${encodeURIComponent(reminderMessage)}`;
+  };
+
+  // ----------------------------------------------------
+  // Simple PDF Invoice Download Handlers
+  // ----------------------------------------------------
+  const handleDownloadStudentPaidInvoice = async (account: StudentAccountSummary) => {
+    try {
+      const detail: any = await ApiClient.fetch(`/fees/students/${account.id}/account`);
+      const courseFees = detail?.courseFees || [];
+      const payments = detail?.payments || [];
+      const latestPayment = payments.length > 0 ? payments[0] : null;
+      const studentData = detail?.student || {};
+
+      const items =
+        courseFees.length > 0
+          ? courseFees.map((cf: any) => ({
+              description: `${cf.courseName}${cf.subjectName ? ` (${cf.subjectName})` : ''}`,
+              courseName: cf.billingPeriod ? `Billing Period: ${cf.billingPeriod}` : undefined,
+              amount: cf.totalAmount,
+              discount: cf.discountAmount,
+              paid: cf.paidAmount,
+              balance: cf.balanceAmount,
+              billingPeriod: cf.billingPeriod || null,
+            }))
+          : account.enrolledCourses.map((c) => ({
+              description: `${c.courseName}${c.subjectName ? ` (${c.subjectName})` : ''}`,
+              amount: account.consolidatedBilled,
+              discount: account.consolidatedDiscounts,
+              paid: account.consolidatedPaid,
+              balance: account.consolidatedBalance,
+            }));
+
+      downloadOrPrintSimpleInvoice({
+        invoiceNumber:
+          courseFees.length === 1 && courseFees[0].invoiceNumber
+            ? courseFees[0].invoiceNumber
+            : `INV-${account.studentCode}-${new Date().getFullYear()}`,
+        date: new Date().toLocaleDateString('en-IN', {
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric',
+        }),
+        paymentDate: latestPayment?.paidAt
+          ? new Date(latestPayment.paidAt).toLocaleDateString('en-IN', {
+              year: 'numeric',
+              month: 'short',
+              day: 'numeric',
+            })
+          : null,
+        status:
+          account.overallStatus === 'PAID'
+            ? 'PAID'
+            : account.overallStatus === 'PARTIAL'
+            ? 'PARTIAL'
+            : 'UNPAID',
+        studentName: account.name,
+        studentCode: account.studentCode,
+        admissionNumber: account.admissionNumber || studentData.admissionNumber,
+        phone: account.phone || studentData.phone,
+        email: account.email || studentData.email,
+        parentName: studentData.parentName,
+        parentPhone: studentData.parentPhone,
+        courseOrClass: account.enrolledCourses.map((c) => c.courseName).join(', '),
+        batch: account.enrolledCourses.map((c) => c.batchName).filter(Boolean).join(', '),
+        items,
+        totalBilled: account.consolidatedBilled,
+        totalDiscount: account.consolidatedDiscounts,
+        totalPaid: account.consolidatedPaid,
+        totalBalance: account.consolidatedBalance,
+        paymentMethod: latestPayment?.paymentMethod || 'UPI / CASH',
+        paymentReference: latestPayment?.reference || undefined,
+        recordedBy: latestPayment?.recordedBy || 'Accounts Office',
+      });
+    } catch (err) {
+      downloadOrPrintSimpleInvoice({
+        invoiceNumber: `INV-${account.studentCode}`,
+        date: new Date().toLocaleDateString('en-IN', {
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric',
+        }),
+        status: account.overallStatus === 'PAID' ? 'PAID' : 'PARTIAL',
+        studentName: account.name,
+        studentCode: account.studentCode,
+        admissionNumber: account.admissionNumber,
+        phone: account.phone,
+        email: account.email,
+        courseOrClass: account.enrolledCourses.map((c) => c.courseName).join(', '),
+        batch: account.enrolledCourses.map((c) => c.batchName).filter(Boolean).join(', '),
+        items: account.enrolledCourses.map((c) => ({
+          description: `${c.courseName}${c.subjectName ? ` (${c.subjectName})` : ''}`,
+          amount: account.consolidatedBilled,
+          discount: account.consolidatedDiscounts,
+          paid: account.consolidatedPaid,
+          balance: account.consolidatedBalance,
+        })),
+        totalBilled: account.consolidatedBilled,
+        totalDiscount: account.consolidatedDiscounts,
+        totalPaid: account.consolidatedPaid,
+        totalBalance: account.consolidatedBalance,
+      });
+    }
+  };
+
+  const handleDownloadSingleInvoicePdf = (inv: InvoiceRowItem) => {
+    downloadOrPrintSimpleInvoice({
+      invoiceNumber: inv.invoiceNumber,
+      date: new Date().toLocaleDateString('en-IN', {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+      }),
+      status: inv.status === 'PAID' ? 'PAID' : inv.status === 'PARTIAL' ? 'PARTIAL' : 'UNPAID',
+      studentName: `${inv.student.firstName} ${inv.student.lastName}`.trim(),
+      studentCode: inv.student.studentCode,
+      admissionNumber: (inv.student as any).admissionNumber || inv.student.studentCode,
+      courseOrClass: inv.class?.name,
+      standard: (inv.class as any)?.standard || (inv.class as any)?.code,
+      batch: inv.batch?.name,
+      items: [
+        {
+          description: `${inv.class?.name || 'Course Offering'}${inv.subject ? ` • ${inv.subject.name}` : ''}${inv.batch ? ` (${inv.batch.name})` : ''}`,
+          courseName: inv.class?.name,
+          amount: inv.totalAmount,
+          discount: inv.discountAmount,
+          paid: inv.paidAmount,
+          balance: inv.balanceAmount,
+          billingPeriod: inv.billingPeriod || null,
+        },
+      ],
+      totalBilled: inv.totalAmount,
+      totalDiscount: inv.discountAmount,
+      totalPaid: inv.paidAmount,
+      totalBalance: inv.balanceAmount,
+      paymentMethod: 'CASH / UPI',
+    });
+  };
+
+  const handleDownloadReceiptAsPdf = (receipt: OfficialReceiptData) => {
+    const items = receipt.allocations.map((a) => ({
+      description: `${a.courseName}${a.subjectName ? ` (${a.subjectName})` : ''}`,
+      courseName: a.courseName,
+      amount: a.allocatedAmount + (a.invoiceRemainingBalance || 0),
+      paid: a.allocatedAmount,
+      balance: a.invoiceRemainingBalance || 0,
+      billingPeriod: (a as any).billingPeriod || null,
+    }));
+
+    const totalBilled = receipt.allocations.reduce(
+      (sum, a) => sum + a.allocatedAmount + (a.invoiceRemainingBalance || 0),
+      0
+    );
+    const totalPaid = receipt.payment.amount;
+    const totalBalance = receipt.allocations.reduce(
+      (sum, a) => sum + (a.invoiceRemainingBalance || 0),
+      0
+    );
+
+    downloadOrPrintSimpleInvoice({
+      invoiceNumber: receipt.receiptNumber,
+      date: new Date(receipt.paymentDate).toLocaleDateString('en-IN', {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+      }),
+      paymentDate: new Date(receipt.paymentDate).toLocaleDateString('en-IN', {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+      }),
+      status: totalBalance <= 0 ? 'PAID' : 'PARTIAL',
+      studentName: receipt.student.name,
+      studentCode: receipt.student.studentCode,
+      admissionNumber: receipt.student.admissionNumber,
+      courseOrClass: receipt.student.enrolledCourses.map((c) => c.courseName).join(', '),
+      batch: receipt.student.enrolledCourses.map((c) => c.batchName).filter(Boolean).join(', '),
+      items,
+      totalBilled,
+      totalPaid,
+      totalBalance,
+      paymentMethod: receipt.payment.paymentMethod,
+      paymentReference: receipt.payment.reference || undefined,
+      recordedBy: receipt.payment.recordedBy,
+    });
   };
 
   // Prepare payment modal for student
@@ -1487,6 +1971,128 @@ export default function FeesPage() {
     }
   };
 
+  // ----------------------------------------------------
+  // Staff Pay Rule Management Handlers (Fees <-> Staff)
+  // ----------------------------------------------------
+
+  const handleOpenCreateStaffPayRule = (defaultClassId?: string, defaultSubjectId?: string) => {
+    setEditingStaffAssignmentId(null);
+    setStaffPayRuleForm({
+      userId: staffOptions[0]?.id || '',
+      classId: defaultClassId || availableCourses[0]?.id || '',
+      batchId: '',
+      subjectId: defaultSubjectId || '',
+      role: 'TEACHER',
+      settlement: { ...defaultSettlementState, includeTwoSubjects: true },
+    });
+    setShowStaffPayRuleModal(true);
+  };
+
+  const handleOpenEditStaffPayRule = (assignment: any) => {
+    setEditingStaffAssignmentId(assignment.id);
+    const parsedSettlement = parseSettlementToForm(
+      assignment.compensationRule,
+      assignment.staffSharePercentage ?? 70,
+    );
+    parsedSettlement.includeTwoSubjects = true;
+    setStaffPayRuleForm({
+      userId: assignment.userId || assignment.staffId,
+      classId: assignment.classId || assignment.class?.id || '',
+      batchId: assignment.batchId || assignment.batch?.id || '',
+      subjectId: assignment.subjectId || assignment.subject?.id || '',
+      role: assignment.role || 'TEACHER',
+      settlement: parsedSettlement,
+    });
+    setShowStaffPayRuleModal(true);
+  };
+
+  const handleSaveStaffPayRule = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!staffPayRuleForm.userId || !staffPayRuleForm.classId) {
+      alert('Please select both a faculty member and a course');
+      return;
+    }
+
+    try {
+      setSavingStaffPayRule(true);
+      const settlementPayload = buildSettlementPayload(staffPayRuleForm.settlement);
+
+      if (editingStaffAssignmentId) {
+        // Update existing assignment compensation rule
+        await ApiClient.fetch(
+          `/staff/${staffPayRuleForm.userId}/assignments/${editingStaffAssignmentId}`,
+          {
+            method: 'PATCH',
+            body: JSON.stringify({
+              subjectId: staffPayRuleForm.subjectId || undefined,
+              role: staffPayRuleForm.role || 'TEACHER',
+              compensationRule: settlementPayload.compensationRule,
+              staffSharePercentage: settlementPayload.staffSharePercentage,
+              settlementConfig: settlementPayload.settlementConfig,
+            }),
+          },
+        );
+        setSuccessMsg('Staff pay rule updated successfully!');
+      } else {
+        // Create new assignment with pay rule
+        await ApiClient.fetch(`/staff/${staffPayRuleForm.userId}/assignments`, {
+          method: 'POST',
+          body: JSON.stringify({
+            assignments: [
+              {
+                courseId: staffPayRuleForm.classId,
+                batchId: staffPayRuleForm.batchId || undefined,
+                subjectId: staffPayRuleForm.subjectId || undefined,
+                role: staffPayRuleForm.role || 'TEACHER',
+                staffSharePercentage: settlementPayload.staffSharePercentage,
+                compensationRule: settlementPayload.compensationRule,
+                settlementConfig: settlementPayload.settlementConfig,
+              },
+            ],
+          }),
+        });
+        setSuccessMsg('Staff pay rule configured and assigned successfully!');
+      }
+
+      setShowStaffPayRuleModal(false);
+      await fetchSalaryRevenueData();
+    } catch (err: any) {
+      alert(`Could not save staff pay rule: ${err?.message || 'Error occurred'}`);
+    } finally {
+      setSavingStaffPayRule(false);
+    }
+  };
+
+  const handleInitiateDeleteStaffPayRule = (assignment: any) => {
+    setDeleteRuleTarget(assignment);
+  };
+
+  const handleConfirmDeleteStaffPayRule = async () => {
+    if (!deleteRuleTarget) return;
+    const staffId = deleteRuleTarget.userId || deleteRuleTarget.staffId;
+    const assignmentId = deleteRuleTarget.id;
+
+    if (!staffId || !assignmentId) {
+      alert('Missing staff or assignment identifier for deletion.');
+      return;
+    }
+
+    try {
+      setDeletingStaffPayRule(true);
+      await ApiClient.fetch(`/staff/${staffId}/assignments/${assignmentId}`, {
+        method: 'DELETE',
+      });
+      setSuccessMsg('Staff pay rule and course assignment removed successfully!');
+      setDeleteRuleTarget(null);
+      setShowStaffPayRuleModal(false);
+      await fetchSalaryRevenueData();
+    } catch (err: any) {
+      alert(`Could not delete staff pay rule: ${err?.message || 'Error occurred'}`);
+    } finally {
+      setDeletingStaffPayRule(false);
+    }
+  };
+
   // Selected course object for batch/subject dropdowns in config form
   const selectedConfigCourse = availableCourses.find((c) => c.id === configForm.classId);
   const selectedConfigBatch = selectedConfigCourse?.batches?.find((b: any) => b.id === configForm.batchId);
@@ -1659,6 +2265,7 @@ export default function FeesPage() {
     searchQuery,
     filterCourseId,
     filterSubjectId,
+    filterBillingCycle,
     filterStatus,
     availableCourses,
     availableSubjectsForFilter,
@@ -1714,7 +2321,7 @@ export default function FeesPage() {
               { id: 'configs', label: 'Fee Rules', icon: BookOpen },
               { id: 'invoices', label: 'Invoices', icon: FileText },
               { id: 'payments', label: 'Receipts', icon: Receipt },
-              { id: 'revenue_salary', label: 'Faculty 70/30', icon: Building2 },
+              { id: 'revenue_salary', label: 'Faculty & Staff Pay', icon: Building2 },
             ].map((tab) => {
               const Icon = tab.icon;
               const isActive = activeTab === tab.id;
@@ -2077,15 +2684,16 @@ export default function FeesPage() {
                   className="px-3 py-1.5 bg-white border border-neutral-200 rounded-lg text-xs text-black font-medium focus:outline-none focus:ring-2 focus:ring-[#FF8500]"
                   title="Filter by Payment / Billing Cycle"
                 >
-                  <option value="">All Monthly Payment Cycles</option>
-                  <option value="October 2026">October 2026</option>
-                  <option value="November 2026">November 2026</option>
-                  <option value="December 2026">December 2026</option>
-                  <option value="January 2027">January 2027</option>
-                  <option value="February 2027">February 2027</option>
-                  <option value="March 2027">March 2027</option>
-                  <option value="ANNUAL">Annual Tuition</option>
-                  <option value="MONTHLY">Monthly Tuition</option>
+                  <option value="">All Payment / Billing Cycles</option>
+                  {BILLING_CYCLE_GROUPS.map((grp) => (
+                    <optgroup key={grp.group} label={grp.group}>
+                      {grp.options.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))}
                 </select>
 
                 {/* Status Filter */}
@@ -2210,6 +2818,32 @@ export default function FeesPage() {
 
                           <td className="py-3.5 px-4 text-right">
                             <div className="flex items-center justify-end gap-1.5">
+                              {account.consolidatedPaid > 0 && (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="border-emerald-300 text-emerald-800 bg-emerald-50 hover:bg-emerald-100 font-semibold flex items-center gap-1 shadow-xs"
+                                  onClick={() => handleDownloadStudentPaidInvoice(account)}
+                                  title="Generate & Download Paid PDF Invoice"
+                                >
+                                  <Download className="w-3.5 h-3.5 text-emerald-600" />
+                                  Invoice
+                                </Button>
+                              )}
+
+                              {(account.consolidatedBalance > 0 || account.overallStatus === 'UNPAID' || account.overallStatus === 'OVERDUE') && (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="border-amber-300 text-amber-800 bg-amber-50 hover:bg-amber-100 font-semibold flex items-center gap-1 shadow-xs"
+                                  onClick={() => handleOpenReminderModal(account)}
+                                  title="Generate & Send Payment Reminder Message"
+                                >
+                                  <Bell className="w-3.5 h-3.5 text-amber-600" />
+                                  Reminder
+                                </Button>
+                              )}
+
                               <Button
                                 size="sm"
                                 variant="outline"
@@ -2267,6 +2901,7 @@ export default function FeesPage() {
                       <th className="py-3 px-4">Course / Standard</th>
                       <th className="py-3 px-4">Offering Scope</th>
                       <th className="py-3 px-4 text-right">Amount (₹)</th>
+                      <th className="py-3 px-4">Staff Pay Rule</th>
                       <th className="py-3 px-4">Billing Period</th>
                       <th className="py-3 px-4 text-center">Installments</th>
                       <th className="py-3 px-4 text-center">Status</th>
@@ -2276,7 +2911,7 @@ export default function FeesPage() {
                   <tbody className="divide-y divide-neutral-100 text-neutral-800">
                     {courseConfigs.length === 0 ? (
                       <tr>
-                        <td colSpan={8} className="py-8 text-center text-neutral-400">
+                        <td colSpan={9} className="py-8 text-center text-neutral-400">
                           No course fee rules configured yet. Click "New Course Fee Rule" to add one.
                         </td>
                       </tr>
@@ -2360,6 +2995,41 @@ export default function FeesPage() {
                                 );
                               }
                               return null;
+                            })()}
+                          </td>
+                          <td className="py-3.5 px-4">
+                            {(() => {
+                              const matchingAssign = facultyAssignments.find(
+                                (as) => as.classId === cfg.class.id && (!cfg.subject?.id || as.subjectId === cfg.subject.id),
+                              );
+                              if (matchingAssign) {
+                                const badge = getSettlementBadgeDisplay(matchingAssign);
+                                return (
+                                  <div className="flex flex-col gap-1 items-start">
+                                    <span
+                                      className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold border ${badge.badgeClass}`}
+                                      title={badge.tooltip}
+                                    >
+                                      <Sparkles className="w-3 h-3 text-[#FF8500]" />
+                                      <span>{badge.text}</span>
+                                    </span>
+                                    <span className="text-[10px] text-neutral-500 font-medium truncate max-w-[140px]">
+                                      Faculty: {matchingAssign.staffName}
+                                    </span>
+                                  </div>
+                                );
+                              }
+                              return (
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenCreateStaffPayRule(cfg.class.id, cfg.subject?.id)}
+                                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#CC6B00] hover:text-[#995000] bg-orange-50 hover:bg-orange-100/70 border border-orange-200/60 px-2.5 py-1 rounded-lg transition"
+                                  title="Configure staff settlement rule for this course"
+                                >
+                                  <Plus className="w-3 h-3" />
+                                  <span>Set Staff Pay Rule</span>
+                                </button>
+                              );
                             })()}
                           </td>
                           <td className="py-3.5 px-4 font-medium text-neutral-700">
@@ -2527,6 +3197,19 @@ export default function FeesPage() {
                           </td>
                           <td className="py-3.5 px-4 text-right">
                             <div className="flex items-center justify-end gap-1.5">
+                              {inv.paidAmount > 0 && (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="border-emerald-300 text-emerald-800 bg-emerald-50 hover:bg-emerald-100 font-semibold flex items-center gap-1 shadow-xs"
+                                  onClick={() => handleDownloadSingleInvoicePdf(inv)}
+                                  title="Generate & Download PDF Invoice"
+                                >
+                                  <Download className="w-3.5 h-3.5 text-emerald-600" />
+                                  Invoice
+                                </Button>
+                              )}
+
                               {inv.balanceAmount > 0 && (
                                 <Button
                                   size="sm"
@@ -2802,6 +3485,136 @@ export default function FeesPage() {
               </div>
             </div>
 
+            {/* Faculty Compensation & Staff Pay Rules Table */}
+            <div className="bg-white rounded-2xl border border-neutral-200 shadow-card overflow-hidden">
+              <div className="p-4 sm:p-5 border-b border-neutral-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-gradient-to-r from-orange-50/40 to-neutral-50/40">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-[#FF8500] to-[#E65100] flex items-center justify-center text-white shadow-sm">
+                    <Sparkles className="w-5 h-5 text-white" />
+                  </div>
+                  <div>
+                    <h4 className="text-base font-bold text-neutral-900">Faculty Compensation & Staff Pay Rules</h4>
+                    <p className="text-xs text-neutral-500">
+                      Configure faculty settlement formulas: Student Tier-based % or ₹, Fixed per-student amount, or Revenue sharing %
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleOpenCreateStaffPayRule()}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#FF8500] hover:bg-[#E67600] text-white text-xs font-bold shadow-sm transition cursor-pointer"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>+ Configure Staff Pay Rule</span>
+                  </button>
+                </div>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="bg-neutral-50 border-b border-neutral-200 text-neutral-600 uppercase font-semibold text-[11px] tracking-wider">
+                      <th className="py-3 px-4">Faculty Member</th>
+                      <th className="py-3 px-4">Assigned Course</th>
+                      <th className="py-3 px-4">Subject</th>
+                      <th className="py-3 px-4">Staff Pay Rule</th>
+                      <th className="py-3 px-4">Role</th>
+                      <th className="py-3 px-4 text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-neutral-100 text-neutral-800">
+                    {facultyAssignments.length === 0 ? (
+                      <tr>
+                        <td colSpan={6} className="py-8 text-center text-neutral-400">
+                          <p className="text-xs">No faculty course assignments configured yet.</p>
+                          <button
+                            type="button"
+                            onClick={() => handleOpenCreateStaffPayRule()}
+                            className="mt-2 text-xs text-[#FF8500] font-semibold hover:underline inline-flex items-center gap-1"
+                          >
+                            <Plus className="w-3 h-3" /> Add first faculty pay rule
+                          </button>
+                        </td>
+                      </tr>
+                    ) : (
+                      facultyAssignments.map((as: any) => {
+                        const badge = getSettlementBadgeDisplay(as);
+                        return (
+                          <tr key={as.id || `${as.staffId}-${as.classId}`} className="hover:bg-neutral-50/70 transition-colors">
+                            <td className="py-3.5 px-4 font-bold text-black">
+                              <div className="flex items-center gap-2">
+                                <div className="w-7 h-7 rounded-full bg-orange-100 text-[#CC6B00] flex items-center justify-center font-bold text-xs uppercase">
+                                  {as.staffName ? as.staffName.charAt(0) : 'F'}
+                                </div>
+                                <div>
+                                  <div className="font-bold text-neutral-900">{as.staffName}</div>
+                                  <div className="text-[10px] text-neutral-400 font-normal">
+                                    {as.designation || 'Faculty'} {as.staffCode ? `• ${as.staffCode}` : ''}
+                                  </div>
+                                </div>
+                              </div>
+                            </td>
+                            <td className="py-3.5 px-4">
+                              <div className="font-semibold text-neutral-900">{as.class?.name || as.className || 'General Course'}</div>
+                              {as.batch?.name && (
+                                <div className="text-[10px] text-neutral-400">Batch: {as.batch.name}</div>
+                              )}
+                            </td>
+                            <td className="py-3.5 px-4">
+                              <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-neutral-100 text-neutral-700">
+                                {as.subject?.name || 'All Subjects'}
+                              </span>
+                            </td>
+                            <td className="py-3.5 px-4">
+                              <div className="flex flex-col gap-1 items-start">
+                                <span
+                                  className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold border shadow-2xs ${badge.badgeClass}`}
+                                  title={badge.tooltip}
+                                >
+                                  <Sparkles className="w-3.5 h-3.5 text-[#FF8500]" />
+                                  <span>{badge.text}</span>
+                                </span>
+                                <span className="text-[10px] text-neutral-500 font-mono">
+                                  {badge.tooltip}
+                                </span>
+                              </div>
+                            </td>
+                            <td className="py-3.5 px-4">
+                              <span className="text-[11px] font-semibold text-neutral-600 bg-neutral-100 px-2 py-0.5 rounded">
+                                {as.role || 'TEACHER'}
+                              </span>
+                            </td>
+                            <td className="py-3.5 px-4 text-right">
+                              <div className="flex items-center justify-end gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenEditStaffPayRule(as)}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold rounded-lg border border-neutral-200 text-neutral-700 hover:text-[#FF8500] hover:border-[#FF8500] hover:bg-orange-50 transition cursor-pointer"
+                                >
+                                  <Pencil className="w-3.5 h-3.5 text-[#FF8500]" />
+                                  <span>Edit Rule</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleInitiateDeleteStaffPayRule(as)}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold rounded-lg border border-neutral-200 text-neutral-600 hover:text-red-600 hover:border-red-300 hover:bg-red-50 transition cursor-pointer"
+                                  title="Delete Staff Pay Rule"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5 text-neutral-400 group-hover:text-red-600" />
+                                  <span>Delete</span>
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
             <div className="flex items-center justify-between">
               <div>
                 <h4 className="text-base font-bold text-black">Dual Staff Compensation & Revenue Ledger</h4>
@@ -2900,37 +3713,37 @@ export default function FeesPage() {
           maxWidth="5xl"
         >
           {selectedStudentDetail && (
-            <div className="space-y-5 max-h-[80vh] overflow-y-auto pr-1">
+            <div className="space-y-4 max-h-[80vh] overflow-y-auto overflow-x-hidden pr-0.5 sm:pr-1">
               {/* Consolidated Metrics Bar */}
-              <div className="bg-[#FFF4E5] border border-[#FFD199] p-4 rounded-xl grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
+              <div className="bg-[#FFF4E5] border border-[#FFD199] p-3 sm:p-4 rounded-xl grid grid-cols-2 sm:grid-cols-4 gap-2.5 sm:gap-3 text-center">
                 <div>
-                  <span className="text-[11px] text-neutral-500 font-semibold uppercase">Enrolled Courses</span>
-                  <div className="text-lg font-bold text-black">
+                  <span className="text-[10px] sm:text-[11px] text-neutral-500 font-semibold uppercase">Enrolled Courses</span>
+                  <div className="text-base sm:text-lg font-bold text-black">
                     {selectedStudentDetail.consolidatedAccount.totalCoursesEnrolled}
                   </div>
                 </div>
                 <div>
-                  <span className="text-[11px] text-neutral-500 font-semibold uppercase">Total Invoiced</span>
-                  <div className="text-lg font-bold font-mono text-black">
+                  <span className="text-[10px] sm:text-[11px] text-neutral-500 font-semibold uppercase">Total Invoiced</span>
+                  <div className="text-base sm:text-lg font-bold font-mono text-black">
                     ₹{selectedStudentDetail.consolidatedAccount.consolidatedTotalBilled.toLocaleString()}
                   </div>
                 </div>
                 <div>
-                  <span className="text-[11px] text-neutral-500 font-semibold uppercase">Total Paid</span>
-                  <div className="text-lg font-bold font-mono text-green-700">
+                  <span className="text-[10px] sm:text-[11px] text-neutral-500 font-semibold uppercase">Total Paid</span>
+                  <div className="text-base sm:text-lg font-bold font-mono text-green-700">
                     ₹{selectedStudentDetail.consolidatedAccount.consolidatedPaid.toLocaleString()}
                   </div>
                 </div>
                 <div>
-                  <span className="text-[11px] text-neutral-500 font-semibold uppercase">Consolidated Balance</span>
-                  <div className="text-lg font-bold font-mono text-[#CC6B00]">
+                  <span className="text-[10px] sm:text-[11px] text-neutral-500 font-semibold uppercase">Consolidated Balance</span>
+                  <div className="text-base sm:text-lg font-bold font-mono text-[#CC6B00]">
                     ₹{selectedStudentDetail.consolidatedAccount.consolidatedBalance.toLocaleString()}
                   </div>
                 </div>
               </div>
 
               {/* Sub-Tabs: Payment History vs Course Obligations */}
-              <div className="flex items-center gap-2 border-b border-neutral-200 pb-2">
+              <div className="flex items-center gap-2 border-b border-neutral-200 pb-2 overflow-x-auto scrollbar-none">
                 <button
                   type="button"
                   onClick={() => setStudentModalTab('payments')}
@@ -3236,6 +4049,53 @@ export default function FeesPage() {
                               {course.status}
                             </Badge>
 
+                            {course.paidAmount > 0 && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="border-emerald-300 text-emerald-800 bg-emerald-50 hover:bg-emerald-100 font-semibold flex items-center gap-1 shadow-xs"
+                                onClick={() => {
+                                  downloadOrPrintSimpleInvoice({
+                                    invoiceNumber: course.invoiceNumber,
+                                    date: new Date().toLocaleDateString('en-IN', {
+                                      year: 'numeric',
+                                      month: 'short',
+                                      day: 'numeric',
+                                    }),
+                                    status: course.status === 'PAID' ? 'PAID' : 'PARTIAL',
+                                    studentName: selectedStudentDetail.student.name,
+                                    studentCode: selectedStudentDetail.student.studentCode,
+                                    admissionNumber: selectedStudentDetail.student.admissionNumber,
+                                    phone: selectedStudentDetail.student.phone,
+                                    email: selectedStudentDetail.student.email,
+                                    parentName: selectedStudentDetail.student.parentName,
+                                    parentPhone: selectedStudentDetail.student.parentPhone,
+                                    courseOrClass: course.courseName,
+                                    batch: course.batchName || undefined,
+                                    items: [
+                                      {
+                                        description: `${course.courseName}${course.subjectName ? ` (${course.subjectName})` : ''}`,
+                                        courseName: `Period: ${course.billingPeriod}`,
+                                        amount: course.totalAmount,
+                                        discount: course.discountAmount,
+                                        paid: course.paidAmount,
+                                        balance: course.balanceAmount,
+                                        billingPeriod: course.billingPeriod,
+                                      },
+                                    ],
+                                    totalBilled: course.totalAmount,
+                                    totalDiscount: course.discountAmount,
+                                    totalPaid: course.paidAmount,
+                                    totalBalance: course.balanceAmount,
+                                  });
+                                }}
+                                title="Download PDF Invoice"
+                              >
+                                <Download className="w-3.5 h-3.5 text-emerald-600" />
+                                Invoice PDF
+                              </Button>
+                            )}
+
                             {course.balanceAmount > 0 && (
                               <Button
                                 size="sm"
@@ -3307,22 +4167,332 @@ export default function FeesPage() {
                 </div>
               )}
 
-              <div className="flex justify-between items-center pt-3 border-t border-neutral-100">
+              <div className="flex justify-between items-center pt-3 border-t border-neutral-100 gap-2 flex-wrap">
                 <Button variant="outline" onClick={() => setSelectedStudentDetail(null)}>
                   Close
                 </Button>
 
-                {selectedStudentDetail.consolidatedAccount.consolidatedBalance > 0 && (
+                <div className="flex items-center gap-2 flex-wrap">
+                  {selectedStudentDetail.consolidatedAccount.consolidatedPaid > 0 && (
+                    <Button
+                      variant="outline"
+                      className="border-emerald-300 text-emerald-800 bg-emerald-50 hover:bg-emerald-100 font-semibold flex items-center gap-1.5"
+                      onClick={() => {
+                        downloadOrPrintSimpleInvoice({
+                          invoiceNumber: `INV-${selectedStudentDetail.student.studentCode}-${new Date().getFullYear()}`,
+                          date: new Date().toLocaleDateString('en-IN', {
+                            year: 'numeric',
+                            month: 'short',
+                            day: 'numeric',
+                          }),
+                          status:
+                            selectedStudentDetail.consolidatedAccount.overallStatus === 'PAID'
+                              ? 'PAID'
+                              : 'PARTIAL',
+                          studentName: selectedStudentDetail.student.name,
+                          studentCode: selectedStudentDetail.student.studentCode,
+                          admissionNumber: selectedStudentDetail.student.admissionNumber,
+                          phone: selectedStudentDetail.student.phone,
+                          email: selectedStudentDetail.student.email,
+                          parentName: selectedStudentDetail.student.parentName,
+                          parentPhone: selectedStudentDetail.student.parentPhone,
+                          courseOrClass: selectedStudentDetail.enrolledCourses.map((c) => c.courseName).join(', '),
+                          batch: selectedStudentDetail.enrolledCourses.map((c) => c.batchName).filter(Boolean).join(', '),
+                          items: selectedStudentDetail.courseFees.map((cf) => ({
+                            description: `${cf.courseName}${cf.subjectName ? ` (${cf.subjectName})` : ''}`,
+                            courseName: cf.billingPeriod ? `Period: ${cf.billingPeriod}` : undefined,
+                            amount: cf.totalAmount,
+                            discount: cf.discountAmount,
+                            paid: cf.paidAmount,
+                            balance: cf.balanceAmount,
+                            billingPeriod: cf.billingPeriod,
+                          })),
+                          totalBilled:
+                            selectedStudentDetail.consolidatedAccount.consolidatedTotalBilled,
+                          totalDiscount:
+                            selectedStudentDetail.consolidatedAccount.consolidatedDiscounts,
+                          totalPaid:
+                            selectedStudentDetail.consolidatedAccount.consolidatedPaid,
+                          totalBalance:
+                            selectedStudentDetail.consolidatedAccount.consolidatedBalance,
+                        });
+                      }}
+                    >
+                      <Download className="w-4 h-4 text-emerald-600" />
+                      Download Paid Invoice (PDF)
+                    </Button>
+                  )}
+
+                  {selectedStudentDetail.consolidatedAccount.consolidatedBalance > 0 && (
+                    <>
+                      <Button
+                        variant="outline"
+                        className="border-amber-300 text-amber-800 bg-amber-50 hover:bg-amber-100 font-semibold flex items-center gap-1.5"
+                        onClick={() => {
+                          const found = studentAccounts.find((s) => s.id === selectedStudentDetail.student.id) || {
+                            id: selectedStudentDetail.student.id,
+                            studentCode: selectedStudentDetail.student.studentCode,
+                            admissionNumber: selectedStudentDetail.student.admissionNumber,
+                            name: selectedStudentDetail.student.name,
+                            email: selectedStudentDetail.student.email,
+                            phone: selectedStudentDetail.student.phone,
+                            status: selectedStudentDetail.student.status,
+                            enrolledCourses: selectedStudentDetail.enrolledCourses.map((e) => ({
+                              courseId: e.courseId,
+                              courseName: e.courseName,
+                              courseCode: e.courseCode,
+                              batchName: e.batchName,
+                              subjectName: e.subjectName || null,
+                            })),
+                            courseInvoicesCount: selectedStudentDetail.courseFees.length,
+                            consolidatedBilled: selectedStudentDetail.consolidatedAccount.consolidatedTotalBilled,
+                            consolidatedPaid: selectedStudentDetail.consolidatedAccount.consolidatedPaid,
+                            consolidatedBalance: selectedStudentDetail.consolidatedAccount.consolidatedBalance,
+                            consolidatedDiscounts: selectedStudentDetail.consolidatedAccount.consolidatedDiscounts,
+                            overallStatus: selectedStudentDetail.consolidatedAccount.overallStatus,
+                          };
+                          handleOpenReminderModal(found);
+                        }}
+                      >
+                        <Bell className="w-4 h-4 text-amber-600" />
+                        Payment Reminder
+                      </Button>
+
+                      <Button
+                        variant="primary"
+                        onClick={() => {
+                          handleOpenPaymentModalForStudent(selectedStudentDetail.student.id);
+                        }}
+                      >
+                        <CreditCard className="w-4 h-4" />
+                        Record Multi-Course Payment (₹{selectedStudentDetail.consolidatedAccount.consolidatedBalance.toLocaleString()})
+                      </Button>
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </Modal>
+
+        {/* ==================================================================== */}
+        {/* MODAL: PAYMENT DUE REMINDER MESSAGE GENERATOR */}
+        {/* ==================================================================== */}
+        <Modal
+          isOpen={showReminderModal}
+          onClose={() => setShowReminderModal(false)}
+          title="Payment Due Reminder"
+          description={`Generate and share fee payment reminder for ${reminderStudent?.name || 'Student'}`}
+          maxWidth="2xl"
+        >
+          {reminderStudent && (
+            <div className="space-y-4">
+              {/* Student Summary Info Banner */}
+              <div className="bg-amber-50/70 border border-amber-200/80 rounded-xl p-3.5 flex items-start justify-between gap-3 flex-wrap sm:flex-nowrap">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h4 className="font-bold text-sm text-black">{reminderStudent.name}</h4>
+                    <span className="font-mono text-xs text-[#CC6B00] font-semibold bg-white px-2 py-0.5 rounded border border-amber-200">
+                      {reminderStudent.studentCode}
+                    </span>
+                    <span className="text-xs text-neutral-500 font-mono">
+                      Adm: {reminderStudent.admissionNumber}
+                    </span>
+                  </div>
+                  <p className="text-xs text-neutral-600">
+                    Courses:{' '}
+                    {reminderStudent.enrolledCourses.length > 0
+                      ? reminderStudent.enrolledCourses.map((c) => c.courseName).join(', ')
+                      : 'None enrolled'}
+                  </p>
+                </div>
+
+                <div className="text-right shrink-0">
+                  <span className="text-[11px] text-neutral-500 block uppercase font-medium">
+                    Outstanding Balance
+                  </span>
+                  <span className="text-base font-bold font-mono text-red-700">
+                    ₹{reminderStudent.consolidatedBalance.toLocaleString()}
+                  </span>
+                  <div className="mt-0.5">
+                    <Badge
+                      variant={
+                        reminderStudent.overallStatus === 'OVERDUE'
+                          ? 'error'
+                          : reminderStudent.overallStatus === 'UNPAID'
+                          ? 'neutral'
+                          : 'warning'
+                      }
+                    >
+                      {reminderStudent.overallStatus}
+                    </Badge>
+                  </div>
+                </div>
+              </div>
+
+              {/* Recipient Phone & Template Tone Selector */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-end">
+                <div>
+                  <label className="block text-xs font-semibold text-neutral-700 mb-1">
+                    Parent / Student WhatsApp Phone
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="text"
+                      value={reminderPhone}
+                      onChange={(e) => setReminderPhone(e.target.value)}
+                      placeholder="e.g. 9876543210 (10 digits)"
+                      className="w-full pl-8 pr-3 py-1.5 text-xs font-mono border border-neutral-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#FF8500]"
+                    />
+                    <Smartphone className="w-3.5 h-3.5 text-neutral-400 absolute left-2.5 top-2.5" />
+                  </div>
+                  <span className="text-[10px] text-neutral-400 mt-0.5 block">
+                    Auto-prefixes India +91 if 10 digits entered.
+                  </span>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-neutral-700 mb-1">
+                    Reminder Template / Tone
+                  </label>
+                  <div className="flex items-center gap-1.5 bg-neutral-100 p-1 rounded-lg">
+                    <button
+                      type="button"
+                      onClick={() => handleToneChange('GENTLE')}
+                      className={`flex-1 py-1 text-[11px] font-semibold rounded-md transition-all ${
+                        reminderTone === 'GENTLE'
+                          ? 'bg-white text-black shadow-xs'
+                          : 'text-neutral-600 hover:text-black'
+                      }`}
+                    >
+                      Gentle
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleToneChange('OVERDUE')}
+                      className={`flex-1 py-1 text-[11px] font-semibold rounded-md transition-all ${
+                        reminderTone === 'OVERDUE'
+                          ? 'bg-red-500 text-white shadow-xs'
+                          : 'text-neutral-600 hover:text-black'
+                      }`}
+                    >
+                      Urgent Overdue
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleToneChange('DETAILED')}
+                      className={`flex-1 py-1 text-[11px] font-semibold rounded-md transition-all ${
+                        reminderTone === 'DETAILED'
+                          ? 'bg-white text-black shadow-xs'
+                          : 'text-neutral-600 hover:text-black'
+                      }`}
+                    >
+                      Statement
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Message Preview & Live Editor */}
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-xs font-semibold text-neutral-700 flex items-center gap-1.5">
+                    <MessageSquare className="w-3.5 h-3.5 text-[#FF8500]" />
+                    Reminder Message (Editable)
+                  </label>
+                  <span className="text-[10px] text-neutral-400 font-mono">
+                    {reminderMessage.length} characters
+                  </span>
+                </div>
+                <textarea
+                  rows={9}
+                  value={reminderMessage}
+                  onChange={(e) => setReminderMessage(e.target.value)}
+                  className="w-full p-3 text-xs font-mono bg-neutral-50 border border-neutral-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#FF8500] text-neutral-900 leading-relaxed resize-y"
+                  placeholder="Generating message..."
+                />
+              </div>
+
+              {/* Quick Append Chips */}
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-[10px] uppercase font-semibold text-neutral-400 mr-1">Quick Add:</span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setReminderMessage((prev) => `${prev}\n\n⚠️ *Due Date:* Please clear the dues on or before Friday.`)
+                  }
+                  className="px-2 py-0.5 text-[11px] bg-neutral-100 hover:bg-neutral-200 text-neutral-700 rounded transition-colors"
+                >
+                  + Due Date
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setReminderMessage(
+                      (prev) =>
+                        `${prev}\n\n🏦 *Bank Details:*\nBank: HDFC Bank\nA/C No: 50100234567890\nIFSC: HDFC0001234\nBranch: Main Branch`
+                    )
+                  }
+                  className="px-2 py-0.5 text-[11px] bg-neutral-100 hover:bg-neutral-200 text-neutral-700 rounded transition-colors"
+                >
+                  + Bank Account
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setReminderMessage((prev) => `${prev}\n\n📲 *UPI Payment Link:* upi://pay?pa=rcacademy@upi&pn=RCAcademy`)
+                  }
+                  className="px-2 py-0.5 text-[11px] bg-neutral-100 hover:bg-neutral-200 text-neutral-700 rounded transition-colors"
+                >
+                  + UPI Link
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const fresh = generatePaymentReminderText(reminderStudent, reminderTone);
+                    setReminderMessage(fresh);
+                  }}
+                  className="px-2 py-0.5 text-[11px] text-[#FF8500] hover:underline transition-colors ml-auto font-medium"
+                >
+                  Reset Message
+                </button>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex items-center justify-between pt-3 border-t border-neutral-100 gap-2 flex-wrap">
+                <Button variant="outline" onClick={() => setShowReminderModal(false)}>
+                  Cancel
+                </Button>
+
+                <div className="flex items-center gap-2">
                   <Button
-                    variant="primary"
-                    onClick={() => {
-                      handleOpenPaymentModalForStudent(selectedStudentDetail.student.id);
-                    }}
+                    variant="outline"
+                    onClick={handleCopyReminderMessage}
+                    className="flex items-center gap-1.5"
                   >
-                    <CreditCard className="w-4 h-4" />
-                    Record Multi-Course Payment (₹{selectedStudentDetail.consolidatedAccount.consolidatedBalance.toLocaleString()})
+                    {reminderCopied ? (
+                      <>
+                        <Check className="w-4 h-4 text-emerald-600" />
+                        <span className="text-emerald-700 font-semibold">Copied to Clipboard!</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-4 h-4 text-neutral-600" />
+                        <span>Copy Message</span>
+                      </>
+                    )}
                   </Button>
-                )}
+
+                  <a
+                    href={getReminderWhatsAppUrl()}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-[#25D366] hover:bg-[#1EBE5D] rounded-xl shadow-subtle transition-all"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                    Send via WhatsApp
+                  </a>
+                </div>
               </div>
             </div>
           )}
@@ -3340,26 +4510,26 @@ export default function FeesPage() {
         >
           <form onSubmit={handleSubmitPayment} className="space-y-3">
             {/* Top Compact Strip: Student Profile & Billing Cycle */}
-            <div className="bg-gradient-to-r from-orange-50/70 via-neutral-50 to-neutral-50 p-2.5 rounded-xl border border-neutral-200 flex flex-wrap items-center justify-between gap-2">
+            <div className="bg-gradient-to-r from-orange-50/70 via-neutral-50 to-neutral-50 p-2.5 sm:p-3 rounded-xl border border-neutral-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
               {selectedPaymentStudent ? (
                 <div className="flex items-center gap-2.5 min-w-0">
                   <div className="w-8 h-8 rounded-lg bg-orange-100 border border-orange-200 flex items-center justify-center text-[#FF8500] font-bold text-xs shrink-0 shadow-2xs">
                     {selectedPaymentStudent.name.slice(0, 2).toUpperCase()}
                   </div>
-                  <div className="min-w-0 flex items-center gap-2 flex-wrap">
+                  <div className="min-w-0 flex items-center gap-1.5 sm:gap-2 flex-wrap">
                     <span className="font-bold text-xs text-neutral-900 truncate">
                       {selectedPaymentStudent.name}
                     </span>
-                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-white text-neutral-700 border border-neutral-200 font-semibold">
+                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-white text-neutral-700 border border-neutral-200 font-semibold shrink-0">
                       {selectedPaymentStudent.studentCode}
                     </span>
                     {selectedPaymentStudent.admissionNumber && (
-                      <span className="text-[10px] font-mono text-neutral-500">
+                      <span className="text-[10px] font-mono text-neutral-500 shrink-0">
                         Adm: #{selectedPaymentStudent.admissionNumber}
                       </span>
                     )}
-                    <span className="text-neutral-300">•</span>
-                    <span className="text-[11px] text-neutral-500">
+                    <span className="text-neutral-300 hidden sm:inline">•</span>
+                    <span className="text-[11px] text-neutral-500 w-full sm:w-auto">
                       Total Due:{' '}
                       <strong className="text-amber-700 font-mono">
                         ₹{selectedPaymentStudent.consolidatedBalance.toLocaleString()}
@@ -3368,7 +4538,7 @@ export default function FeesPage() {
                   </div>
                 </div>
               ) : (
-                <div className="w-64">
+                <div className="w-full sm:w-64">
                   <select
                     value={paymentStudentId}
                     onChange={(e) => handleOpenPaymentModalForStudent(e.target.value)}
@@ -3385,20 +4555,23 @@ export default function FeesPage() {
                 </div>
               )}
 
-              <div className="flex items-center gap-2 shrink-0">
-                <div className="flex items-center gap-1.5 text-xs text-neutral-600">
-                  <span className="text-[10px] font-bold text-neutral-500 uppercase">Cycle:</span>
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full sm:w-auto">
+                <div className="flex items-center gap-1.5 text-xs text-neutral-600 w-full sm:w-auto">
+                  <span className="text-[10px] font-bold text-neutral-500 uppercase shrink-0">Cycle:</span>
                   <select
                     value={collectionMonth}
                     onChange={(e) => setCollectionMonth(e.target.value)}
-                    className="px-2 py-1 bg-white border border-neutral-300 rounded-md text-xs font-semibold text-black focus:outline-none focus:ring-1 focus:ring-[#FF8500]"
+                    className="flex-1 sm:flex-initial px-2 py-1.5 sm:py-1 bg-white border border-neutral-300 rounded-md text-xs font-semibold text-black focus:outline-none focus:ring-1 focus:ring-[#FF8500] min-w-0 sm:max-w-[200px]"
                   >
-                    <option value="October 2026">October 2026 (Current)</option>
-                    <option value="November 2026">November 2026</option>
-                    <option value="December 2026">December 2026</option>
-                    <option value="January 2027">January 2027</option>
-                    <option value="September 2026">September 2026</option>
-                    <option value="Annual / Lump-Sum">Annual / Lump-Sum</option>
+                    {BILLING_CYCLE_GROUPS.map((grp) => (
+                      <optgroup key={grp.group} label={grp.group}>
+                        {grp.options.map((opt) => (
+                          <option key={opt.value} value={opt.value}>
+                            {opt.label}
+                          </option>
+                        ))}
+                      </optgroup>
+                    ))}
                   </select>
                 </div>
 
@@ -3406,7 +4579,7 @@ export default function FeesPage() {
                   <select
                     value={paymentStudentId}
                     onChange={(e) => handleOpenPaymentModalForStudent(e.target.value)}
-                    className="px-2 py-1 bg-white border border-neutral-300 rounded-md text-[11px] font-semibold text-neutral-700 focus:outline-none focus:ring-1 focus:ring-[#FF8500] cursor-pointer"
+                    className="w-full sm:w-auto px-2 py-1.5 sm:py-1 bg-white border border-neutral-300 rounded-md text-[11px] font-semibold text-neutral-700 focus:outline-none focus:ring-1 focus:ring-[#FF8500] cursor-pointer min-w-0 sm:max-w-[180px] truncate"
                   >
                     {studentAccounts.map((s) => (
                       <option key={s.id} value={s.id}>
@@ -3420,7 +4593,7 @@ export default function FeesPage() {
 
             {/* Course Switcher Tabs if student has multiple enrolled courses */}
             {studentOpenInvoices.length > 1 && (
-              <div className="flex items-center gap-2 overflow-x-auto pb-0.5 text-xs">
+              <div className="flex items-center gap-2 overflow-x-auto pb-1 text-xs scrollbar-none">
                 <span className="text-[10px] font-bold text-neutral-500 uppercase tracking-wider shrink-0">Target Course:</span>
                 {studentOpenInvoices.map((inv) => {
                   const isSel = (currentSelectedInvoice?.id === inv.id);
@@ -3454,28 +4627,28 @@ export default function FeesPage() {
             {/* MAIN SIDE-BY-SIDE 2-COLUMN VIEW (NO SCROLL NEEDED) */}
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-3.5 items-start">
               {/* LEFT COLUMN (5 cols on lg): Course Overview, Proof Upload, Remarks */}
-              <div className="lg:col-span-5 space-y-2.5">
+              <div className="lg:col-span-5 space-y-2.5 min-w-0">
                 {/* Course Details Card */}
                 {currentSelectedInvoice && (
                   <div className="bg-white rounded-xl border border-neutral-200 overflow-hidden shadow-2xs">
-                    <div className="px-3 py-2 bg-neutral-50 border-b border-neutral-200 flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2 min-w-0">
+                    <div className="px-3 py-2 bg-neutral-50 border-b border-neutral-200 flex flex-wrap items-center justify-between gap-1.5">
+                      <div className="flex flex-wrap items-center gap-1.5 min-w-0 flex-1">
                         <BookOpen className="w-3.5 h-3.5 text-[#FF8500] shrink-0" />
-                        <span className="font-bold text-xs text-neutral-900 truncate">
+                        <span className="font-bold text-xs text-neutral-900">
                           {currentSelectedInvoice.class?.name || 'Class Course'}
                         </span>
                         {currentSelectedInvoice.batch?.name && (
-                          <span className="px-1.5 py-0.2 rounded text-[9px] font-semibold bg-blue-50 text-blue-700 border border-blue-200">
+                          <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-blue-50 text-blue-700 border border-blue-200 shrink-0">
                             {currentSelectedInvoice.batch.name}
                           </span>
                         )}
                         {currentSelectedInvoice.subject?.name && (
-                          <span className="px-1.5 py-0.2 rounded text-[9px] font-semibold bg-purple-50 text-purple-700 border border-purple-200">
+                          <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-purple-50 text-purple-700 border border-purple-200 break-words">
                             {currentSelectedInvoice.subject.name}
                           </span>
                         )}
                       </div>
-                      <span className={`px-2 py-0.5 rounded-full text-[9px] font-extrabold uppercase ${
+                      <span className={`px-2 py-0.5 rounded-full text-[9px] font-extrabold uppercase shrink-0 ${
                         currentSelectedInvoice.status === 'PAID'
                           ? 'bg-emerald-100 text-emerald-800'
                           : 'bg-amber-100 text-amber-800'
@@ -3485,27 +4658,27 @@ export default function FeesPage() {
                     </div>
 
                     <div className="grid grid-cols-4 divide-x divide-neutral-100 text-center text-xs py-2 bg-white">
-                      <div>
+                      <div className="px-0.5 sm:px-1">
                         <span className="text-[9px] text-neutral-400 block uppercase">Total</span>
-                        <span className="font-mono font-bold text-neutral-800 text-xs">
+                        <span className="font-mono font-bold text-neutral-800 text-[11px] sm:text-xs">
                           ₹{currentSelectedInvoice.totalAmount.toLocaleString()}
                         </span>
                       </div>
-                      <div>
+                      <div className="px-0.5 sm:px-1">
                         <span className="text-[9px] text-neutral-400 block uppercase">Disc</span>
-                        <span className="font-mono font-bold text-neutral-600 text-xs">
+                        <span className="font-mono font-bold text-neutral-600 text-[11px] sm:text-xs">
                           ₹{currentSelectedInvoice.discountAmount.toLocaleString()}
                         </span>
                       </div>
-                      <div>
+                      <div className="px-0.5 sm:px-1">
                         <span className="text-[9px] text-neutral-400 block uppercase">Paid</span>
-                        <span className="font-mono font-bold text-emerald-700 text-xs">
+                        <span className="font-mono font-bold text-emerald-700 text-[11px] sm:text-xs">
                           ₹{currentSelectedInvoice.paidAmount.toLocaleString()}
                         </span>
                       </div>
-                      <div className="bg-amber-50/60">
+                      <div className="bg-amber-50/60 px-0.5 sm:px-1">
                         <span className="text-[9px] text-amber-800 block uppercase font-bold">Balance</span>
-                        <span className="font-mono font-extrabold text-amber-700 text-xs">
+                        <span className="font-mono font-extrabold text-amber-700 text-[11px] sm:text-xs">
                           ₹{currentSelectedInvoice.balanceAmount.toLocaleString()}
                         </span>
                       </div>
@@ -3514,19 +4687,19 @@ export default function FeesPage() {
                 )}
 
                 {/* Proof of Payment Upload Widget (Required & Compressed <= 150KB) */}
-                <div className={`p-3 rounded-xl border transition-all ${
+                <div className={`p-2.5 sm:p-3 rounded-xl border transition-all ${
                   paymentProofFile
                     ? 'bg-emerald-50/60 border-emerald-300'
                     : proofError
                     ? 'bg-rose-50/70 border-rose-300 ring-1 ring-rose-300'
                     : 'bg-neutral-50/80 border-dashed border-neutral-300 hover:border-neutral-400'
                 }`}>
-                  <div className="flex items-center justify-between mb-1.5">
+                  <div className="flex flex-wrap items-center justify-between gap-1 mb-1.5">
                     <label className="text-xs font-bold text-neutral-800 flex items-center gap-1.5">
-                      <Paperclip className="w-3.5 h-3.5 text-[#FF8500]" />
-                      Payment Proof Document <span className="text-rose-500">*</span>
+                      <Paperclip className="w-3.5 h-3.5 text-[#FF8500] shrink-0" />
+                      <span>Payment Proof Document</span> <span className="text-rose-500">*</span>
                     </label>
-                    <span className="text-[9px] text-neutral-500 font-bold uppercase tracking-wider bg-neutral-200/60 px-1.5 py-0.2 rounded">
+                    <span className="text-[9px] text-neutral-500 font-bold uppercase tracking-wider bg-neutral-200/60 px-1.5 py-0.5 rounded shrink-0">
                       Private S3 Encrypted
                     </span>
                   </div>
@@ -3554,10 +4727,10 @@ export default function FeesPage() {
                           )}
                           <div className="min-w-0">
                             <div className="flex items-center gap-1.5 flex-wrap">
-                              <span className="font-bold text-neutral-900 truncate text-xs max-w-[170px]" title={paymentProofName}>
+                              <span className="font-bold text-neutral-900 truncate text-xs max-w-[120px] sm:max-w-[170px]" title={paymentProofName}>
                                 {paymentProofName}
                               </span>
-                              <span className="px-1.5 py-0.2 rounded text-[9px] font-extrabold bg-emerald-100 text-emerald-800 border border-emerald-300 shrink-0">
+                              <span className="px-1.5 py-0.5 rounded text-[9px] font-extrabold bg-emerald-100 text-emerald-800 border border-emerald-300 shrink-0">
                                 READY FOR S3
                               </span>
                             </div>
@@ -3569,7 +4742,7 @@ export default function FeesPage() {
                         <button
                           type="button"
                           onClick={handleRemoveProof}
-                          className="p-1.5 text-neutral-400 hover:text-rose-600 hover:bg-rose-50 rounded-md transition cursor-pointer"
+                          className="p-1.5 text-neutral-400 hover:text-rose-600 hover:bg-rose-50 rounded-md transition cursor-pointer shrink-0"
                           title="Remove attached proof"
                         >
                           <Trash2 className="w-4 h-4" />
@@ -3578,27 +4751,27 @@ export default function FeesPage() {
 
                       {/* Compression transparency notice */}
                       {proofCompressionInfo && (
-                        <div className="pt-1.5 border-t border-neutral-100 flex items-center justify-between text-[10px] font-medium">
+                        <div className="pt-1.5 border-t border-neutral-100 flex flex-col xs:flex-row sm:flex-row sm:items-center justify-between gap-1 text-[10px] font-medium">
                           {proofCompressionInfo.isCompressed ? (
                             <span className="text-emerald-700 flex items-center gap-1">
-                              <Zap className="w-3 h-3 text-emerald-600" />
+                              <Zap className="w-3 h-3 text-emerald-600 shrink-0" />
                               Compressed from {proofCompressionInfo.originalSize} to {proofCompressionInfo.compressedSize} ({proofCompressionInfo.ratio}% saved)
                             </span>
                           ) : (
                             <span className="text-neutral-500 flex items-center gap-1">
-                              <FileText className="w-3 h-3 text-neutral-400" />
+                              <FileText className="w-3 h-3 text-neutral-400 shrink-0" />
                               {proofCompressionInfo.note}
                             </span>
                           )}
-                          <span className="text-neutral-400 font-mono">Max 10MB</span>
+                          <span className="text-neutral-400 font-mono shrink-0">Max 10MB</span>
                         </div>
                       )}
                     </div>
                   ) : (
                     <div>
-                      <label className="flex flex-col items-center justify-center p-3.5 border-2 border-dashed border-neutral-300 hover:border-[#FF8500] rounded-lg cursor-pointer bg-white transition group">
+                      <label className="flex flex-col items-center justify-center p-3 sm:p-3.5 border-2 border-dashed border-neutral-300 hover:border-[#FF8500] rounded-lg cursor-pointer bg-white transition group text-center">
                         <Upload className="w-5 h-5 text-neutral-400 group-hover:text-[#FF8500] transition mb-1" />
-                        <span className="text-xs font-semibold text-neutral-700 group-hover:text-[#FF8500]">
+                        <span className="text-xs font-semibold text-neutral-700 group-hover:text-[#FF8500] text-center">
                           Click to Upload Proof Slip / Screenshot / PDF
                         </span>
                         <span className="text-[10px] text-neutral-400 mt-0.5 text-center">
@@ -3637,24 +4810,24 @@ export default function FeesPage() {
               </div>
 
               {/* RIGHT COLUMN (7 cols on lg): Concession/Discount, Payment Mode, Amounts, Settlement & Actions */}
-              <div className="lg:col-span-7 space-y-3 bg-neutral-50 p-3.5 rounded-xl border border-neutral-200">
+              <div className="lg:col-span-7 space-y-3 bg-neutral-50 p-2.5 sm:p-3.5 rounded-xl border border-neutral-200 min-w-0 overflow-hidden">
                 {/* Instant Fee Concession & Discount Card */}
-                <div className="bg-white p-3 rounded-xl border border-neutral-200/90 shadow-2xs space-y-2.5">
+                <div className="bg-white p-2.5 sm:p-3 rounded-xl border border-neutral-200/90 shadow-2xs space-y-2.5">
                   <div className="flex items-center justify-between">
                     <label className="text-xs font-bold text-neutral-800 flex items-center gap-1.5">
-                      <Percent className="w-3.5 h-3.5 text-[#FF8500]" />
+                      <Percent className="w-3.5 h-3.5 text-[#FF8500] shrink-0" />
                       <span>Instant Fee Concession / Discount</span>
                     </label>
                     {appliedPaymentDiscount > 0 ? (
-                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-200">
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-200 shrink-0">
                         -₹{appliedPaymentDiscount.toLocaleString()} Concession
                       </span>
                     ) : (
-                      <span className="text-[10px] text-neutral-400 font-medium">Optional</span>
+                      <span className="text-[10px] text-neutral-400 font-medium shrink-0">Optional</span>
                     )}
                   </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-2.5">
                     {/* Discount Amount */}
                     <div>
                       <div className="flex items-center justify-between mb-1">
@@ -3724,7 +4897,7 @@ export default function FeesPage() {
                           )}
                         </span>
                         {appliedPaymentDiscount > 0 && (
-                          <span className="text-[9px] font-bold text-rose-600 bg-rose-50 px-1 py-0.2 rounded border border-rose-200">
+                          <span className="text-[9px] font-bold text-rose-600 bg-rose-50 px-1 py-0.5 rounded border border-rose-200 shrink-0">
                             Mandatory
                           </span>
                         )}
@@ -3757,11 +4930,11 @@ export default function FeesPage() {
                   )}
 
                   {appliedPaymentDiscount > 0 && (
-                    <div className="bg-amber-50/70 p-2 rounded-lg border border-amber-200 text-[11px] flex items-center justify-between">
-                      <span className="text-amber-900 font-medium">
+                    <div className="bg-amber-50/70 p-2 rounded-lg border border-amber-200 text-[11px] flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+                      <span className="text-amber-900 font-medium break-words">
                         Fee: <strong className="font-mono">₹{modalTargetBalance.toLocaleString()}</strong> − Discount: <strong className="font-mono text-amber-700">₹{appliedPaymentDiscount.toLocaleString()}</strong>
                       </span>
-                      <span className="text-emerald-800 font-bold">
+                      <span className="text-emerald-800 font-bold shrink-0">
                         Net Amount to Pay: <strong className="font-mono text-emerald-700 text-xs">₹{modalNetPayable.toLocaleString()}</strong>
                       </span>
                     </div>
@@ -3773,21 +4946,21 @@ export default function FeesPage() {
                   <label className="text-xs font-bold text-neutral-800 block mb-1.5">
                     Payment Channel (Cash / UPI / Cash + UPI)
                   </label>
-                  <div className="grid grid-cols-3 gap-2">
+                  <div className="grid grid-cols-3 gap-1.5 sm:gap-2">
                     <button
                       type="button"
                       onClick={() => {
                         setPaymentMethodMode('CASH');
                         setPaymentMethod('CASH');
                       }}
-                      className={`py-2 px-2 rounded-xl text-xs font-bold border transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                      className={`py-2 px-1 sm:px-2 rounded-xl text-[11px] sm:text-xs font-bold border transition-all flex items-center justify-center gap-1 sm:gap-1.5 cursor-pointer ${
                         paymentMethodMode === 'CASH'
                           ? 'bg-emerald-600 text-white border-emerald-700 shadow-xs ring-2 ring-emerald-500/20'
                           : 'bg-white text-neutral-700 border-neutral-300 hover:bg-neutral-100'
                       }`}
                     >
-                      <Banknote className="w-4 h-4" />
-                      <span>Cash</span>
+                      <Banknote className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
+                      <span className="truncate">Cash</span>
                     </button>
 
                     <button
@@ -3796,14 +4969,14 @@ export default function FeesPage() {
                         setPaymentMethodMode('UPI');
                         setPaymentMethod('UPI');
                       }}
-                      className={`py-2 px-2 rounded-xl text-xs font-bold border transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                      className={`py-2 px-1 sm:px-2 rounded-xl text-[11px] sm:text-xs font-bold border transition-all flex items-center justify-center gap-1 sm:gap-1.5 cursor-pointer ${
                         paymentMethodMode === 'UPI'
                           ? 'bg-blue-600 text-white border-blue-700 shadow-xs ring-2 ring-blue-500/20'
                           : 'bg-white text-neutral-700 border-neutral-300 hover:bg-neutral-100'
                       }`}
                     >
-                      <Smartphone className="w-4 h-4" />
-                      <span>UPI</span>
+                      <Smartphone className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
+                      <span className="truncate">UPI</span>
                     </button>
 
                     <button
@@ -3818,14 +4991,14 @@ export default function FeesPage() {
                           setPaymentAmount(modalNetPayable);
                         }
                       }}
-                      className={`py-2 px-2 rounded-xl text-xs font-bold border transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                      className={`py-2 px-1 sm:px-2 rounded-xl text-[11px] sm:text-xs font-bold border transition-all flex items-center justify-center gap-1 sm:gap-1.5 cursor-pointer ${
                         paymentMethodMode === 'CASH_UPI'
                           ? 'bg-[#FF8500] text-white border-orange-600 shadow-xs ring-2 ring-orange-500/20'
                           : 'bg-white text-neutral-700 border-neutral-300 hover:bg-neutral-100'
                       }`}
                     >
-                      <ArrowLeftRight className="w-4 h-4" />
-                      <span>Cash + UPI</span>
+                      <ArrowLeftRight className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
+                      <span className="truncate">Cash + UPI</span>
                     </button>
                   </div>
                 </div>
@@ -3833,14 +5006,14 @@ export default function FeesPage() {
                 {/* Amount Inputs for CASH, UPI, or CASH_UPI */}
                 {paymentMethodMode === 'CASH_UPI' ? (
                   /* Cash + UPI Split Mode */
-                  <div className="space-y-2 bg-white p-3 rounded-xl border border-orange-200">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-bold text-neutral-800 flex items-center gap-1.5">
+                  <div className="space-y-2 bg-white p-2.5 sm:p-3 rounded-xl border border-orange-200">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5">
+                      <span className="text-xs font-bold text-neutral-800 flex items-center gap-1.5 shrink-0">
                         <ArrowLeftRight className="w-3.5 h-3.5 text-[#FF8500]" />
                         <span>Split Distribution:</span>
                       </span>
                       {/* Presets for Split based on Net Payable */}
-                      <div className="flex items-center gap-1.5">
+                      <div className="flex flex-wrap items-center gap-1">
                         <button
                           type="button"
                           onClick={() => {
@@ -3849,9 +5022,9 @@ export default function FeesPage() {
                             setSplitUpiAmount(modalNetPayable - half);
                             setPaymentAmount(modalNetPayable);
                           }}
-                          className="px-2 py-0.5 text-[10px] font-bold rounded bg-neutral-100 hover:bg-neutral-200 text-neutral-800 transition cursor-pointer"
+                          className="px-2 py-0.5 text-[9px] sm:text-[10px] font-bold rounded bg-neutral-100 hover:bg-neutral-200 text-neutral-800 transition cursor-pointer"
                         >
-                          50/50 Equal Split
+                          50/50 Split
                         </button>
                         <button
                           type="button"
@@ -3860,7 +5033,7 @@ export default function FeesPage() {
                             setSplitUpiAmount(0);
                             setPaymentAmount(modalNetPayable);
                           }}
-                          className="px-2 py-0.5 text-[10px] font-bold rounded bg-neutral-100 hover:bg-neutral-200 text-neutral-800 transition cursor-pointer"
+                          className="px-2 py-0.5 text-[9px] sm:text-[10px] font-bold rounded bg-neutral-100 hover:bg-neutral-200 text-neutral-800 transition cursor-pointer"
                         >
                           All Cash
                         </button>
@@ -3871,14 +5044,14 @@ export default function FeesPage() {
                             setSplitUpiAmount(modalNetPayable);
                             setPaymentAmount(modalNetPayable);
                           }}
-                          className="px-2 py-0.5 text-[10px] font-bold rounded bg-neutral-100 hover:bg-neutral-200 text-neutral-800 transition cursor-pointer"
+                          className="px-2 py-0.5 text-[9px] sm:text-[10px] font-bold rounded bg-neutral-100 hover:bg-neutral-200 text-neutral-800 transition cursor-pointer"
                         >
                           All UPI
                         </button>
                       </div>
                     </div>
 
-                    <div className="grid grid-cols-2 gap-2.5">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-2.5">
                       <div>
                         <label className="text-[11px] font-semibold text-neutral-700 block mb-1">
                           Cash Portion (₹)
@@ -3933,8 +5106,8 @@ export default function FeesPage() {
                   </div>
                 ) : (
                   /* Standard Cash or UPI Mode */
-                  <div className="space-y-2 bg-white p-3 rounded-xl border border-neutral-200">
-                    <div className="flex items-center justify-between">
+                  <div className="space-y-2 bg-white p-2.5 sm:p-3 rounded-xl border border-neutral-200">
+                    <div className="flex flex-wrap items-center justify-between gap-1.5">
                       <label className="text-xs font-bold text-neutral-800">
                         {paymentMethodMode === 'CASH' ? 'Cash Collection Amount (₹)' : 'UPI Collection Amount (₹)'}
                       </label>
@@ -3996,18 +5169,18 @@ export default function FeesPage() {
                     ? 'bg-emerald-50/80 border-emerald-200 text-emerald-950'
                     : 'bg-white border-neutral-200 text-neutral-700'
                 }`}>
-                  <div className="flex items-center justify-between">
+                  <div className="flex flex-wrap items-center justify-between gap-1">
                     <span className="font-bold text-[11px] flex items-center gap-1.5">
                       {isExcessPayment ? (
                         <>
-                          <AlertCircle className="w-3.5 h-3.5 text-rose-600" />
+                          <AlertCircle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
                           <span className="text-rose-700">Amount exceeds net payable</span>
                         </>
                       ) : isPartialPayment ? (
                         <span className="text-amber-800">PARTIAL PAYMENT</span>
                       ) : isFullPayment ? (
                         <>
-                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700" />
+                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
                           <span className="text-emerald-800">
                             {appliedPaymentDiscount > 0 ? 'SETTLED WITH CONCESSION' : 'FULL SETTLEMENT'}
                           </span>
@@ -4016,31 +5189,31 @@ export default function FeesPage() {
                         <span>Settlement Summary</span>
                       )}
                     </span>
-                    <span className="text-[11px] font-mono">
+                    <span className="text-[11px] font-mono shrink-0">
                       Status: <strong>{isPartialPayment ? 'PARTIAL' : isFullPayment ? 'PAID' : 'PENDING'}</strong>
                     </span>
                   </div>
 
-                  <div className="grid grid-cols-4 gap-1.5 mt-1.5 pt-1.5 border-t border-black/10 text-center">
-                    <div className="bg-white/90 p-1 rounded-md border border-black/5">
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 mt-1.5 pt-1.5 border-t border-black/10 text-center">
+                    <div className="bg-white/90 p-1.5 rounded-md border border-black/5">
                       <span className="text-[9px] text-neutral-500 uppercase block">Fee Due</span>
                       <span className="font-mono font-bold text-neutral-900 text-xs">
                         ₹{modalTargetBalance.toLocaleString()}
                       </span>
                     </div>
-                    <div className="bg-white/90 p-1 rounded-md border border-black/5">
+                    <div className="bg-white/90 p-1.5 rounded-md border border-black/5">
                       <span className="text-[9px] text-neutral-500 uppercase block">Discount</span>
                       <span className="font-mono font-bold text-amber-700 text-xs">
                         {appliedPaymentDiscount > 0 ? `-₹${appliedPaymentDiscount.toLocaleString()}` : '₹0'}
                       </span>
                     </div>
-                    <div className="bg-white/90 p-1 rounded-md border border-black/5">
+                    <div className="bg-white/90 p-1.5 rounded-md border border-black/5">
                       <span className="text-[9px] text-neutral-500 uppercase block">Paying Now</span>
                       <span className="font-mono font-bold text-[#CC6B00] text-xs">
                         ₹{(Number(paymentAmount) || 0).toLocaleString()}
                       </span>
                     </div>
-                    <div className="bg-white/90 p-1 rounded-md border border-black/5">
+                    <div className="bg-white/90 p-1.5 rounded-md border border-black/5">
                       <span className="text-[9px] text-neutral-500 uppercase block">Remaining</span>
                       <span className={`font-mono font-bold text-xs ${modalRemainingBalance > 0 ? 'text-amber-700' : 'text-emerald-700'}`}>
                         ₹{modalRemainingBalance.toLocaleString()}
@@ -4050,13 +5223,19 @@ export default function FeesPage() {
                 </div>
 
                 {/* Footer Action Buttons */}
-                <div className="flex justify-end gap-2 pt-2 border-t border-neutral-200">
-                  <Button type="button" variant="outline" onClick={() => setShowPaymentModal(false)}>
+                <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 pt-2 border-t border-neutral-200">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="w-full sm:w-auto"
+                    onClick={() => setShowPaymentModal(false)}
+                  >
                     Cancel
                   </Button>
                   <Button
                     type="submit"
                     variant="primary"
+                    className="w-full sm:w-auto"
                     disabled={
                       loading ||
                       isExcessPayment ||
@@ -4946,6 +6125,129 @@ export default function FeesPage() {
               </div>
             </div>
 
+            {/* Staff Pay Rule / Faculty Settlement Card */}
+            <div className="p-4 bg-neutral-50 rounded-xl border border-neutral-200">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2">
+                  <div className="w-7 h-7 rounded-lg bg-orange-100 text-[#FF8500] flex items-center justify-center font-bold text-xs">
+                    <Sparkles className="w-4 h-4 text-[#FF8500]" />
+                  </div>
+                  <div>
+                    <h4 className="text-xs font-bold text-neutral-900">Staff Pay Rule & Faculty Settlement</h4>
+                    <p className="text-[11px] text-neutral-500">
+                      Automated faculty settlement rule applied when student fees for this course are collected
+                    </p>
+                  </div>
+                </div>
+
+                {configForm.classId && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const matchingAssign = facultyAssignments.find(
+                        (as) => as.classId === configForm.classId && (!configForm.subjectId || as.subjectId === configForm.subjectId),
+                      );
+                      if (matchingAssign) {
+                        handleOpenEditStaffPayRule(matchingAssign);
+                      } else {
+                        handleOpenCreateStaffPayRule(configForm.classId, configForm.subjectId);
+                      }
+                    }}
+                    className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#CC6B00] hover:text-[#995000] bg-orange-50 hover:bg-orange-100/70 border border-orange-200/60 px-2.5 py-1 rounded-lg transition cursor-pointer"
+                  >
+                    <Settings className="w-3 h-3" />
+                    <span>Configure Pay Rule</span>
+                  </button>
+                )}
+              </div>
+
+              {(() => {
+                if (!configForm.classId) {
+                  return (
+                    <div className="p-3 bg-white rounded-lg border border-dashed border-neutral-200 text-center text-xs text-neutral-400">
+                      Select a Course above to preview or configure the assigned Faculty Staff Pay Rule.
+                    </div>
+                  );
+                }
+
+                const matchingAssign = facultyAssignments.find(
+                  (as) => as.classId === configForm.classId && (!configForm.subjectId || as.subjectId === configForm.subjectId),
+                );
+
+                if (matchingAssign) {
+                  const badge = getSettlementBadgeDisplay(matchingAssign);
+                  const effectiveFee = Math.max(0, configForm.amount - (Number(configForm.discountAmount) || 0));
+                  return (
+                    <div className="bg-white p-3 rounded-lg border border-neutral-200 space-y-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <div className="w-6 h-6 rounded-full bg-orange-100 text-[#CC6B00] flex items-center justify-center font-bold text-[10px] uppercase">
+                            {matchingAssign.staffName ? matchingAssign.staffName.charAt(0) : 'F'}
+                          </div>
+                          <div>
+                            <span className="text-xs font-bold text-neutral-900">{matchingAssign.staffName}</span>
+                            <span className="text-[11px] text-neutral-400 ml-1.5 font-normal">
+                              ({matchingAssign.designation || 'Faculty'})
+                            </span>
+                          </div>
+                        </div>
+
+                        <span
+                          className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold border ${badge.badgeClass}`}
+                          title={badge.tooltip}
+                        >
+                          <Sparkles className="w-3 h-3 text-[#FF8500]" />
+                          <span>{badge.text}</span>
+                        </span>
+                      </div>
+
+                      <div className="text-[11px] text-neutral-600 bg-neutral-50 p-2 rounded border border-neutral-100 flex items-center justify-between">
+                        <span className="font-medium text-neutral-500">Revenue Settlement Formula:</span>
+                        <span className="font-mono font-semibold text-neutral-800">{badge.tooltip}</span>
+                      </div>
+
+                      <div className="flex items-center justify-end gap-2 pt-1 border-t border-neutral-100">
+                        <button
+                          type="button"
+                          onClick={() => handleOpenEditStaffPayRule(matchingAssign)}
+                          className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#FF8500] hover:underline cursor-pointer"
+                        >
+                          <Pencil className="w-3 h-3" /> Edit Rule
+                        </button>
+                        <span className="text-neutral-300">•</span>
+                        <button
+                          type="button"
+                          onClick={() => handleInitiateDeleteStaffPayRule(matchingAssign)}
+                          className="inline-flex items-center gap-1 text-[11px] font-semibold text-neutral-500 hover:text-red-600 hover:underline cursor-pointer"
+                        >
+                          <Trash2 className="w-3 h-3" /> Delete Rule
+                        </button>
+                      </div>
+                    </div>
+                  );
+                }
+
+                return (
+                  <div className="p-3 bg-white rounded-lg border border-neutral-200 flex items-center justify-between">
+                    <div>
+                      <span className="text-xs font-medium text-neutral-700">No custom faculty rule assigned</span>
+                      <p className="text-[10px] text-neutral-400 mt-0.5">
+                        Will inherit default Academy 70/30 revenue share unless a custom rule is set.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleOpenCreateStaffPayRule(configForm.classId, configForm.subjectId)}
+                      className="inline-flex items-center gap-1 text-[11px] font-bold text-[#FF8500] hover:text-[#CC6B00]"
+                    >
+                      <Plus className="w-3 h-3" />
+                      <span>Set Rule Now</span>
+                    </button>
+                  </div>
+                );
+              })()}
+            </div>
+
             {/* Fee Replication to Enrolled Students Section */}
             <div className="p-4 bg-gradient-to-r from-orange-50/90 to-amber-50/90 rounded-xl border border-orange-200">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-2.5">
@@ -5060,6 +6362,14 @@ export default function FeesPage() {
               <div className="space-y-4 text-xs font-sans">
                 {/* Receipt Header */}
                 <div className="text-center pb-3 border-b border-neutral-200">
+                  <img
+                    src="/logo.png"
+                    alt="RC Academy Logo"
+                    className="h-12 w-auto mx-auto mb-1.5 object-contain"
+                    onError={(e) => {
+                      (e.target as HTMLElement).style.display = 'none';
+                    }}
+                  />
                   <h2 className="text-base font-bold text-black tracking-tight">{selectedReceipt.academy.name}</h2>
                   <p className="text-[11px] text-neutral-500">{selectedReceipt.academy.tagline}</p>
                   <p className="text-[10px] text-neutral-400 mt-0.5">{selectedReceipt.academy.address} • {selectedReceipt.academy.contact}</p>
@@ -5209,14 +6519,28 @@ export default function FeesPage() {
                 )}
 
                 {/* Actions */}
-                <div className="flex justify-between items-center pt-3 border-t border-neutral-100">
+                <div className="flex justify-between items-center pt-3 border-t border-neutral-100 gap-2 flex-wrap">
                   <Button variant="outline" onClick={() => setSelectedReceipt(null)}>
                     Close
                   </Button>
-                  <Button variant="primary" onClick={() => window.print()}>
-                    <Printer className="w-4 h-4" />
-                    Print Official Receipt
-                  </Button>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="outline"
+                      onClick={() => handleDownloadReceiptAsPdf(selectedReceipt)}
+                      className="flex items-center gap-1.5 border-emerald-300 text-emerald-800 bg-emerald-50 hover:bg-emerald-100 font-semibold"
+                    >
+                      <Download className="w-4 h-4 text-emerald-600" />
+                      Download PDF Invoice
+                    </Button>
+                    <Button
+                      variant="primary"
+                      onClick={() => handleDownloadReceiptAsPdf(selectedReceipt)}
+                      className="flex items-center gap-1.5 bg-[#0f172a] hover:bg-black font-semibold text-white shadow-sm"
+                    >
+                      <Printer className="w-4 h-4" />
+                      Print Official Receipt
+                    </Button>
+                  </div>
                 </div>
               </div>
             );
@@ -5320,6 +6644,789 @@ export default function FeesPage() {
               </Button>
             </div>
           </form>
+        </Modal>
+
+        {/* ==================================================================== */}
+        {/* MODAL 7B: STAFF PAY RULE CONFIGURATION (FACULTY SETTLEMENT) */}
+        {/* ==================================================================== */}
+        <Modal
+          isOpen={showStaffPayRuleModal}
+          onClose={() => setShowStaffPayRuleModal(false)}
+          title={editingStaffAssignmentId ? 'Edit Staff Pay Rule' : 'Configure Staff Pay Rule'}
+          description="Configure separate faculty payouts based on student enrollment tier (All subjects bundle vs individual single subject)."
+          maxWidth="6xl"
+        >
+          <form onSubmit={handleSaveStaffPayRule} className="space-y-3">
+            {/* Top Row: Offering Assignment (Left) & Rule Model Mode (Right) */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 items-stretch">
+              {/* Left 7 cols: Faculty & Offering Selection */}
+              <div className="lg:col-span-7 p-3 bg-neutral-50 rounded-xl border border-neutral-200">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-neutral-500 block mb-2">
+                  1. Faculty Member & Course Offering
+                </span>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+                  <div>
+                    <label className="text-[10.5px] font-semibold text-neutral-700 block mb-1">
+                      Faculty Member <span className="text-red-500">*</span>
+                    </label>
+                    <select
+                      value={staffPayRuleForm.userId}
+                      onChange={(e) => setStaffPayRuleForm((prev) => ({ ...prev, userId: e.target.value }))}
+                      disabled={Boolean(editingStaffAssignmentId)}
+                      className="w-full px-2 py-1.5 bg-white border border-neutral-300 rounded-lg text-xs text-black disabled:bg-neutral-100 disabled:cursor-not-allowed"
+                      required
+                    >
+                      <option value="">-- Faculty --</option>
+                      {staffOptions.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.firstName ? `${s.firstName} ${s.lastName}` : (s.name || s.email)} ({s.designation || s.role || 'Faculty'})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="text-[10.5px] font-semibold text-neutral-700 block mb-1">
+                      Course <span className="text-red-500">*</span>
+                    </label>
+                    <select
+                      value={staffPayRuleForm.classId}
+                      onChange={(e) => {
+                        const newClassId = e.target.value;
+                        setStaffPayRuleForm((prev) => ({
+                          ...prev,
+                          classId: newClassId,
+                          batchId: '',
+                          subjectId: '',
+                        }));
+                      }}
+                      disabled={Boolean(editingStaffAssignmentId)}
+                      className="w-full px-2 py-1.5 bg-white border border-neutral-300 rounded-lg text-xs text-black disabled:bg-neutral-100 disabled:cursor-not-allowed"
+                      required
+                    >
+                      <option value="">-- Course --</option>
+                      {availableCourses.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name} {c.code ? `(${c.code})` : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {(() => {
+                    const selectedCourse = availableCourses.find((c) => c.id === staffPayRuleForm.classId);
+                    const courseBatches = selectedCourse?.batches || [];
+                    const courseSubjects = selectedCourse?.subjects || [];
+
+                    return (
+                      <>
+                        <div>
+                          <label className="text-[10.5px] font-semibold text-neutral-700 block mb-1">
+                            Batch <span className="text-neutral-400 font-normal">(Opt)</span>
+                          </label>
+                          <select
+                            value={staffPayRuleForm.batchId}
+                            onChange={(e) => setStaffPayRuleForm((prev) => ({ ...prev, batchId: e.target.value }))}
+                            disabled={Boolean(editingStaffAssignmentId) || courseBatches.length === 0}
+                            className="w-full px-2 py-1.5 bg-white border border-neutral-300 rounded-lg text-xs text-black disabled:bg-neutral-100"
+                          >
+                            <option value="">All Batches</option>
+                            {courseBatches.map((b: any) => (
+                              <option key={b.id} value={b.id}>
+                                {b.name}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="text-[10.5px] font-semibold text-neutral-700 block mb-1">
+                            Subject <span className="text-neutral-400 font-normal">(Opt)</span>
+                          </label>
+                          <select
+                            value={staffPayRuleForm.subjectId}
+                            onChange={(e) => setStaffPayRuleForm((prev) => ({ ...prev, subjectId: e.target.value }))}
+                            className="w-full px-2 py-1.5 bg-white border border-neutral-300 rounded-lg text-xs text-black"
+                          >
+                            <option value="">All Subjects</option>
+                            {courseSubjects.map((s: any) => (
+                              <option key={s.id} value={s.id}>
+                                {s.name} {s.code ? `(${s.code})` : ''}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </>
+                    );
+                  })()}
+                </div>
+              </div>
+
+              {/* Right 5 cols: Compensation Mode & Presets */}
+              <div className="lg:col-span-5 p-3 bg-neutral-50 rounded-xl border border-neutral-200 flex flex-col justify-between">
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-neutral-500">
+                      2. Rule Model Mode
+                    </span>
+                    <span className="text-[10px] text-neutral-400 font-medium">Select type</span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setStaffPayRuleForm((prev) => ({
+                          ...prev,
+                          settlement: {
+                            ...prev.settlement,
+                            mode: 'STUDENT_TIER_BASED',
+                            includeTwoSubjects: true,
+                          },
+                        }))
+                      }
+                      className={`p-1.5 rounded-lg border text-center transition cursor-pointer ${
+                        staffPayRuleForm.settlement.mode === 'STUDENT_TIER_BASED'
+                          ? 'border-[#FF8500] bg-orange-100/70 text-neutral-900 font-bold shadow-2xs ring-1 ring-[#FF8500]'
+                          : 'border-neutral-200 bg-white text-neutral-600 hover:bg-neutral-100 font-medium'
+                      }`}
+                    >
+                      <div className="text-[11px] leading-tight">Tier-Based</div>
+                      <div className="text-[9.5px] text-[#CC6B00] font-semibold">All vs Single</div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setStaffPayRuleForm((prev) => ({
+                          ...prev,
+                          settlement: { ...prev.settlement, mode: 'PER_STUDENT_FIXED' },
+                        }))
+                      }
+                      className={`p-1.5 rounded-lg border text-center transition cursor-pointer ${
+                        staffPayRuleForm.settlement.mode === 'PER_STUDENT_FIXED'
+                          ? 'border-[#FF8500] bg-orange-100/70 text-neutral-900 font-bold shadow-2xs ring-1 ring-[#FF8500]'
+                          : 'border-neutral-200 bg-white text-neutral-600 hover:bg-neutral-100 font-medium'
+                      }`}
+                    >
+                      <div className="text-[11px] leading-tight">Per-Student ₹</div>
+                      <div className="text-[9.5px] text-neutral-500">Flat Rupee</div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setStaffPayRuleForm((prev) => ({
+                          ...prev,
+                          settlement: { ...prev.settlement, mode: 'REVENUE_SHARE_PERCENTAGE' },
+                        }))
+                      }
+                      className={`p-1.5 rounded-lg border text-center transition cursor-pointer ${
+                        staffPayRuleForm.settlement.mode === 'REVENUE_SHARE_PERCENTAGE'
+                          ? 'border-[#FF8500] bg-orange-100/70 text-neutral-900 font-bold shadow-2xs ring-1 ring-[#FF8500]'
+                          : 'border-neutral-200 bg-white text-neutral-600 hover:bg-neutral-100 font-medium'
+                      }`}
+                    >
+                      <div className="text-[11px] leading-tight">Rev Share %</div>
+                      <div className="text-[9.5px] text-neutral-500">Flat % Split</div>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Quick Presets Bar */}
+                <div className="mt-2 pt-2 border-t border-neutral-200/60 flex items-center gap-1.5 overflow-x-auto">
+                  <span className="text-[9.5px] font-bold text-neutral-500 uppercase shrink-0">Presets:</span>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setStaffPayRuleForm((prev) => ({
+                        ...prev,
+                        settlement: {
+                          ...defaultSettlementState,
+                          mode: 'STUDENT_TIER_BASED',
+                          allSubjectsType: 'PERCENTAGE',
+                          allSubjectsValue: 25,
+                          twoSubjectsType: 'PERCENTAGE',
+                          twoSubjectsValue: 35,
+                          singleSubjectType: 'PERCENTAGE',
+                          singleSubjectValue: 70,
+                          includeTwoSubjects: true,
+                        },
+                      }))
+                    }
+                    className="px-2 py-0.5 rounded text-[10.5px] font-semibold bg-white border border-neutral-200 hover:border-[#FF8500] hover:text-[#FF8500] whitespace-nowrap transition cursor-pointer"
+                  >
+                    12th Class: All 25% • Single 70%
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setStaffPayRuleForm((prev) => ({
+                        ...prev,
+                        settlement: {
+                          ...defaultSettlementState,
+                          mode: 'STUDENT_TIER_BASED',
+                          allSubjectsType: 'FIXED_AMOUNT',
+                          allSubjectsValue: 1200,
+                          twoSubjectsType: 'FIXED_AMOUNT',
+                          twoSubjectsValue: 1200,
+                          singleSubjectType: 'FIXED_AMOUNT',
+                          singleSubjectValue: 1200,
+                          includeTwoSubjects: true,
+                        },
+                      }))
+                    }
+                    className="px-2 py-0.5 rounded text-[10.5px] font-semibold bg-white border border-neutral-200 hover:border-[#FF8500] hover:text-[#FF8500] whitespace-nowrap transition cursor-pointer"
+                  >
+                    Fixed ₹1,200 / Student
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setStaffPayRuleForm((prev) => ({
+                        ...prev,
+                        settlement: {
+                          ...defaultSettlementState,
+                          mode: 'REVENUE_SHARE_PERCENTAGE',
+                          staffSharePercentage: 70,
+                        },
+                      }))
+                    }
+                    className="px-2 py-0.5 rounded text-[10.5px] font-semibold bg-white border border-neutral-200 hover:border-[#FF8500] hover:text-[#FF8500] whitespace-nowrap transition cursor-pointer"
+                  >
+                    70/30 Share
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Mode 1: STUDENT_TIER_BASED - WIDE 3-COLUMN SEPARATION */}
+            {staffPayRuleForm.settlement.mode === 'STUDENT_TIER_BASED' && (
+              <div className="space-y-2.5">
+                {/* 3 Dedicated Side-by-Side Cards (Takes full 6xl width) */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  {/* TIER 1: ALL SUBJECTS BUNDLE */}
+                  <div className="bg-gradient-to-b from-blue-50/60 to-white p-3 rounded-xl border border-blue-200 shadow-2xs flex flex-col justify-between">
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-blue-100 text-blue-900 border border-blue-200">
+                          <Sparkles className="w-3 h-3 text-blue-600" />
+                          <span>All Subjects (Bundle)</span>
+                        </span>
+                        <span className="text-[10px] font-mono font-bold text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded">3+ Subjects</span>
+                      </div>
+                      <p className="text-[10.5px] text-neutral-600 mb-2">
+                        Student joins Maths + Chem + Physics paying <strong>₹5,000 bundle fee</strong>.
+                      </p>
+
+                      <div className="space-y-1.5">
+                        <div className="flex items-center gap-1 bg-neutral-100 p-0.5 rounded-lg text-[11px]">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setStaffPayRuleForm((prev) => ({
+                                ...prev,
+                                settlement: { ...prev.settlement, allSubjectsType: 'PERCENTAGE' },
+                              }))
+                            }
+                            className={`flex-1 py-1 rounded font-semibold transition text-center cursor-pointer ${
+                              staffPayRuleForm.settlement.allSubjectsType === 'PERCENTAGE'
+                                ? 'bg-white text-blue-900 shadow-xs'
+                                : 'text-neutral-500 hover:text-black'
+                            }`}
+                          >
+                            % Share
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setStaffPayRuleForm((prev) => ({
+                                ...prev,
+                                settlement: { ...prev.settlement, allSubjectsType: 'FIXED_AMOUNT' },
+                              }))
+                            }
+                            className={`flex-1 py-1 rounded font-semibold transition text-center cursor-pointer ${
+                              staffPayRuleForm.settlement.allSubjectsType === 'FIXED_AMOUNT'
+                                ? 'bg-white text-blue-900 shadow-xs'
+                                : 'text-neutral-500 hover:text-black'
+                            }`}
+                          >
+                            Fixed Rupee (₹)
+                          </button>
+                        </div>
+
+                        <div className="relative">
+                          <input
+                            type="number"
+                            min="0"
+                            step={staffPayRuleForm.settlement.allSubjectsType === 'PERCENTAGE' ? '1' : '50'}
+                            value={staffPayRuleForm.settlement.allSubjectsValue}
+                            onChange={(e) =>
+                              setStaffPayRuleForm((prev) => ({
+                                ...prev,
+                                settlement: {
+                                  ...prev.settlement,
+                                  allSubjectsValue: Number(e.target.value) || 0,
+                                },
+                              }))
+                            }
+                            className="w-full pl-3 pr-8 py-1.5 bg-white border border-blue-300 rounded-lg text-sm font-mono font-bold text-neutral-900 focus:ring-2 focus:ring-blue-400/30"
+                            placeholder={staffPayRuleForm.settlement.allSubjectsType === 'PERCENTAGE' ? '25' : '1200'}
+                            required
+                          />
+                          <span className="absolute right-3 top-2 text-xs font-bold text-neutral-400">
+                            {staffPayRuleForm.settlement.allSubjectsType === 'PERCENTAGE' ? '%' : '₹'}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Live Calculation Badge on ₹5,000 Bundle */}
+                    <div className="mt-2.5 p-2 bg-blue-50/80 rounded-lg border border-blue-200/60 text-[11px]">
+                      <span className="font-semibold text-blue-900 block text-[10.5px]">Simulation on ₹5,000 Bundle:</span>
+                      {(() => {
+                        const earned =
+                          staffPayRuleForm.settlement.allSubjectsType === 'PERCENTAGE'
+                            ? Math.round((5000 * staffPayRuleForm.settlement.allSubjectsValue) / 100)
+                            : staffPayRuleForm.settlement.allSubjectsValue;
+                        const academy = Math.max(0, 5000 - earned);
+                        return (
+                          <div className="mt-0.5 flex justify-between items-center font-mono text-[10.5px]">
+                            <span>Faculty: <strong className="text-blue-800">₹{earned.toLocaleString('en-IN')}</strong></span>
+                            <span>Academy: <strong className="text-emerald-700">₹{academy.toLocaleString('en-IN')}</strong></span>
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  </div>
+
+                  {/* TIER 2: 2 SUBJECTS COMBO */}
+                  <div className="bg-gradient-to-b from-amber-50/60 to-white p-3 rounded-xl border border-amber-200 shadow-2xs flex flex-col justify-between">
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-amber-100 text-amber-900 border border-amber-200">
+                          <BookOpen className="w-3 h-3 text-amber-600" />
+                          <span>2-Subject Combo</span>
+                        </span>
+                        <span className="text-[10px] font-mono font-bold text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded">2 Subjects</span>
+                      </div>
+                      <p className="text-[10.5px] text-neutral-600 mb-2">
+                        Student joins 2 subjects (Maths + Physics) paying <strong>₹3,500 combo fee</strong>.
+                      </p>
+
+                      <div className="space-y-1.5">
+                        <div className="flex items-center gap-1 bg-neutral-100 p-0.5 rounded-lg text-[11px]">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setStaffPayRuleForm((prev) => ({
+                                ...prev,
+                                settlement: { ...prev.settlement, twoSubjectsType: 'PERCENTAGE', includeTwoSubjects: true },
+                              }))
+                            }
+                            className={`flex-1 py-1 rounded font-semibold transition text-center cursor-pointer ${
+                              staffPayRuleForm.settlement.twoSubjectsType === 'PERCENTAGE'
+                                ? 'bg-white text-amber-900 shadow-xs'
+                                : 'text-neutral-500 hover:text-black'
+                            }`}
+                          >
+                            % Share
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setStaffPayRuleForm((prev) => ({
+                                ...prev,
+                                settlement: { ...prev.settlement, twoSubjectsType: 'FIXED_AMOUNT', includeTwoSubjects: true },
+                              }))
+                            }
+                            className={`flex-1 py-1 rounded font-semibold transition text-center cursor-pointer ${
+                              staffPayRuleForm.settlement.twoSubjectsType === 'FIXED_AMOUNT'
+                                ? 'bg-white text-amber-900 shadow-xs'
+                                : 'text-neutral-500 hover:text-black'
+                            }`}
+                          >
+                            Fixed Rupee (₹)
+                          </button>
+                        </div>
+
+                        <div className="relative">
+                          <input
+                            type="number"
+                            min="0"
+                            step={staffPayRuleForm.settlement.twoSubjectsType === 'PERCENTAGE' ? '1' : '50'}
+                            value={staffPayRuleForm.settlement.twoSubjectsValue}
+                            onChange={(e) =>
+                              setStaffPayRuleForm((prev) => ({
+                                ...prev,
+                                settlement: {
+                                  ...prev.settlement,
+                                  twoSubjectsValue: Number(e.target.value) || 0,
+                                  includeTwoSubjects: true,
+                                },
+                              }))
+                            }
+                            className="w-full pl-3 pr-8 py-1.5 bg-white border border-amber-300 rounded-lg text-sm font-mono font-bold text-neutral-900 focus:ring-2 focus:ring-amber-400/30"
+                            placeholder={staffPayRuleForm.settlement.twoSubjectsType === 'PERCENTAGE' ? '35' : '1000'}
+                          />
+                          <span className="absolute right-3 top-2 text-xs font-bold text-neutral-400">
+                            {staffPayRuleForm.settlement.twoSubjectsType === 'PERCENTAGE' ? '%' : '₹'}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Live Calculation Badge on ₹3,500 Combo */}
+                    <div className="mt-2.5 p-2 bg-amber-50/80 rounded-lg border border-amber-200/60 text-[11px]">
+                      <span className="font-semibold text-amber-900 block text-[10.5px]">Simulation on ₹3,500 Combo:</span>
+                      {(() => {
+                        const earned =
+                          staffPayRuleForm.settlement.twoSubjectsType === 'PERCENTAGE'
+                            ? Math.round((3500 * staffPayRuleForm.settlement.twoSubjectsValue) / 100)
+                            : staffPayRuleForm.settlement.twoSubjectsValue;
+                        const academy = Math.max(0, 3500 - earned);
+                        return (
+                          <div className="mt-0.5 flex justify-between items-center font-mono text-[10.5px]">
+                            <span>Faculty: <strong className="text-amber-800">₹{earned.toLocaleString('en-IN')}</strong></span>
+                            <span>Academy: <strong className="text-emerald-700">₹{academy.toLocaleString('en-IN')}</strong></span>
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  </div>
+
+                  {/* TIER 3: SINGLE 1-SUBJECT */}
+                  <div className="bg-gradient-to-b from-orange-50/60 to-white p-3 rounded-xl border border-orange-200 shadow-2xs flex flex-col justify-between">
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-orange-100 text-orange-950 border border-orange-200">
+                          <DollarSign className="w-3 h-3 text-[#FF8500]" />
+                          <span>1 Single Subject</span>
+                        </span>
+                        <span className="text-[10px] font-mono font-bold text-[#CC6B00] bg-orange-50 px-1.5 py-0.5 rounded">1 Subject Only</span>
+                      </div>
+                      <p className="text-[10.5px] text-neutral-600 mb-2">
+                        Student joins <strong>only 1 subject (Maths)</strong> paying <strong>₹1,800 subject fee</strong>.
+                      </p>
+
+                      <div className="space-y-1.5">
+                        <div className="flex items-center gap-1 bg-neutral-100 p-0.5 rounded-lg text-[11px]">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setStaffPayRuleForm((prev) => ({
+                                ...prev,
+                                settlement: { ...prev.settlement, singleSubjectType: 'PERCENTAGE' },
+                              }))
+                            }
+                            className={`flex-1 py-1 rounded font-semibold transition text-center cursor-pointer ${
+                              staffPayRuleForm.settlement.singleSubjectType === 'PERCENTAGE'
+                                ? 'bg-white text-orange-950 shadow-xs'
+                                : 'text-neutral-500 hover:text-black'
+                            }`}
+                          >
+                            % Share
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setStaffPayRuleForm((prev) => ({
+                                ...prev,
+                                settlement: { ...prev.settlement, singleSubjectType: 'FIXED_AMOUNT' },
+                              }))
+                            }
+                            className={`flex-1 py-1 rounded font-semibold transition text-center cursor-pointer ${
+                              staffPayRuleForm.settlement.singleSubjectType === 'FIXED_AMOUNT'
+                                ? 'bg-white text-orange-950 shadow-xs'
+                                : 'text-neutral-500 hover:text-black'
+                            }`}
+                          >
+                            Fixed Rupee (₹)
+                          </button>
+                        </div>
+
+                        <div className="relative">
+                          <input
+                            type="number"
+                            min="0"
+                            step={staffPayRuleForm.settlement.singleSubjectType === 'PERCENTAGE' ? '1' : '50'}
+                            value={staffPayRuleForm.settlement.singleSubjectValue}
+                            onChange={(e) =>
+                              setStaffPayRuleForm((prev) => ({
+                                ...prev,
+                                settlement: {
+                                  ...prev.settlement,
+                                  singleSubjectValue: Number(e.target.value) || 0,
+                                },
+                              }))
+                            }
+                            className="w-full pl-3 pr-8 py-1.5 bg-white border border-orange-300 rounded-lg text-sm font-mono font-bold text-neutral-900 focus:ring-2 focus:ring-[#FF8500]/30"
+                            placeholder={staffPayRuleForm.settlement.singleSubjectType === 'PERCENTAGE' ? '70' : '1260'}
+                            required
+                          />
+                          <span className="absolute right-3 top-2 text-xs font-bold text-neutral-400">
+                            {staffPayRuleForm.settlement.singleSubjectType === 'PERCENTAGE' ? '%' : '₹'}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Live Calculation Badge on ₹1,800 Single Fee */}
+                    <div className="mt-2.5 p-2 bg-orange-50/80 rounded-lg border border-orange-200/60 text-[11px]">
+                      <span className="font-semibold text-orange-900 block text-[10.5px]">Simulation on ₹1,800 Single Subject:</span>
+                      {(() => {
+                        const earned =
+                          staffPayRuleForm.settlement.singleSubjectType === 'PERCENTAGE'
+                            ? Math.round((1800 * staffPayRuleForm.settlement.singleSubjectValue) / 100)
+                            : staffPayRuleForm.settlement.singleSubjectValue;
+                        const academy = Math.max(0, 1800 - earned);
+                        return (
+                          <div className="mt-0.5 flex justify-between items-center font-mono text-[10.5px]">
+                            <span>Faculty: <strong className="text-[#CC6B00]">₹{earned.toLocaleString('en-IN')}</strong></span>
+                            <span>Academy: <strong className="text-emerald-700">₹{academy.toLocaleString('en-IN')}</strong></span>
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Real-World Scenario Side-by-Side Comparison Banner */}
+                <div className="p-2.5 bg-neutral-900 text-white rounded-xl shadow-xs text-xs flex flex-col sm:flex-row items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="w-4 h-4 text-amber-400 shrink-0" />
+                    <div>
+                      <span className="font-bold text-amber-400 text-xs block">
+                        Real-World 12th Standard Scenario Check:
+                      </span>
+                      <span className="text-[11px] text-neutral-300">
+                        When student fees are collected, RCA2.O automatically checks student course enrollment and applies the corresponding tier payout.
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-3 shrink-0 font-mono text-[11px]">
+                    <div className="bg-white/10 px-2.5 py-1 rounded-lg border border-white/5">
+                      <span className="text-neutral-400">3-Sub (₹5k fee): </span>
+                      <strong className="text-emerald-400">
+                        {staffPayRuleForm.settlement.allSubjectsType === 'PERCENTAGE'
+                          ? `₹${Math.round((5000 * staffPayRuleForm.settlement.allSubjectsValue) / 100).toLocaleString('en-IN')} (${staffPayRuleForm.settlement.allSubjectsValue}%)`
+                          : `₹${staffPayRuleForm.settlement.allSubjectsValue.toLocaleString('en-IN')}`}
+                      </strong>
+                    </div>
+
+                    <div className="bg-white/10 px-2.5 py-1 rounded-lg border border-white/5">
+                      <span className="text-neutral-400">1-Sub (₹1.8k fee): </span>
+                      <strong className="text-amber-400">
+                        {staffPayRuleForm.settlement.singleSubjectType === 'PERCENTAGE'
+                          ? `₹${Math.round((1800 * staffPayRuleForm.settlement.singleSubjectValue) / 100).toLocaleString('en-IN')} (${staffPayRuleForm.settlement.singleSubjectValue}%)`
+                          : `₹${staffPayRuleForm.settlement.singleSubjectValue.toLocaleString('en-IN')}`}
+                      </strong>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Mode 2: PER_STUDENT_FIXED */}
+            {staffPayRuleForm.settlement.mode === 'PER_STUDENT_FIXED' && (
+              <div className="p-4 bg-neutral-50 rounded-xl border border-neutral-200 space-y-3">
+                <label className="text-xs font-bold text-neutral-800 block mb-1">
+                  Fixed Rupee Amount Earned per Student (₹)
+                </label>
+                <div className="relative max-w-sm">
+                  <span className="absolute left-3 top-2.5 text-sm text-neutral-400 font-semibold">₹</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="50"
+                    value={staffPayRuleForm.settlement.perStudentAmount}
+                    onChange={(e) =>
+                      setStaffPayRuleForm((prev) => ({
+                        ...prev,
+                        settlement: {
+                          ...prev.settlement,
+                          perStudentAmount: Number(e.target.value) || 0,
+                        },
+                      }))
+                    }
+                    className="w-full pl-8 pr-3 py-2 bg-white border border-neutral-300 rounded-lg text-sm font-mono font-bold text-neutral-900"
+                    required
+                  />
+                </div>
+                <p className="text-[11px] text-neutral-500">
+                  Faculty will receive this flat ₹ amount every time a student fee payment is recorded for this course offering.
+                </p>
+              </div>
+            )}
+
+            {/* Mode 3: REVENUE_SHARE_PERCENTAGE */}
+            {staffPayRuleForm.settlement.mode === 'REVENUE_SHARE_PERCENTAGE' && (
+              <div className="p-4 bg-neutral-50 rounded-xl border border-neutral-200">
+                <label className="text-xs font-bold text-neutral-800 block mb-1.5">
+                  Faculty Revenue Share Percentage (%)
+                </label>
+                <div className="flex items-center gap-3 max-w-md">
+                  <div className="relative flex-1">
+                    <input
+                      type="number"
+                      min="0"
+                      max="100"
+                      value={staffPayRuleForm.settlement.staffSharePercentage}
+                      onChange={(e) =>
+                        setStaffPayRuleForm((prev) => ({
+                          ...prev,
+                          settlement: {
+                            ...prev.settlement,
+                            staffSharePercentage: Number(e.target.value) || 0,
+                          },
+                        }))
+                      }
+                      className="w-full pl-3 pr-7 py-2 bg-white border border-neutral-300 rounded-lg text-sm font-mono font-bold text-neutral-900"
+                      required
+                    />
+                    <span className="absolute right-3 top-2 text-sm text-neutral-400">%</span>
+                  </div>
+                  <div className="text-xs text-neutral-500 font-medium">
+                    Academy Share: <strong className="text-emerald-700">{Math.max(0, 100 - staffPayRuleForm.settlement.staffSharePercentage)}%</strong>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Overall Rule Summary Bar & Action Buttons */}
+            <div className="p-2.5 bg-gradient-to-r from-orange-50/80 to-amber-50/80 rounded-xl border border-orange-200 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-3">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-[#FF8500]" />
+                <span className="font-semibold text-neutral-800">Active Rule:</span>
+                <span className="font-mono font-bold text-[#CC6B00]">
+                  {staffPayRuleForm.settlement.mode === 'STUDENT_TIER_BASED'
+                    ? `All: ${staffPayRuleForm.settlement.allSubjectsValue}${staffPayRuleForm.settlement.allSubjectsType === 'PERCENTAGE' ? '%' : '₹'} • 2-Sub: ${staffPayRuleForm.settlement.twoSubjectsValue}${staffPayRuleForm.settlement.twoSubjectsType === 'PERCENTAGE' ? '%' : '₹'} • 1-Sub: ${staffPayRuleForm.settlement.singleSubjectValue}${staffPayRuleForm.settlement.singleSubjectType === 'PERCENTAGE' ? '%' : '₹'}`
+                    : staffPayRuleForm.settlement.mode === 'PER_STUDENT_FIXED'
+                    ? `Flat ₹${staffPayRuleForm.settlement.perStudentAmount.toLocaleString('en-IN')} / Student`
+                    : `Flat ${staffPayRuleForm.settlement.staffSharePercentage}% Faculty Share`}
+                </span>
+              </div>
+
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2 w-full">
+                {editingStaffAssignmentId ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const assignmentToDelete = facultyAssignments.find((a: any) => a.id === editingStaffAssignmentId);
+                      if (assignmentToDelete) {
+                        handleInitiateDeleteStaffPayRule(assignmentToDelete);
+                      }
+                    }}
+                    disabled={deletingStaffPayRule}
+                    className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-200 text-red-600 bg-red-50 hover:bg-red-100 font-semibold text-xs transition cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Delete Rule</span>
+                  </button>
+                ) : (
+                  <div />
+                )}
+
+                <div className="flex items-center justify-end gap-2">
+                  <Button type="button" variant="outline" onClick={() => setShowStaffPayRuleModal(false)}>
+                    Cancel
+                  </Button>
+                  <Button type="submit" variant="primary" disabled={savingStaffPayRule}>
+                    {savingStaffPayRule ? 'Saving Rule...' : 'Save Staff Pay Rule'}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </form>
+        </Modal>
+
+        {/* ==================================================================== */}
+        {/* MODAL 7C: CONFIRM DELETE STAFF PAY RULE */}
+        {/* ==================================================================== */}
+        <Modal
+          isOpen={Boolean(deleteRuleTarget)}
+          onClose={() => !deletingStaffPayRule && setDeleteRuleTarget(null)}
+          title="Delete Staff Pay Rule"
+          description="Are you sure you want to remove this faculty pay rule and course assignment?"
+          maxWidth="md"
+        >
+          {deleteRuleTarget && (
+            <div className="space-y-4">
+              <div className="p-3 bg-red-50/70 rounded-xl border border-red-200 text-xs">
+                <div className="flex items-start gap-2.5">
+                  <AlertTriangle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+                  <div>
+                    <span className="font-bold text-red-900 block mb-1">
+                      Confirm Deletion of Faculty Settlement Rule
+                    </span>
+                    <p className="text-neutral-700 leading-relaxed">
+                      You are about to remove the assignment and customized compensation formula for{' '}
+                      <strong>{deleteRuleTarget.staffName}</strong> on course{' '}
+                      <strong>{deleteRuleTarget.class?.name || deleteRuleTarget.className || 'General Course'}</strong>.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Assignment Summary Info Box */}
+              <div className="p-3 bg-neutral-50 rounded-xl border border-neutral-200 text-xs space-y-2">
+                <div className="flex justify-between items-center">
+                  <span className="text-neutral-500">Faculty Member:</span>
+                  <span className="font-bold text-neutral-900">{deleteRuleTarget.staffName}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-neutral-500">Course / Offering:</span>
+                  <span className="font-semibold text-neutral-800">
+                    {deleteRuleTarget.class?.name || deleteRuleTarget.className || 'Course'}
+                    {deleteRuleTarget.batch?.name ? ` • ${deleteRuleTarget.batch.name}` : ''}
+                  </span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-neutral-500">Subject:</span>
+                  <span className="font-medium text-neutral-700">{deleteRuleTarget.subject?.name || 'All Subjects'}</span>
+                </div>
+                <div className="flex justify-between items-center pt-1 border-t border-neutral-200/60">
+                  <span className="text-neutral-500">Active Formula:</span>
+                  <span className="font-mono font-bold text-[#CC6B00]">
+                    {getSettlementBadgeDisplay(deleteRuleTarget).tooltip}
+                  </span>
+                </div>
+              </div>
+
+              <p className="text-[11px] text-neutral-500 italic">
+                Note: Historical salary disbursements and ledger entries will remain safely preserved in audit logs. Future fee collections for this course will revert to standard academy split.
+              </p>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-neutral-100">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setDeleteRuleTarget(null)}
+                  disabled={deletingStaffPayRule}
+                >
+                  Cancel
+                </Button>
+                <button
+                  type="button"
+                  onClick={handleConfirmDeleteStaffPayRule}
+                  disabled={deletingStaffPayRule}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-xs shadow-sm transition cursor-pointer disabled:opacity-50"
+                >
+                  {deletingStaffPayRule ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Deleting Rule...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Delete Rule</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          )}
         </Modal>
 
         {/* ==================================================================== */}

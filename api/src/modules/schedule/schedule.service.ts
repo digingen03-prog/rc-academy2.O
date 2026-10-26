@@ -703,11 +703,33 @@ export class ScheduleService {
       .replace('{academy_name}', config.academyName)
       .replace('{date}', dateString);
 
+    const DEFAULT_CLASS_START_TIME = '09:00'; // 09:00 AM
+    const DEFAULT_CLASS_END_TIME = '10:30';   // 10:30 AM
+
+    const formatTime12h = (timeStr?: string | null, fallback = ''): string => {
+      const effective = (timeStr && timeStr.trim()) ? timeStr.trim() : fallback;
+      if (!effective) return '';
+      const parts = effective.split(':');
+      if (parts.length < 2) return effective;
+      let hours = parseInt(parts[0], 10);
+      const minutes = parts[1].padStart(2, '0');
+      if (isNaN(hours)) return effective;
+
+      const ampm = hours >= 12 ? 'PM' : 'AM';
+      hours = hours % 12;
+      if (hours === 0) hours = 12;
+
+      const hh = hours < 10 ? `0${hours}` : `${hours}`;
+      return `${hh}:${minutes} ${ampm}`;
+    };
+
     let body = '';
 
     if (!groupByBatch) {
       const classLines = classes.map((c) => {
-        let text = `🕘 *${c.startTime} – ${c.endTime}*\n📚 Class: *${c.className}*`;
+        const startTime = formatTime12h(c.startTime, DEFAULT_CLASS_START_TIME);
+        const endTime = formatTime12h(c.endTime, DEFAULT_CLASS_END_TIME);
+        let text = `🕘 *${startTime} – ${endTime}*\n📚 Class: *${c.className}*`;
         if (c.subjectName) text += `\n📘 Subject: *${c.subjectName}*`;
         if (c.teacherName) text += `\n👨‍🏫 Teacher: ${c.teacherName}`;
         if (c.batchName) text += `\n👥 Batch: ${c.batchName}`;
@@ -733,7 +755,9 @@ export class ScheduleService {
       const groupSections: string[] = [];
       for (const [groupName, groupClasses] of groups.entries()) {
         const items = groupClasses.map((c) => {
-          let text = `  • *${c.startTime} – ${c.endTime}*: ${c.subjectName} (${c.teacherName})`;
+          const startTime = formatTime12h(c.startTime, DEFAULT_CLASS_START_TIME);
+          const endTime = formatTime12h(c.endTime, DEFAULT_CLASS_END_TIME);
+          let text = `  • *${startTime} – ${endTime}*: ${c.subjectName} (${c.teacherName})`;
           if (c.room) text += ` [${c.room}]`;
           return text;
         });

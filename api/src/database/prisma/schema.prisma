@@ -78,6 +78,8 @@ model User {
   authorizedAdjustments  FeeAdjustment[]
   invigilatedExams       Examination[]           @relation("ExamInvigilator")
   sharedExamAnnouncements Examination[]          @relation("ExamAnnouncementSharedBy")
+  recordedAdvances        StudentAdvance[]       @relation("RecordedAdvances")
+  advanceAllocations      StudentAdvanceAllocation[] @relation("AuthorizedAdvanceAllocations")
 
   @@map("users")
 }
@@ -290,6 +292,7 @@ model Student {
   submissions            StudentSubmission[]
   results                Result[]
   assignedAttendanceCode AttendanceCode?
+  advances               StudentAdvance[]
 
   @@index([studentCode])
   @@index([admissionNumber])
@@ -624,6 +627,7 @@ model FeeInvoice {
   lines           FeeInvoiceLine[]
   allocations     PaymentAllocation[]
   adjustments     FeeAdjustment[]
+  advanceAllocations StudentAdvanceAllocation[]
 
   @@index([studentId])
   @@index([enrollmentId])
@@ -699,6 +703,50 @@ model PaymentAllocation {
   invoice FeeInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
 
   @@map("payment_allocations")
+}
+
+// ----------------------------------------------------
+// 4C. STUDENT ADVANCES & ADVANCE ALLOCATIONS
+// ----------------------------------------------------
+
+model StudentAdvance {
+  id            String        @id @default(uuid())
+  receiptNumber String        @unique // e.g. "ADV-2026-00001"
+  studentId     String
+  amount        Decimal       @db.Decimal(10, 2)
+  paymentMethod PaymentMethod @default(CASH)
+  paymentDate   DateTime      @default(now())
+  reference     String?
+  notes         String?
+  recordedById  String
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  student     Student                    @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  recordedBy  User                       @relation("RecordedAdvances", fields: [recordedById], references: [id])
+  allocations StudentAdvanceAllocation[]
+
+  @@index([studentId])
+  @@index([receiptNumber])
+  @@map("student_advances")
+}
+
+model StudentAdvanceAllocation {
+  id              String   @id @default(uuid())
+  advanceId       String
+  invoiceId       String
+  allocatedAmount Decimal  @db.Decimal(10, 2)
+  allocatedById   String
+  allocatedAt     DateTime @default(now())
+  notes           String?
+
+  advance     StudentAdvance @relation(fields: [advanceId], references: [id], onDelete: Cascade)
+  invoice     FeeInvoice     @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  allocatedBy User           @relation("AuthorizedAdvanceAllocations", fields: [allocatedById], references: [id])
+
+  @@index([advanceId])
+  @@index([invoiceId])
+  @@map("student_advance_allocations")
 }
 
 // ----------------------------------------------------

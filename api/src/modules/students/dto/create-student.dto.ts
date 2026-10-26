@@ -7,9 +7,11 @@ import {
   IsArray,
   ValidateNested,
   ValidateIf,
+  IsNumber,
+  Min,
 } from 'class-validator';
 import { Type } from 'class-transformer';
-import { Gender, StudentStatus } from '@prisma/client';
+import { Gender, StudentStatus, PaymentMethod } from '@prisma/client';
 
 export class GuardianItemDto {
   @IsString()
@@ -165,6 +167,28 @@ export class CreateStudentDto {
   @IsString()
   @IsOptional()
   guardianRelationship?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({}, { message: 'Advance amount must be a valid number' })
+  @Min(0, { message: 'Advance amount must be non-negative' })
+  advanceAmount?: number;
+
+  @IsOptional()
+  @IsString()
+  advancePaymentDate?: string;
+
+  @IsOptional()
+  @IsEnum(PaymentMethod)
+  advancePaymentMethod?: PaymentMethod;
+
+  @IsOptional()
+  @IsString()
+  advanceReference?: string;
+
+  @IsOptional()
+  @IsString()
+  advanceNotes?: string;
 }
 
 export class UpdateStudentDto {
@@ -247,6 +271,45 @@ export class EnrollStudentDto {
 
   @IsOptional()
   allowMultipleInCourse?: boolean;
+}
+
+export class RecordAdvanceDto {
+  @IsNotEmpty({ message: 'Advance amount is required' })
+  @Type(() => Number)
+  @IsNumber({}, { message: 'Advance amount must be a valid number' })
+  @Min(0.01, { message: 'Advance amount must be greater than zero' })
+  amount!: number;
+
+  @IsString()
+  @IsNotEmpty({ message: 'Payment date is required' })
+  paymentDate!: string;
+
+  @IsEnum(PaymentMethod, { message: 'Valid payment method is required (CASH, UPI, BANK_TRANSFER, CHEQUE)' })
+  paymentMethod!: PaymentMethod;
+
+  @IsOptional()
+  @IsString()
+  reference?: string;
+
+  @IsOptional()
+  @IsString()
+  notes?: string;
+}
+
+export class AllocateAdvanceDto {
+  @IsString()
+  @IsNotEmpty({ message: 'Target invoice ID is required' })
+  invoiceId!: string;
+
+  @IsNotEmpty({ message: 'Allocation amount is required' })
+  @Type(() => Number)
+  @IsNumber({}, { message: 'Allocation amount must be a valid number' })
+  @Min(0.01, { message: 'Allocation amount must be greater than zero' })
+  amount!: number;
+
+  @IsOptional()
+  @IsString()
+  notes?: string;
 }
 
 export class BulkImportRowDto {

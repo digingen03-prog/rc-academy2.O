@@ -76,7 +76,7 @@ export function useAuthUser(): {
     }
 
     if (user.roles.includes('TEACHER')) {
-      return ['/dashboard', '/attendance', '/schedule', '/examinations', '/test-conduct', '/answer-evaluation', '/courses'].some(
+      return ['/dashboard', '/attendance', '/schedule', '/examinations', '/answer-evaluation', '/courses'].some(
         (r) => route === r || route.startsWith(`${r}/`)
       );
     }
@@ -88,7 +88,7 @@ export function useAuthUser(): {
     }
 
     if (user.roles.includes('STAFF')) {
-      return ['/dashboard', '/attendance', '/schedule', '/students', '/test-conduct'].some(
+      return ['/dashboard', '/attendance', '/schedule', '/students'].some(
         (r) => route === r || route.startsWith(`${r}/`)
       );
     }
