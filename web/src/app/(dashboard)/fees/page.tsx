@@ -604,6 +604,8 @@ export default function FeesPage() {
   // Form States - Payment
   const [paymentStudentId, setPaymentStudentId] = useState('');
   const [paymentStandardFilter, setPaymentStandardFilter] = useState('');
+  const [paymentStudentSearch, setPaymentStudentSearch] = useState('');
+  const [isStudentSearchOpen, setIsStudentSearchOpen] = useState(false);
   const [paymentMode, setPaymentMode] = useState<'SINGLE' | 'MULTI'>('SINGLE');
   const [selectedSingleInvoiceId, setSelectedSingleInvoiceId] = useState('');
   const [paymentAmount, setPaymentAmount] = useState<number>(0);
@@ -1245,6 +1247,8 @@ export default function FeesPage() {
   // Handle standard filter change inside Record Fee Collection modal
   const handlePaymentStandardChange = (newStandardId: string) => {
     setPaymentStandardFilter(newStandardId);
+    setPaymentStudentSearch('');
+    setIsStudentSearchOpen(false);
     const matchingStudents = newStandardId
       ? studentAccounts.filter((s) => isStudentInStandard(s, newStandardId))
       : studentAccounts;
@@ -2255,11 +2259,56 @@ export default function FeesPage() {
   const totalCourseOutstanding = courseBreakdown.reduce((sum, c) => sum + (c.outstanding || 0), 0);
   const overallCollectionRate = totalCourseInvoiced > 0 ? Math.round((totalCourseCollected / totalCourseInvoiced) * 100) : 0;
 
-  // Filtered student list for Record Fee Collection modal based on selected standard
+  const studentSearchContainerRef = React.useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (
+        studentSearchContainerRef.current &&
+        !studentSearchContainerRef.current.contains(event.target as Node)
+      ) {
+        setIsStudentSearchOpen(false);
+      }
+    };
+    if (isStudentSearchOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [isStudentSearchOpen]);
+
+  // Filtered student list for Record Fee Collection modal based on selected standard and search query
   const filteredModalStudents = useMemo(() => {
-    if (!paymentStandardFilter) return studentAccounts;
-    return studentAccounts.filter((s) => isStudentInStandard(s, paymentStandardFilter));
-  }, [paymentStandardFilter, studentAccounts, availableCourses]);
+    let list = studentAccounts;
+    if (paymentStandardFilter) {
+      list = list.filter((s) => isStudentInStandard(s, paymentStandardFilter));
+    }
+    const q = paymentStudentSearch.trim().toLowerCase();
+    if (q) {
+      list = list.filter((s) => {
+        const nameMatch = s.name.toLowerCase().includes(q);
+        const codeMatch = s.studentCode.toLowerCase().includes(q);
+        const admMatch = s.admissionNumber ? s.admissionNumber.toLowerCase().includes(q) : false;
+        const phoneMatch = s.phone ? s.phone.includes(q) : false;
+        return nameMatch || codeMatch || admMatch || phoneMatch;
+      });
+    }
+    return list;
+  }, [paymentStandardFilter, paymentStudentSearch, studentAccounts, availableCourses]);
+
+  // Global search matches across all standards when searching
+  const globalSearchMatches = useMemo(() => {
+    const q = paymentStudentSearch.trim().toLowerCase();
+    if (!q) return [];
+    return studentAccounts.filter((s) => {
+      const nameMatch = s.name.toLowerCase().includes(q);
+      const codeMatch = s.studentCode.toLowerCase().includes(q);
+      const admMatch = s.admissionNumber ? s.admissionNumber.toLowerCase().includes(q) : false;
+      const phoneMatch = s.phone ? s.phone.includes(q) : false;
+      return nameMatch || codeMatch || admMatch || phoneMatch;
+    });
+  }, [paymentStudentSearch, studentAccounts]);
 
   // Calculation helpers for payment collection modal (partial & full collection)
   const selectedPaymentStudent = studentAccounts.find((s) => s.id === paymentStudentId);
@@ -4612,11 +4661,11 @@ export default function FeesPage() {
           maxWidth="5xl"
         >
           <form onSubmit={handleSubmitPayment} className="space-y-3">
-            {/* Top Filter & Selection Bar: Standard Filter, Student Selector & Billing Cycle */}
+            {/* Top Filter & Selection Bar: Standard Filter, Student Search, Selector & Billing Cycle */}
             <div className="bg-gradient-to-r from-orange-50/70 via-neutral-50 to-neutral-50/90 p-3 rounded-xl border border-neutral-200/90 space-y-2.5 shadow-2xs">
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-2.5 items-center">
                 {/* 1. Standard / Class Filter */}
-                <div className="lg:col-span-4 flex items-center gap-2 bg-white px-2.5 py-1.5 rounded-lg border border-neutral-200 shadow-2xs">
+                <div className="lg:col-span-3 flex items-center gap-2 bg-white px-2.5 py-1.5 rounded-lg border border-neutral-200 shadow-2xs">
                   <GraduationCap className="w-4 h-4 text-[#FF8500] shrink-0" />
                   <div className="flex flex-col min-w-0 flex-1">
                     <span className="text-[9px] font-bold uppercase tracking-wider text-neutral-500">
@@ -4628,12 +4677,12 @@ export default function FeesPage() {
                       className="w-full bg-transparent text-xs font-bold text-neutral-900 focus:outline-none cursor-pointer truncate"
                       title="Filter students by Standard"
                     >
-                      <option value="">All Standards ({studentAccounts.length} students)</option>
+                      <option value="">All Standards ({studentAccounts.length})</option>
                       {availableCourses.map((c) => {
                         const count = studentAccounts.filter((s) => isStudentInStandard(s, c.id)).length;
                         return (
                           <option key={c.id} value={c.id}>
-                            {c.name} ({count} {count === 1 ? 'student' : 'students'})
+                            {c.name} ({count})
                           </option>
                         );
                       })}
@@ -4641,12 +4690,159 @@ export default function FeesPage() {
                   </div>
                 </div>
 
-                {/* 2. Student Selector (Filtered by Standard) */}
-                <div className="lg:col-span-5 flex items-center gap-2 bg-white px-2.5 py-1.5 rounded-lg border border-neutral-200 shadow-2xs">
+                {/* 2. Search Student by Name or ID (with live instant results popup) */}
+                <div ref={studentSearchContainerRef} className="lg:col-span-4 relative">
+                  <div className="flex items-center gap-2 bg-white px-2.5 py-1.5 rounded-lg border border-neutral-200 shadow-2xs focus-within:ring-2 focus-within:ring-[#FF8500] focus-within:border-[#FF8500] transition-all">
+                    <Search className="w-4 h-4 text-[#FF8500] shrink-0" />
+                    <div className="flex flex-col min-w-0 flex-1">
+                      <span className="text-[9px] font-bold uppercase tracking-wider text-neutral-500 flex items-center justify-between">
+                        <span>Search Student (Name or ID)</span>
+                        {paymentStudentSearch && (
+                          <span className="text-[9px] text-[#CC6B00] font-normal">
+                            {filteredModalStudents.length} found
+                          </span>
+                        )}
+                      </span>
+                      <input
+                        type="text"
+                        value={paymentStudentSearch}
+                        onChange={(e) => {
+                          setPaymentStudentSearch(e.target.value);
+                          setIsStudentSearchOpen(true);
+                        }}
+                        onFocus={() => setIsStudentSearchOpen(true)}
+                        placeholder="Type name, code, or adm #..."
+                        className="w-full bg-transparent text-xs font-semibold text-neutral-900 focus:outline-none placeholder:text-neutral-400 truncate"
+                        title="Search student by name or ID"
+                      />
+                    </div>
+                    {paymentStudentSearch && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPaymentStudentSearch('');
+                          setIsStudentSearchOpen(false);
+                        }}
+                        className="p-1 hover:bg-neutral-100 rounded text-neutral-400 hover:text-neutral-600 cursor-pointer"
+                        title="Clear search"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Floating Live Search Results Popover */}
+                  {isStudentSearchOpen && (
+                    <div className="absolute left-0 right-0 top-full mt-1.5 bg-white border border-neutral-200 rounded-xl shadow-xl z-50 max-h-64 overflow-y-auto divide-y divide-neutral-100 p-1">
+                      <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-neutral-400 bg-neutral-50 rounded flex items-center justify-between">
+                        <span>
+                          {paymentStudentSearch.trim()
+                            ? `Search Matches (${filteredModalStudents.length})`
+                            : `Students in Standard (${filteredModalStudents.length})`}
+                        </span>
+                        <span className="text-[9px] font-normal text-neutral-500">Click to select</span>
+                      </div>
+
+                      {filteredModalStudents.length === 0 ? (
+                        <div className="p-3 text-center text-xs text-neutral-500 space-y-2">
+                          <div>No students matching &quot;{paymentStudentSearch}&quot; in this standard.</div>
+                          {globalSearchMatches.length > 0 && (
+                            <div className="pt-2 border-t border-neutral-100 text-left">
+                              <span className="text-[10px] font-bold uppercase text-neutral-500 block mb-1">
+                                Found in other standards ({globalSearchMatches.length}):
+                              </span>
+                              {globalSearchMatches.map((s) => {
+                                const matchedStd = availableCourses.find((c) => isStudentInStandard(s, c.id));
+                                return (
+                                  <button
+                                    key={s.id}
+                                    type="button"
+                                    onClick={() => {
+                                      const stdId = matchedStd?.id || '';
+                                      setPaymentStandardFilter(stdId);
+                                      handleOpenPaymentModalForStudent(s.id, undefined, stdId);
+                                      setPaymentStudentSearch('');
+                                      setIsStudentSearchOpen(false);
+                                    }}
+                                    className="w-full text-left p-1.5 rounded hover:bg-orange-50 flex items-center justify-between text-xs cursor-pointer transition-colors"
+                                  >
+                                    <div className="min-w-0 flex items-center gap-1.5">
+                                      <span className="font-bold text-neutral-900 truncate">{s.name}</span>
+                                      <span className="text-[10px] font-mono text-[#CC6B00]">({s.studentCode})</span>
+                                      <span className="text-[9px] px-1.5 py-0.2 rounded bg-orange-100 text-orange-800">
+                                        {matchedStd?.name || 'Standard'}
+                                      </span>
+                                    </div>
+                                    <span className="font-mono text-xs font-bold text-amber-700 shrink-0">
+                                      ₹{s.consolidatedBalance.toLocaleString()}
+                                    </span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        filteredModalStudents.map((s) => {
+                          const isSel = s.id === paymentStudentId;
+                          return (
+                            <button
+                              key={s.id}
+                              type="button"
+                              onClick={() => {
+                                handleOpenPaymentModalForStudent(s.id, undefined, paymentStandardFilter);
+                                setPaymentStudentSearch('');
+                                setIsStudentSearchOpen(false);
+                              }}
+                              className={`w-full text-left p-2 rounded-lg flex items-center justify-between gap-2.5 transition-colors cursor-pointer ${
+                                isSel
+                                  ? 'bg-orange-50 border border-orange-200 text-neutral-900'
+                                  : 'hover:bg-neutral-50 text-neutral-800'
+                              }`}
+                            >
+                              <div className="flex items-center gap-2 min-w-0">
+                                <div className="w-7 h-7 rounded-md bg-orange-100 text-[#FF8500] font-bold text-xs flex items-center justify-center shrink-0">
+                                  {s.name.slice(0, 2).toUpperCase()}
+                                </div>
+                                <div className="min-w-0">
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <span className="font-bold text-xs text-neutral-900 truncate">{s.name}</span>
+                                    <span className="text-[10px] font-mono px-1 py-0.2 rounded bg-neutral-100 text-[#CC6B00] font-semibold">
+                                      {s.studentCode}
+                                    </span>
+                                    {s.admissionNumber && (
+                                      <span className="text-[10px] font-mono text-neutral-400">
+                                        #{s.admissionNumber}
+                                      </span>
+                                    )}
+                                  </div>
+                                  {s.enrolledCourses.length > 0 && (
+                                    <span className="text-[9px] text-neutral-500 block truncate">
+                                      {Array.from(new Set(s.enrolledCourses.map((c: any) => c.courseName).filter(Boolean))).join(', ')}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                              <div className="text-right shrink-0">
+                                <span className="text-[9px] text-neutral-400 block uppercase font-medium">Balance</span>
+                                <span className="font-mono text-xs font-bold text-amber-700">
+                                  ₹{s.consolidatedBalance.toLocaleString()}
+                                </span>
+                              </div>
+                            </button>
+                          );
+                        })
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* 3. Choose Student Dropdown (Filtered) */}
+                <div className="lg:col-span-3 flex items-center gap-2 bg-white px-2.5 py-1.5 rounded-lg border border-neutral-200 shadow-2xs">
                   <Users className="w-4 h-4 text-[#FF8500] shrink-0" />
                   <div className="flex flex-col min-w-0 flex-1">
                     <span className="text-[9px] font-bold uppercase tracking-wider text-neutral-500">
-                      Student ({filteredModalStudents.length} available)
+                      Choose Student ({filteredModalStudents.length})
                     </span>
                     <select
                       value={paymentStudentId}
@@ -4657,10 +4853,10 @@ export default function FeesPage() {
                       }}
                       className="w-full bg-transparent text-xs font-bold text-neutral-900 focus:outline-none cursor-pointer truncate"
                       required
-                      title="Select student to record fee collection"
+                      title="Select student from dropdown"
                     >
                       {filteredModalStudents.length === 0 ? (
-                        <option value="">No students in this standard</option>
+                        <option value="">No matching students</option>
                       ) : (
                         <>
                           <option value="">-- Choose Student --</option>
@@ -4675,8 +4871,8 @@ export default function FeesPage() {
                   </div>
                 </div>
 
-                {/* 3. Billing Cycle */}
-                <div className="lg:col-span-3 flex items-center gap-2 bg-white px-2.5 py-1.5 rounded-lg border border-neutral-200 shadow-2xs">
+                {/* 4. Billing Cycle */}
+                <div className="lg:col-span-2 flex items-center gap-2 bg-white px-2.5 py-1.5 rounded-lg border border-neutral-200 shadow-2xs">
                   <Calendar className="w-4 h-4 text-[#FF8500] shrink-0" />
                   <div className="flex flex-col min-w-0 flex-1">
                     <span className="text-[9px] font-bold uppercase tracking-wider text-neutral-500">
