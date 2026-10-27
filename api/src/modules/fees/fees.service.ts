@@ -20,7 +20,7 @@ import {
   CreateCourseInvoiceDto,
   ApplyFeeAdjustmentDto,
 } from './dto/course-fee.dto';
-import { InvoiceStatus, PaymentStatus, FeeAdjustmentType } from '@prisma/client';
+import { InvoiceStatus, PaymentStatus, FeeAdjustmentType, Prisma } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { SalaryService } from '../salary/salary.service';
 
@@ -724,6 +724,74 @@ export class FeesService {
   }
 
   // ==========================================
+  // NUMBER GENERATORS (COLLISION-SAFE)
+  // ==========================================
+
+  async generateNextInvoiceNumber(txClient?: Prisma.TransactionClient): Promise<string> {
+    const db = txClient || this.prisma;
+    const year = new Date().getFullYear();
+    const prefix = `INV-${year}-`;
+
+    const latest = await db.feeInvoice.findFirst({
+      where: { invoiceNumber: { startsWith: prefix } },
+      orderBy: { invoiceNumber: 'desc' },
+      select: { invoiceNumber: true },
+    });
+
+    let nextSeq = 1;
+    if (latest && latest.invoiceNumber) {
+      const match = latest.invoiceNumber.match(/INV-\d{4}-(\d+)/);
+      if (match) {
+        nextSeq = parseInt(match[1], 10) + 1;
+      }
+    }
+
+    while (true) {
+      const candidate = `${prefix}${String(nextSeq).padStart(5, '0')}`;
+      const exists = await db.feeInvoice.findUnique({
+        where: { invoiceNumber: candidate },
+        select: { id: true },
+      });
+      if (!exists) {
+        return candidate;
+      }
+      nextSeq++;
+    }
+  }
+
+  async generateNextReceiptNumber(txClient?: Prisma.TransactionClient): Promise<string> {
+    const db = txClient || this.prisma;
+    const year = new Date().getFullYear();
+    const prefix = `REC-${year}-`;
+
+    const latest = await db.payment.findFirst({
+      where: { receiptNumber: { startsWith: prefix } },
+      orderBy: { receiptNumber: 'desc' },
+      select: { receiptNumber: true },
+    });
+
+    let nextSeq = 1;
+    if (latest && latest.receiptNumber) {
+      const match = latest.receiptNumber.match(/REC-\d{4}-(\d+)/);
+      if (match) {
+        nextSeq = parseInt(match[1], 10) + 1;
+      }
+    }
+
+    while (true) {
+      const candidate = `${prefix}${String(nextSeq).padStart(5, '0')}`;
+      const exists = await db.payment.findUnique({
+        where: { receiptNumber: candidate },
+        select: { id: true },
+      });
+      if (!exists) {
+        return candidate;
+      }
+      nextSeq++;
+    }
+  }
+
+  // ==========================================
   // 2. COURSE INVOICES & MULTI-COURSE BILLING
   // ==========================================
 
@@ -774,8 +842,7 @@ export class FeesService {
       }
     }
 
-    const count = await this.prisma.feeInvoice.count();
-    const invoiceNumber = `INV-${new Date().getFullYear()}-${String(count + 1).padStart(5, '0')}`;
+    const invoiceNumber = await this.generateNextInvoiceNumber();
 
     const resolvedClassId = dto.classId || enrollment?.batch.classId || null;
     const resolvedBatchId = dto.batchId || enrollment?.batchId || null;
@@ -1155,8 +1222,7 @@ export class FeesService {
     }
 
     return this.prisma.$transaction(async (tx) => {
-      const paymentCount = await tx.payment.count();
-      const receiptNumber = `REC-${new Date().getFullYear()}-${String(paymentCount + 1).padStart(5, '0')}`;
+      const receiptNumber = await this.generateNextReceiptNumber(tx);
 
       // Check instant fee discount if provided
       const discountToApply = dto.discountAmount ? new Decimal(dto.discountAmount) : new Decimal(0);
@@ -1168,6 +1234,98 @@ export class FeesService {
 
       // 2. Validate explicit multi-course allocations if provided
       if (dto.allocations && dto.allocations.length > 0) {
+        // Auto-materialize any rule-placeholder allocations into real invoices
+        for (const allocItem of dto.allocations) {
+          if (allocItem.invoiceId && allocItem.invoiceId.startsWith('rule-')) {
+            const activeEnrollments = await tx.studentBatchEnrollment.findMany({
+              where: { studentId: dto.studentId, isActive: true },
+              include: {
+                batch: { include: { class: true } },
+                subject: true,
+              },
+            });
+
+            const parts = allocItem.invoiceId.split('-');
+            const targetEnrollmentId = parts.length >= 3 ? parts.slice(2).join('-') : null;
+            const targetEnrollment = activeEnrollments.find((e) => e.id === targetEnrollmentId) || activeEnrollments[0];
+
+            if (targetEnrollment) {
+              const classId = targetEnrollment.batch.class.id;
+              const classEnrollments = activeEnrollments.filter((e) => e.batch.class.id === classId);
+              const subjectIds = classEnrollments.map((e) => e.subjectId).filter(Boolean) as string[];
+
+              const config = await this.resolveFeeForEnrollment({
+                classId,
+                batchId: targetEnrollment.batchId,
+                subjectId: subjectIds.length === 1 ? subjectIds[0] : undefined,
+                academicYearId: targetEnrollment.batch.class.academicYearId,
+                enrolledSubjectCount: subjectIds.length,
+              });
+
+              if (config) {
+                let discountAmount = 0;
+                if (Array.isArray(config.allowedDiscounts)) {
+                  const bundleDisc = (config.allowedDiscounts as any[]).find(
+                    (d: any) =>
+                      d.type === 'ALL_SUBJECTS_BUNDLE' ||
+                      d.type === 'SELECTED_SUBJECTS_BUNDLE' ||
+                      d.type === 'BUNDLE_OFFER' ||
+                      d.name?.includes('Discount') ||
+                      d.name?.includes('Offer') ||
+                      Number(d.amount) > 0,
+                  );
+                  if (bundleDisc?.amount) {
+                    discountAmount = Number(bundleDisc.amount) || 0;
+                  }
+                }
+
+                const invoiceNumber = await this.generateNextInvoiceNumber(tx);
+                const dueDate = new Date();
+                dueDate.setDate(dueDate.getDate() + 30);
+
+                const subNames = classEnrollments.map((e) => e.subject?.name).filter(Boolean).join(', ');
+                const scopeDesc = subNames ? ` (${subNames})` : ' (All Subjects)';
+                const description = `${targetEnrollment.batch.class.name} - ${targetEnrollment.batch.name}${scopeDesc} [${config.billingPeriod}]`;
+
+                const totalAmount = config.amount;
+                const discount = new Decimal(discountAmount);
+                const netPayable = Decimal.max(0, totalAmount.sub(discount));
+
+                const createdInv = await tx.feeInvoice.create({
+                  data: {
+                    invoiceNumber,
+                    studentId: dto.studentId,
+                    enrollmentId: targetEnrollment.id,
+                    classId,
+                    batchId: targetEnrollment.batchId,
+                    subjectId: subjectIds.length === 1 ? subjectIds[0] : null,
+                    courseFeeConfigId: config.id,
+                    billingPeriod: config.billingPeriod,
+                    totalAmount,
+                    discountAmount: discount,
+                    paidAmount: new Decimal(0),
+                    balanceAmount: netPayable,
+                    status: InvoiceStatus.UNPAID,
+                    dueDate,
+                    lines: {
+                      create: [
+                        {
+                          description,
+                          amount: totalAmount,
+                          classId,
+                          subjectId: subjectIds.length === 1 ? subjectIds[0] : null,
+                        },
+                      ],
+                    },
+                  },
+                });
+
+                allocItem.invoiceId = createdInv.id;
+              }
+            }
+          }
+        }
+
         const totalAllocated = dto.allocations.reduce(
           (sum, a) => sum.add(new Decimal(a.amount)),
           new Decimal(0),
@@ -1357,6 +1515,7 @@ export class FeesService {
               batchId: primaryEn.batchId,
               subjectId: subjectIds.length === 1 ? subjectIds[0] : undefined,
               academicYearId: primaryEn.batch.class.academicYearId,
+              enrolledSubjectCount: subjectIds.length,
             });
 
             if (config) {
@@ -1376,8 +1535,7 @@ export class FeesService {
                 }
               }
 
-              const count = await tx.feeInvoice.count();
-              const invoiceNumber = `INV-${new Date().getFullYear()}-${String(count + 1).padStart(5, '0')}`;
+              const invoiceNumber = await this.generateNextInvoiceNumber(tx);
               const dueDate = new Date();
               dueDate.setDate(dueDate.getDate() + 30);
 

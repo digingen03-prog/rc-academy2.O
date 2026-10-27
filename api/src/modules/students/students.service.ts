@@ -557,8 +557,7 @@ export class StudentsService {
       if (dto.advanceAmount && Number(dto.advanceAmount) > 0) {
         const advAmount = new Prisma.Decimal(dto.advanceAmount);
         if (advAmount.gt(0)) {
-          const advanceCount = await tx.studentAdvance.count();
-          const receiptNumber = `ADV-${new Date().getFullYear()}-${String(advanceCount + 1).padStart(5, '0')}`;
+          const receiptNumber = await this.generateNextAdvanceReceiptNumber(tx);
           const paymentMethod = dto.advancePaymentMethod || PaymentMethod.CASH;
           const paymentDate = dto.advancePaymentDate ? new Date(dto.advancePaymentDate) : new Date();
 
@@ -1816,6 +1815,38 @@ export class StudentsService {
     };
   }
 
+  async generateNextAdvanceReceiptNumber(txClient?: Prisma.TransactionClient): Promise<string> {
+    const db = txClient || this.prisma;
+    const year = new Date().getFullYear();
+    const prefix = `ADV-${year}-`;
+
+    const latest = await db.studentAdvance.findFirst({
+      where: { receiptNumber: { startsWith: prefix } },
+      orderBy: { receiptNumber: 'desc' },
+      select: { receiptNumber: true },
+    });
+
+    let nextSeq = 1;
+    if (latest && latest.receiptNumber) {
+      const match = latest.receiptNumber.match(/ADV-\d{4}-(\d+)/);
+      if (match) {
+        nextSeq = parseInt(match[1], 10) + 1;
+      }
+    }
+
+    while (true) {
+      const candidate = `${prefix}${String(nextSeq).padStart(5, '0')}`;
+      const exists = await db.studentAdvance.findUnique({
+        where: { receiptNumber: candidate },
+        select: { id: true },
+      });
+      if (!exists) {
+        return candidate;
+      }
+      nextSeq++;
+    }
+  }
+
   async recordAdvance(studentId: string, dto: RecordAdvanceDto, actorId: string) {
     const student = await this.prisma.student.findUnique({
       where: { id: studentId },
@@ -1862,8 +1893,7 @@ export class StudentsService {
         };
       }
 
-      const advanceCount = await tx.studentAdvance.count();
-      const receiptNumber = `ADV-${new Date().getFullYear()}-${String(advanceCount + 1).padStart(5, '0')}`;
+      const receiptNumber = await this.generateNextAdvanceReceiptNumber(tx);
 
       const advance = await tx.studentAdvance.create({
         data: {
