@@ -603,6 +603,7 @@ export default function FeesPage() {
 
   // Form States - Payment
   const [paymentStudentId, setPaymentStudentId] = useState('');
+  const [paymentStandardFilter, setPaymentStandardFilter] = useState('');
   const [paymentMode, setPaymentMode] = useState<'SINGLE' | 'MULTI'>('SINGLE');
   const [selectedSingleInvoiceId, setSelectedSingleInvoiceId] = useState('');
   const [paymentAmount, setPaymentAmount] = useState<number>(0);
@@ -1127,8 +1128,25 @@ export default function FeesPage() {
     });
   };
 
+  // Helper to determine if a student belongs to a given standard/course
+  const isStudentInStandard = (student: StudentAccountSummary, standardId: string) => {
+    if (!standardId) return true;
+    const course = availableCourses.find((c) => c.id === standardId);
+    return (student.enrolledCourses || []).some(
+      (c: any) =>
+        c.courseId === standardId ||
+        (course &&
+          (c.courseName?.trim().toLowerCase() === course.name?.trim().toLowerCase() ||
+           c.courseCode?.trim().toLowerCase() === course.code?.trim().toLowerCase())),
+    );
+  };
+
   // Prepare payment modal for student
-  const handleOpenPaymentModalForStudent = async (studentId: string, preselectedInvoiceId?: string) => {
+  const handleOpenPaymentModalForStudent = async (
+    studentId: string,
+    preselectedInvoiceId?: string,
+    explicitStandardFilter?: string,
+  ) => {
     setPaymentStudentId(studentId);
     setSelectedSingleInvoiceId(preselectedInvoiceId || '');
     setPaymentReference('');
@@ -1143,6 +1161,28 @@ export default function FeesPage() {
     setDiscountError(null);
     setPaymentMethodMode('UPI');
     setPaymentMethod('UPI');
+
+    // Synchronize standard filter
+    if (explicitStandardFilter !== undefined) {
+      setPaymentStandardFilter(explicitStandardFilter);
+    } else {
+      const targetStudent = studentAccounts.find((s) => s.id === studentId);
+      if (targetStudent) {
+        const isInCurrent = paymentStandardFilter
+          ? isStudentInStandard(targetStudent, paymentStandardFilter)
+          : false;
+        if (!isInCurrent) {
+          if (filterCourseId && isStudentInStandard(targetStudent, filterCourseId)) {
+            setPaymentStandardFilter(filterCourseId);
+          } else if (targetStudent.enrolledCourses && targetStudent.enrolledCourses.length > 0) {
+            const matchedCourse = availableCourses.find((c) =>
+              isStudentInStandard(targetStudent, c.id),
+            );
+            setPaymentStandardFilter(matchedCourse?.id || targetStudent.enrolledCourses[0]?.courseId || '');
+          }
+        }
+      }
+    }
 
     try {
       const detail: any = await ApiClient.fetch(`/fees/students/${studentId}/account`);
@@ -1199,6 +1239,28 @@ export default function FeesPage() {
       setShowPaymentModal(true);
     } catch (err: any) {
       alert(`Could not load invoices for payment: ${err.message}`);
+    }
+  };
+
+  // Handle standard filter change inside Record Fee Collection modal
+  const handlePaymentStandardChange = (newStandardId: string) => {
+    setPaymentStandardFilter(newStandardId);
+    const matchingStudents = newStandardId
+      ? studentAccounts.filter((s) => isStudentInStandard(s, newStandardId))
+      : studentAccounts;
+
+    const currentMatches = matchingStudents.some((s) => s.id === paymentStudentId);
+    if (!currentMatches) {
+      if (matchingStudents.length > 0) {
+        handleOpenPaymentModalForStudent(matchingStudents[0].id, undefined, newStandardId);
+      } else {
+        setPaymentStudentId('');
+        setStudentOpenInvoices([]);
+        setSelectedSingleInvoiceId('');
+        setPaymentAmount(0);
+        setSplitCashAmount(0);
+        setSplitUpiAmount(0);
+      }
     }
   };
 
@@ -2193,6 +2255,12 @@ export default function FeesPage() {
   const totalCourseOutstanding = courseBreakdown.reduce((sum, c) => sum + (c.outstanding || 0), 0);
   const overallCollectionRate = totalCourseInvoiced > 0 ? Math.round((totalCourseCollected / totalCourseInvoiced) * 100) : 0;
 
+  // Filtered student list for Record Fee Collection modal based on selected standard
+  const filteredModalStudents = useMemo(() => {
+    if (!paymentStandardFilter) return studentAccounts;
+    return studentAccounts.filter((s) => isStudentInStandard(s, paymentStandardFilter));
+  }, [paymentStandardFilter, studentAccounts, availableCourses]);
+
   // Calculation helpers for payment collection modal (partial & full collection)
   const selectedPaymentStudent = studentAccounts.find((s) => s.id === paymentStudentId);
   const currentSelectedInvoice = studentOpenInvoices.find((i) => i.id === selectedSingleInvoiceId) || studentOpenInvoices[0];
@@ -2364,8 +2432,15 @@ export default function FeesPage() {
 
             <button
               onClick={() => {
-                if (studentAccounts.length > 0) {
-                  handleOpenPaymentModalForStudent(studentAccounts[0].id);
+                const initialStandard = filterCourseId || '';
+                setPaymentStandardFilter(initialStandard);
+                const eligible = initialStandard
+                  ? studentAccounts.filter((s) => isStudentInStandard(s, initialStandard))
+                  : studentAccounts;
+                if (eligible.length > 0) {
+                  handleOpenPaymentModalForStudent(eligible[0].id, undefined, initialStandard);
+                } else if (studentAccounts.length > 0) {
+                  handleOpenPaymentModalForStudent(studentAccounts[0].id, undefined, '');
                 } else {
                   setShowPaymentModal(true);
                 }
@@ -2493,6 +2568,7 @@ export default function FeesPage() {
                 <table className="w-full text-left border-collapse text-xs">
                   <thead className="sticky top-0 z-10 bg-neutral-50 shadow-[0_1px_0_0_#e5e5e5]">
                     <tr className="text-neutral-600 uppercase font-semibold text-[11px] tracking-wider">
+                      <th className="py-2.5 px-3 text-center w-12 font-semibold text-neutral-600">S.No</th>
                       <th className="py-2.5 px-3.5">Course / Standard</th>
                       <th className="py-2.5 px-3 text-center">Enrolled</th>
                       <th className="py-2.5 px-3.5 text-right">Invoiced (₹)</th>
@@ -2504,13 +2580,16 @@ export default function FeesPage() {
                   <tbody className="divide-y divide-neutral-100 text-neutral-800">
                     {courseBreakdown.length === 0 ? (
                       <tr>
-                        <td colSpan={6} className="py-12 text-center text-neutral-400">
+                        <td colSpan={7} className="py-12 text-center text-neutral-400">
                           No course financial records available yet.
                         </td>
                       </tr>
                     ) : (
-                      courseBreakdown.map((c) => (
+                      courseBreakdown.map((c, index) => (
                         <tr key={c.courseId} className="hover:bg-neutral-50/70 transition-colors">
+                          <td className="py-2 px-3 text-center font-mono text-neutral-500 font-semibold text-xs">
+                            {index + 1}
+                          </td>
                           <td className="py-2 px-3.5">
                             <div className="font-bold text-neutral-900 text-xs sm:text-sm">{c.courseName}</div>
                             <div className="text-[10px] text-neutral-400 font-mono">{c.courseCode}</div>
@@ -2739,6 +2818,7 @@ export default function FeesPage() {
                 <table className="w-full text-left border-collapse text-xs">
                   <thead>
                     <tr className="bg-neutral-50 border-b border-neutral-200 text-neutral-600 uppercase font-semibold text-[11px] tracking-wider">
+                      <th className="py-3 px-3 text-center w-14 font-semibold text-neutral-600">S.No</th>
                       <th className="py-3 px-4">Student Identity</th>
                       <th className="py-3 px-4">Enrolled Courses</th>
                       <th className="py-3 px-4 text-right">Consolidated Billed</th>
@@ -2751,13 +2831,16 @@ export default function FeesPage() {
                   <tbody className="divide-y divide-neutral-100 text-neutral-800">
                     {filteredStudentAccounts.length === 0 ? (
                       <tr>
-                        <td colSpan={7} className="py-8 text-center text-neutral-400">
+                        <td colSpan={8} className="py-8 text-center text-neutral-400">
                           No student accounts found matching filter criteria.
                         </td>
                       </tr>
                     ) : (
-                      filteredStudentAccounts.map((account) => (
+                      filteredStudentAccounts.map((account, index) => (
                         <tr key={account.id} className="hover:bg-neutral-50/70 transition-colors">
+                          <td className="py-3.5 px-3 text-center font-mono text-neutral-500 font-semibold text-xs">
+                            {index + 1}
+                          </td>
                           <td className="py-3.5 px-4">
                             <div className="font-bold text-black text-sm">{account.name}</div>
                             <div className="flex items-center gap-2 mt-0.5">
@@ -2897,6 +2980,7 @@ export default function FeesPage() {
                 <table className="w-full text-left border-collapse text-xs">
                   <thead>
                     <tr className="bg-neutral-50 border-b border-neutral-200 text-neutral-600 uppercase font-semibold text-[11px] tracking-wider">
+                      <th className="py-3 px-3 text-center w-14 font-semibold text-neutral-600">S.No</th>
                       <th className="py-3 px-4">Configuration Name</th>
                       <th className="py-3 px-4">Course / Standard</th>
                       <th className="py-3 px-4">Offering Scope</th>
@@ -2911,13 +2995,16 @@ export default function FeesPage() {
                   <tbody className="divide-y divide-neutral-100 text-neutral-800">
                     {courseConfigs.length === 0 ? (
                       <tr>
-                        <td colSpan={9} className="py-8 text-center text-neutral-400">
+                        <td colSpan={10} className="py-8 text-center text-neutral-400">
                           No course fee rules configured yet. Click "New Course Fee Rule" to add one.
                         </td>
                       </tr>
                     ) : (
-                      courseConfigs.map((cfg) => (
+                      courseConfigs.map((cfg, index) => (
                         <tr key={cfg.id} className="hover:bg-neutral-50/70 transition-colors">
+                          <td className="py-3.5 px-3 text-center font-mono text-neutral-500 font-semibold text-xs">
+                            {index + 1}
+                          </td>
                           <td className="py-3.5 px-4 font-bold text-black text-sm">
                             {cfg.name}
                             {cfg.description && (
@@ -3125,6 +3212,7 @@ export default function FeesPage() {
                 <table className="w-full text-left border-collapse text-xs">
                   <thead>
                     <tr className="bg-neutral-50 border-b border-neutral-200 text-neutral-600 uppercase font-semibold text-[11px] tracking-wider">
+                      <th className="py-3 px-3 text-center w-14 font-semibold text-neutral-600">S.No</th>
                       <th className="py-3 px-4">Invoice #</th>
                       <th className="py-3 px-4">Student</th>
                       <th className="py-3 px-4">Course / Offering</th>
@@ -3139,13 +3227,16 @@ export default function FeesPage() {
                   <tbody className="divide-y divide-neutral-100 text-neutral-800">
                     {invoicesList.length === 0 ? (
                       <tr>
-                        <td colSpan={9} className="py-8 text-center text-neutral-400">
+                        <td colSpan={10} className="py-8 text-center text-neutral-400">
                           No invoices generated yet.
                         </td>
                       </tr>
                     ) : (
-                      invoicesList.map((inv) => (
+                      invoicesList.map((inv, index) => (
                         <tr key={inv.id} className="hover:bg-neutral-50/70 transition-colors">
+                          <td className="py-3.5 px-3 text-center font-mono text-neutral-500 font-semibold text-xs">
+                            {index + 1}
+                          </td>
                           <td className="py-3.5 px-4 font-mono font-bold text-black">
                             {inv.invoiceNumber}
                           </td>
@@ -3214,7 +3305,7 @@ export default function FeesPage() {
                                 <Button
                                   size="sm"
                                   variant="primary"
-                                  onClick={() => handleOpenPaymentModalForStudent(inv.student.id, inv.id)}
+                                  onClick={() => handleOpenPaymentModalForStudent(inv.student.id, inv.id, inv.class?.id)}
                                 >
                                   Collect
                                 </Button>
@@ -3257,8 +3348,15 @@ export default function FeesPage() {
                 size="sm"
                 variant="primary"
                 onClick={() => {
-                  if (studentAccounts.length > 0) {
-                    handleOpenPaymentModalForStudent(studentAccounts[0].id);
+                  const initialStandard = filterCourseId || '';
+                  setPaymentStandardFilter(initialStandard);
+                  const eligible = initialStandard
+                    ? studentAccounts.filter((s) => isStudentInStandard(s, initialStandard))
+                    : studentAccounts;
+                  if (eligible.length > 0) {
+                    handleOpenPaymentModalForStudent(eligible[0].id, undefined, initialStandard);
+                  } else if (studentAccounts.length > 0) {
+                    handleOpenPaymentModalForStudent(studentAccounts[0].id, undefined, '');
                   } else {
                     setShowPaymentModal(true);
                   }
@@ -3274,6 +3372,7 @@ export default function FeesPage() {
                 <table className="w-full text-left border-collapse text-xs">
                   <thead>
                     <tr className="bg-neutral-50 border-b border-neutral-200 text-neutral-600 uppercase font-semibold text-[11px] tracking-wider">
+                      <th className="py-3 px-3 text-center w-14 font-semibold text-neutral-600">S.No</th>
                       <th className="py-3 px-4">Receipt #</th>
                       <th className="py-3 px-4">Date & Time</th>
                       <th className="py-3 px-4">Student</th>
@@ -3288,13 +3387,16 @@ export default function FeesPage() {
                   <tbody className="divide-y divide-neutral-100 text-neutral-800">
                     {paymentsList.length === 0 ? (
                       <tr>
-                        <td colSpan={9} className="py-8 text-center text-neutral-400">
+                        <td colSpan={10} className="py-8 text-center text-neutral-400">
                           No payments recorded yet.
                         </td>
                       </tr>
                     ) : (
-                      paymentsList.map((pay) => (
+                      paymentsList.map((pay, index) => (
                         <tr key={pay.id} className="hover:bg-neutral-50/70 transition-colors">
+                          <td className="py-3.5 px-3 text-center font-mono text-neutral-500 font-semibold text-xs">
+                            {index + 1}
+                          </td>
                           <td className="py-3.5 px-4 font-mono font-bold text-black">
                             {pay.receiptNumber}
                           </td>
@@ -4104,6 +4206,7 @@ export default function FeesPage() {
                                   handleOpenPaymentModalForStudent(
                                     selectedStudentDetail.student.id,
                                     course.invoiceId,
+                                    course.courseId,
                                   );
                                 }}
                               >
@@ -4509,86 +4612,139 @@ export default function FeesPage() {
           maxWidth="5xl"
         >
           <form onSubmit={handleSubmitPayment} className="space-y-3">
-            {/* Top Compact Strip: Student Profile & Billing Cycle */}
-            <div className="bg-gradient-to-r from-orange-50/70 via-neutral-50 to-neutral-50 p-2.5 sm:p-3 rounded-xl border border-neutral-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
-              {selectedPaymentStudent ? (
-                <div className="flex items-center gap-2.5 min-w-0">
-                  <div className="w-8 h-8 rounded-lg bg-orange-100 border border-orange-200 flex items-center justify-center text-[#FF8500] font-bold text-xs shrink-0 shadow-2xs">
-                    {selectedPaymentStudent.name.slice(0, 2).toUpperCase()}
+            {/* Top Filter & Selection Bar: Standard Filter, Student Selector & Billing Cycle */}
+            <div className="bg-gradient-to-r from-orange-50/70 via-neutral-50 to-neutral-50/90 p-3 rounded-xl border border-neutral-200/90 space-y-2.5 shadow-2xs">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-2.5 items-center">
+                {/* 1. Standard / Class Filter */}
+                <div className="lg:col-span-4 flex items-center gap-2 bg-white px-2.5 py-1.5 rounded-lg border border-neutral-200 shadow-2xs">
+                  <GraduationCap className="w-4 h-4 text-[#FF8500] shrink-0" />
+                  <div className="flex flex-col min-w-0 flex-1">
+                    <span className="text-[9px] font-bold uppercase tracking-wider text-neutral-500">
+                      Standard / Class
+                    </span>
+                    <select
+                      value={paymentStandardFilter}
+                      onChange={(e) => handlePaymentStandardChange(e.target.value)}
+                      className="w-full bg-transparent text-xs font-bold text-neutral-900 focus:outline-none cursor-pointer truncate"
+                      title="Filter students by Standard"
+                    >
+                      <option value="">All Standards ({studentAccounts.length} students)</option>
+                      {availableCourses.map((c) => {
+                        const count = studentAccounts.filter((s) => isStudentInStandard(s, c.id)).length;
+                        return (
+                          <option key={c.id} value={c.id}>
+                            {c.name} ({count} {count === 1 ? 'student' : 'students'})
+                          </option>
+                        );
+                      })}
+                    </select>
                   </div>
-                  <div className="min-w-0 flex items-center gap-1.5 sm:gap-2 flex-wrap">
-                    <span className="font-bold text-xs text-neutral-900 truncate">
-                      {selectedPaymentStudent.name}
+                </div>
+
+                {/* 2. Student Selector (Filtered by Standard) */}
+                <div className="lg:col-span-5 flex items-center gap-2 bg-white px-2.5 py-1.5 rounded-lg border border-neutral-200 shadow-2xs">
+                  <Users className="w-4 h-4 text-[#FF8500] shrink-0" />
+                  <div className="flex flex-col min-w-0 flex-1">
+                    <span className="text-[9px] font-bold uppercase tracking-wider text-neutral-500">
+                      Student ({filteredModalStudents.length} available)
                     </span>
-                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-white text-neutral-700 border border-neutral-200 font-semibold shrink-0">
-                      {selectedPaymentStudent.studentCode}
+                    <select
+                      value={paymentStudentId}
+                      onChange={(e) => {
+                        if (e.target.value) {
+                          handleOpenPaymentModalForStudent(e.target.value, undefined, paymentStandardFilter);
+                        }
+                      }}
+                      className="w-full bg-transparent text-xs font-bold text-neutral-900 focus:outline-none cursor-pointer truncate"
+                      required
+                      title="Select student to record fee collection"
+                    >
+                      {filteredModalStudents.length === 0 ? (
+                        <option value="">No students in this standard</option>
+                      ) : (
+                        <>
+                          <option value="">-- Choose Student --</option>
+                          {filteredModalStudents.map((s) => (
+                            <option key={s.id} value={s.id}>
+                              {s.name} ({s.studentCode}) • Due: ₹{s.consolidatedBalance.toLocaleString()}
+                            </option>
+                          ))}
+                        </>
+                      )}
+                    </select>
+                  </div>
+                </div>
+
+                {/* 3. Billing Cycle */}
+                <div className="lg:col-span-3 flex items-center gap-2 bg-white px-2.5 py-1.5 rounded-lg border border-neutral-200 shadow-2xs">
+                  <Calendar className="w-4 h-4 text-[#FF8500] shrink-0" />
+                  <div className="flex flex-col min-w-0 flex-1">
+                    <span className="text-[9px] font-bold uppercase tracking-wider text-neutral-500">
+                      Billing Cycle
                     </span>
-                    {selectedPaymentStudent.admissionNumber && (
-                      <span className="text-[10px] font-mono text-neutral-500 shrink-0">
-                        Adm: #{selectedPaymentStudent.admissionNumber}
+                    <select
+                      value={collectionMonth}
+                      onChange={(e) => setCollectionMonth(e.target.value)}
+                      className="w-full bg-transparent text-xs font-semibold text-neutral-900 focus:outline-none cursor-pointer truncate"
+                      title="Select Billing Cycle"
+                    >
+                      {BILLING_CYCLE_GROUPS.map((grp) => (
+                        <optgroup key={grp.group} label={grp.group}>
+                          {grp.options.map((opt) => (
+                            <option key={opt.value} value={opt.value}>
+                              {opt.label}
+                            </option>
+                          ))}
+                        </optgroup>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              {/* Selected Student Profile Strip */}
+              {selectedPaymentStudent ? (
+                <div className="pt-2 border-t border-neutral-200/70 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <div className="w-8 h-8 rounded-lg bg-orange-100 border border-orange-200 flex items-center justify-center text-[#FF8500] font-bold text-xs shrink-0 shadow-2xs">
+                      {selectedPaymentStudent.name.slice(0, 2).toUpperCase()}
+                    </div>
+                    <div className="min-w-0 flex items-center gap-1.5 sm:gap-2 flex-wrap">
+                      <span className="font-bold text-xs text-neutral-900 truncate">
+                        {selectedPaymentStudent.name}
                       </span>
-                    )}
-                    <span className="text-neutral-300 hidden sm:inline">•</span>
-                    <span className="text-[11px] text-neutral-500 w-full sm:w-auto">
-                      Total Due:{' '}
-                      <strong className="text-amber-700 font-mono">
-                        ₹{selectedPaymentStudent.consolidatedBalance.toLocaleString()}
-                      </strong>
+                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-white text-neutral-700 border border-neutral-200 font-semibold shrink-0">
+                        {selectedPaymentStudent.studentCode}
+                      </span>
+                      {selectedPaymentStudent.admissionNumber && (
+                        <span className="text-[10px] font-mono text-neutral-500 shrink-0">
+                          Adm: #{selectedPaymentStudent.admissionNumber}
+                        </span>
+                      )}
+                      {selectedPaymentStudent.enrolledCourses.length > 0 && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-orange-100/70 text-orange-800 font-medium border border-orange-200/80 shrink-0">
+                          {Array.from(new Set(selectedPaymentStudent.enrolledCourses.map((c: any) => c.courseName).filter(Boolean))).join(', ')}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="text-xs shrink-0 flex items-center gap-1.5">
+                    <span className="text-neutral-500 font-medium">Total Balance:</span>
+                    <span className="px-2 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-200 font-mono font-bold">
+                      ₹{selectedPaymentStudent.consolidatedBalance.toLocaleString()}
                     </span>
                   </div>
                 </div>
               ) : (
-                <div className="w-full sm:w-64">
-                  <select
-                    value={paymentStudentId}
-                    onChange={(e) => handleOpenPaymentModalForStudent(e.target.value)}
-                    className="w-full px-2.5 py-1.5 bg-white border border-neutral-300 rounded-lg text-xs font-semibold text-black focus:outline-none focus:ring-1 focus:ring-[#FF8500]"
-                    required
-                  >
-                    <option value="">-- Choose Student --</option>
-                    {studentAccounts.map((s) => (
-                      <option key={s.id} value={s.id}>
-                        {s.name} ({s.studentCode}) • Balance: ₹{s.consolidatedBalance.toLocaleString()}
-                      </option>
-                    ))}
-                  </select>
+                <div className="pt-2 border-t border-neutral-200/70 flex items-center gap-2 text-xs text-neutral-500">
+                  <AlertCircle className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                  <span>
+                    {filteredModalStudents.length === 0
+                      ? 'No students found for this standard. Please switch standard above.'
+                      : 'Please choose a student from the dropdown above to view open fee invoices.'}
+                  </span>
                 </div>
               )}
-
-              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full sm:w-auto">
-                <div className="flex items-center gap-1.5 text-xs text-neutral-600 w-full sm:w-auto">
-                  <span className="text-[10px] font-bold text-neutral-500 uppercase shrink-0">Cycle:</span>
-                  <select
-                    value={collectionMonth}
-                    onChange={(e) => setCollectionMonth(e.target.value)}
-                    className="flex-1 sm:flex-initial px-2 py-1.5 sm:py-1 bg-white border border-neutral-300 rounded-md text-xs font-semibold text-black focus:outline-none focus:ring-1 focus:ring-[#FF8500] min-w-0 sm:max-w-[200px]"
-                  >
-                    {BILLING_CYCLE_GROUPS.map((grp) => (
-                      <optgroup key={grp.group} label={grp.group}>
-                        {grp.options.map((opt) => (
-                          <option key={opt.value} value={opt.value}>
-                            {opt.label}
-                          </option>
-                        ))}
-                      </optgroup>
-                    ))}
-                  </select>
-                </div>
-
-                {selectedPaymentStudent && studentAccounts.length > 1 && (
-                  <select
-                    value={paymentStudentId}
-                    onChange={(e) => handleOpenPaymentModalForStudent(e.target.value)}
-                    className="w-full sm:w-auto px-2 py-1.5 sm:py-1 bg-white border border-neutral-300 rounded-md text-[11px] font-semibold text-neutral-700 focus:outline-none focus:ring-1 focus:ring-[#FF8500] cursor-pointer min-w-0 sm:max-w-[180px] truncate"
-                  >
-                    {studentAccounts.map((s) => (
-                      <option key={s.id} value={s.id}>
-                        Switch: {s.name}
-                      </option>
-                    ))}
-                  </select>
-                )}
-              </div>
             </div>
 
             {/* Course Switcher Tabs if student has multiple enrolled courses */}
@@ -5238,6 +5394,7 @@ export default function FeesPage() {
                     className="w-full sm:w-auto"
                     disabled={
                       loading ||
+                      !paymentStudentId ||
                       isExcessPayment ||
                       Number(paymentAmount) <= 0 ||
                       (!paymentProofFile && !paymentProofName) ||
@@ -5247,6 +5404,8 @@ export default function FeesPage() {
                   >
                     {loading
                       ? 'Processing...'
+                      : !paymentStudentId
+                      ? 'Select a Student'
                       : appliedPaymentDiscount > 0 && !paymentDiscountReason.trim()
                       ? 'Provide Reason for Discount'
                       : (!paymentProofFile && !paymentProofName)
