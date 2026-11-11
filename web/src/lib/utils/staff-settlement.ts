@@ -126,10 +126,10 @@ export function buildSettlementPayload(state: SettlementFormState): {
 }
 
 /**
- * Initializes form state from existing assignment rule string
+ * Initializes form state from existing assignment rule string or object
  */
 export function parseSettlementToForm(
-  rawRule?: string | null,
+  rawRule?: any,
   fallbackShare: number = 70,
 ): SettlementFormState {
   if (!rawRule) {
@@ -139,15 +139,67 @@ export function parseSettlementToForm(
     };
   }
 
-  if (rawRule.trim().startsWith('{')) {
+  // Handle if rawRule is already a parsed object
+  if (typeof rawRule === 'object' && rawRule !== null) {
+    const parsed: StaffSettlementConfig = rawRule;
+    if (parsed.mode === 'STUDENT_TIER_BASED') {
+      const allVal = Number(parsed.allSubjects?.value ?? 1000);
+      const twoVal = Number(parsed.twoSubjects?.value ?? 700);
+      const singleVal = Number(parsed.singleSubject?.value ?? 500);
+
+      return {
+        ...defaultSettlementState,
+        mode: 'STUDENT_TIER_BASED',
+        allSubjectsType: 'FIXED_AMOUNT',
+        allSubjectsValue: allVal,
+        singleSubjectType: 'FIXED_AMOUNT',
+        singleSubjectValue: singleVal,
+        twoSubjectsType: 'FIXED_AMOUNT',
+        twoSubjectsValue: twoVal,
+        includeTwoSubjects: true,
+        perStudentAmount: allVal,
+        staffSharePercentage: fallbackShare,
+      };
+    }
+
+    if (parsed.mode === 'PER_STUDENT_FIXED') {
+      const base = Number(parsed.perStudentAmount ?? 1000);
+      return {
+        ...defaultSettlementState,
+        mode: 'STUDENT_TIER_BASED',
+        allSubjectsType: 'FIXED_AMOUNT',
+        allSubjectsValue: base,
+        twoSubjectsType: 'FIXED_AMOUNT',
+        twoSubjectsValue: Math.round(base * 0.7),
+        singleSubjectType: 'FIXED_AMOUNT',
+        singleSubjectValue: Math.round(base * 0.5),
+        includeTwoSubjects: true,
+        perStudentAmount: base,
+      };
+    }
+
+    if (parsed.mode === 'REVENUE_SHARE_PERCENTAGE') {
+      return {
+        ...defaultSettlementState,
+        mode: 'REVENUE_SHARE_PERCENTAGE',
+        staffSharePercentage: parsed.staffSharePercentage ?? fallbackShare,
+      };
+    }
+  }
+
+  // Safe string conversion
+  const strRule = typeof rawRule === 'string' ? rawRule.trim() : String(rawRule || '').trim();
+
+  if (strRule.startsWith('{')) {
     try {
-      const parsed: StaffSettlementConfig = JSON.parse(rawRule);
+      const parsed: StaffSettlementConfig = JSON.parse(strRule);
       if (parsed.mode === 'STUDENT_TIER_BASED') {
         const allVal = Number(parsed.allSubjects?.value ?? 1000);
         const twoVal = Number(parsed.twoSubjects?.value ?? 700);
         const singleVal = Number(parsed.singleSubject?.value ?? 500);
 
         return {
+          ...defaultSettlementState,
           mode: 'STUDENT_TIER_BASED',
           allSubjectsType: 'FIXED_AMOUNT',
           allSubjectsValue: allVal,
@@ -189,7 +241,7 @@ export function parseSettlementToForm(
     }
   }
 
-  if (rawRule === 'FULL_POOL_100') {
+  if (strRule === 'FULL_POOL_100') {
     return {
       ...defaultSettlementState,
       mode: 'REVENUE_SHARE_PERCENTAGE',
@@ -236,10 +288,46 @@ export function getSettlementBadgeDisplay(as: {
     };
   }
 
-  const rawRule = as.compensationRule || '';
-  if (rawRule.trim().startsWith('{')) {
+  const rawRule = as.compensationRule;
+  if (typeof rawRule === 'object' && rawRule !== null) {
+    const parsed: StaffSettlementConfig = rawRule;
+    if (parsed.mode === 'STUDENT_TIER_BASED') {
+      const allVal = Number(parsed.allSubjects?.value ?? 0);
+      const twoVal = Number(parsed.twoSubjects?.value ?? 0);
+      const singleVal = Number(parsed.singleSubject?.value ?? 0);
+      return {
+        text: `All ₹${allVal} • 2-Sub ₹${twoVal} • 1-Sub ₹${singleVal}`,
+        badgeClass: 'bg-purple-50 text-purple-700 border-purple-200',
+        tooltip: `Fixed Per-Tier: All-Sub ₹${allVal} | 2-Sub ₹${twoVal} | 1-Sub ₹${singleVal}`,
+        mode: 'STUDENT_TIER_BASED',
+      };
+    }
+
+    if (parsed.mode === 'PER_STUDENT_FIXED') {
+      const amt = (parsed.perStudentAmount || 0).toLocaleString('en-IN');
+      return {
+        text: `₹${amt}/Student`,
+        badgeClass: 'bg-teal-50 text-teal-700 border-teal-200',
+        tooltip: `Fixed ₹${amt} per enrolled student payment`,
+        mode: 'PER_STUDENT_FIXED',
+      };
+    }
+
+    if (parsed.mode === 'REVENUE_SHARE_PERCENTAGE') {
+      const share = parsed.staffSharePercentage ?? as.staffSharePercentage ?? 70;
+      return {
+        text: `${share}% Pool`,
+        badgeClass: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+        tooltip: `${share}% of collected fee revenue`,
+        mode: 'REVENUE_SHARE_PERCENTAGE',
+      };
+    }
+  }
+
+  const strRule = typeof rawRule === 'string' ? rawRule.trim() : String(rawRule || '').trim();
+  if (strRule.startsWith('{')) {
     try {
-      const parsed: StaffSettlementConfig = JSON.parse(rawRule);
+      const parsed: StaffSettlementConfig = JSON.parse(strRule);
       if (parsed.mode === 'STUDENT_TIER_BASED') {
         const allVal = Number(parsed.allSubjects?.value ?? 0);
         const twoVal = Number(parsed.twoSubjects?.value ?? 0);

@@ -292,7 +292,8 @@ export default function FeesPage() {
     const list: any[] = [];
     staffOptions.forEach((staff) => {
       const cleanLastName = staff.lastName && staff.lastName !== '.' && staff.lastName !== '-' ? staff.lastName : '';
-      const cleanFullName = (staff.fullName || `${staff.firstName || ''} ${cleanLastName}`)
+      const rawFullName = staff.fullName || `${staff.firstName || ''} ${cleanLastName}`;
+      const cleanFullName = String(rawFullName || '')
         .replace(/\s+[\.\-]\s*$/, '')
         .trim();
 
@@ -403,13 +404,14 @@ export default function FeesPage() {
 
   const filteredFacultyAssignments = useMemo(() => {
     return facultyAssignments.filter((as) => {
-      if (facultySearchQuery.trim()) {
-        const q = facultySearchQuery.toLowerCase();
-        const matchName = as.staffName?.toLowerCase().includes(q);
-        const matchCode = as.staffCode?.toLowerCase().includes(q);
-        const matchCourse = (as.class?.name || as.className || '').toLowerCase().includes(q);
-        const matchSubject = (as.subject?.name || '').toLowerCase().includes(q);
-        const matchBatch = (as.batch?.name || '').toLowerCase().includes(q);
+      const trimmedQuery = String(facultySearchQuery || '').trim();
+      if (trimmedQuery) {
+        const q = trimmedQuery.toLowerCase();
+        const matchName = String(as.staffName || '').toLowerCase().includes(q);
+        const matchCode = String(as.staffCode || '').toLowerCase().includes(q);
+        const matchCourse = String(as.class?.name || as.className || '').toLowerCase().includes(q);
+        const matchSubject = String(as.subject?.name || as.subjectName || '').toLowerCase().includes(q);
+        const matchBatch = String(as.batch?.name || as.batchName || '').toLowerCase().includes(q);
         if (!matchName && !matchCode && !matchCourse && !matchSubject && !matchBatch) {
           return false;
         }
@@ -469,12 +471,16 @@ export default function FeesPage() {
           )
         : enrolledInCourse;
 
-      const targetSubName = (as.subject?.name || as.subjectName || '').trim().toLowerCase();
+      const targetSubName = String(as.subject?.name || (typeof as.subjectName === 'string' ? as.subjectName : as.subjectName?.name) || '').trim().toLowerCase();
       const filteredEligibleStudents = targetSubName
         ? filteredByBatch.filter((sa) => {
-            const courseEntries = (sa.enrolledCourses || []).filter((ec) => ec.courseId === as.classId);
-            const distinctSubs = new Set(courseEntries.map((e) => (e.subjectName || '').trim().toLowerCase()).filter(Boolean));
-            return distinctSubs.size >= 3 || courseEntries.some((e) => !e.subjectName) || distinctSubs.has(targetSubName);
+            const courseEntries = (sa.enrolledCourses || []).filter((ec: any) => ec.courseId === as.classId);
+            const distinctSubs = new Set(
+              courseEntries
+                .map((e: any) => String(typeof e?.subjectName === 'string' ? e.subjectName : e?.subjectName?.name || e?.subject?.name || '').trim().toLowerCase())
+                .filter(Boolean),
+            );
+            return distinctSubs.size >= 3 || courseEntries.some((e: any) => !e?.subjectName) || distinctSubs.has(targetSubName);
           })
         : filteredByBatch;
 
@@ -639,7 +645,7 @@ export default function FeesPage() {
               adjs.push({
                 ...a,
                 invoiceNumber: inv.invoiceNumber,
-                studentName: `${inv.student?.firstName || ''} ${inv.student?.lastName || ''}`.trim(),
+                studentName: String(`${inv.student?.firstName || ''} ${inv.student?.lastName || ''}`).trim() || inv.student?.name || 'Student',
                 studentCode: inv.student?.studentCode || 'N/A',
                 courseName: inv.class?.name || 'Standard Course',
               });
@@ -801,7 +807,7 @@ export default function FeesPage() {
   };
 
   const getCleanReminderPhone = () => {
-    const raw = reminderPhone.replace(/[^0-9]/g, '');
+    const raw = String(reminderPhone || '').replace(/[^0-9]/g, '');
     if (!raw) return '';
     return raw.length === 10 ? `91${raw}` : raw;
   };
@@ -925,8 +931,8 @@ export default function FeesPage() {
         day: 'numeric',
       }),
       status: inv.status === 'PAID' ? 'PAID' : inv.status === 'PARTIAL' ? 'PARTIAL' : 'UNPAID',
-      studentName: `${inv.student.firstName} ${inv.student.lastName}`.trim(),
-      studentCode: inv.student.studentCode,
+      studentName: String(`${inv.student?.firstName || ''} ${inv.student?.lastName || ''}`).trim() || (inv.student as any)?.name || 'Student',
+      studentCode: inv.student?.studentCode || 'N/A',
       admissionNumber: (inv.student as any).admissionNumber || inv.student.studentCode,
       courseOrClass: inv.class?.name,
       standard: (inv.class as any)?.standard || (inv.class as any)?.code,
@@ -1006,8 +1012,8 @@ export default function FeesPage() {
       (c: any) =>
         c.courseId === standardId ||
         (course &&
-          (c.courseName?.trim().toLowerCase() === course.name?.trim().toLowerCase() ||
-           c.courseCode?.trim().toLowerCase() === course.code?.trim().toLowerCase())),
+          (String(c?.courseName || c?.className || c?.name || '').trim().toLowerCase() === String(course?.name || '').trim().toLowerCase() ||
+           String(c?.courseCode || c?.classCode || c?.code || '').trim().toLowerCase() === String(course?.code || '').trim().toLowerCase())),
     );
   };
 
@@ -1328,7 +1334,7 @@ export default function FeesPage() {
 
     const appliedDisc = Math.max(0, Number(paymentDiscount) || 0);
     if (appliedDisc > 0) {
-      if (!paymentDiscountReason.trim()) {
+      if (!String(paymentDiscountReason || '').trim()) {
         setDiscountError('Discount reason is mandatory when an instant fee discount is applied');
         return;
       }
@@ -1348,7 +1354,7 @@ export default function FeesPage() {
       const monthPrefix = collectionMonth ? `[Cycle: ${collectionMonth}]` : '';
 
       let finalMethod: 'CASH' | 'UPI' = 'UPI';
-      let finalReference = paymentReference.trim();
+      let finalReference = String(paymentReference || '').trim();
       let methodNote = '';
 
       if (paymentMethodMode === 'CASH') {
@@ -1370,7 +1376,7 @@ export default function FeesPage() {
       }
 
       const proofNote = paymentProofName ? `[Proof: ${paymentProofName} (${paymentProofSize})]` : '';
-      const combinedNotes = [monthPrefix, methodNote, proofNote, paymentNotes.trim()].filter(Boolean).join(' ');
+      const combinedNotes = [monthPrefix, methodNote, proofNote, String(paymentNotes || '').trim()].filter(Boolean).join(' ');
 
       let payload: any = {
         studentId: paymentStudentId,
@@ -1383,7 +1389,7 @@ export default function FeesPage() {
 
       if (appliedDisc > 0) {
         payload.discountAmount = appliedDisc;
-        payload.discountReason = paymentDiscountReason.trim();
+        payload.discountReason = String(paymentDiscountReason || '').trim();
       }
 
       if (paymentMode === 'MULTI') {
@@ -1433,7 +1439,7 @@ export default function FeesPage() {
         }
       }
 
-      const discMsg = appliedDisc > 0 ? ` (with ₹${appliedDisc.toLocaleString()} discount: "${paymentDiscountReason.trim()}")` : '';
+      const discMsg = appliedDisc > 0 ? ` (with ₹${appliedDisc.toLocaleString()} discount: "${String(paymentDiscountReason || '').trim()}")` : '';
 
       if (paymentProofFile && !proofUploadSuccess) {
         setErrorMsg(
@@ -1585,7 +1591,7 @@ export default function FeesPage() {
           : `${configForm.billingPeriod} Tuition`;
       const batchPart = selectedBatch ? ` (${selectedBatch.name})` : '';
       const subPart = selectedSub ? ` - ${selectedSub.name}` : '';
-      const resolvedName = configForm.name.trim() || `${selectedCourse?.name || 'Course'}${batchPart}${subPart} ${periodLabel}`;
+      const resolvedName = String(configForm.name || '').trim() || `${selectedCourse?.name || 'Course'}${batchPart}${subPart} ${periodLabel}`;
 
       const resolvedAcademicYearId = selectedCourse?.academicYear?.id || selectedCourse?.academicYearId;
 
@@ -1659,7 +1665,7 @@ export default function FeesPage() {
           updatePayload.academicYearId = resolvedAcademicYearId;
         }
         if (configForm.description !== undefined) {
-          updatePayload.description = configForm.description.trim() || undefined;
+          updatePayload.description = String(configForm.description || '').trim() || undefined;
         }
 
         const res: any = await ApiClient.fetch(`/fees/course-configs/${editingConfigId}`, {
@@ -1701,8 +1707,9 @@ export default function FeesPage() {
         } else {
           createPayload.academicYearId = 'any';
         }
-        if (configForm.description?.trim()) {
-          createPayload.description = configForm.description.trim();
+        const descTrimmed = String(configForm.description || '').trim();
+        if (descTrimmed) {
+          createPayload.description = descTrimmed;
         }
 
         const res: any = await ApiClient.fetch('/fees/course-configs', {
@@ -1749,7 +1756,7 @@ export default function FeesPage() {
   // Apply Authorized Adjustment / Scholarship
   const handleApplyAdjustment = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!adjustmentInvoice || adjustmentAmount <= 0 || !adjustmentReason.trim()) {
+    if (!adjustmentInvoice || adjustmentAmount <= 0 || !String(adjustmentReason || '').trim()) {
       alert('Please provide adjustment amount and authorized reason');
       return;
     }
@@ -1767,7 +1774,7 @@ export default function FeesPage() {
           invoiceId: adjustmentInvoice.id,
           type: adjustmentType,
           amount: Number(adjustmentAmount),
-          reason: adjustmentReason.trim(),
+          reason: String(adjustmentReason || '').trim(),
         }),
       });
 
@@ -1788,7 +1795,7 @@ export default function FeesPage() {
 
   // Reverse Payment
   const handleConfirmReversal = async () => {
-    if (!reversalTarget || !reversalReason.trim()) {
+    if (!reversalTarget || !String(reversalReason || '').trim()) {
       alert('Please state the authorized reason for payment reversal');
       return;
     }
@@ -1797,7 +1804,7 @@ export default function FeesPage() {
       setLoading(true);
       await ApiClient.fetch(`/fees/payments/${reversalTarget.id}/reverse`, {
         method: 'POST',
-        body: JSON.stringify({ reason: reversalReason.trim() }),
+        body: JSON.stringify({ reason: String(reversalReason || '').trim() }),
       });
 
       setSuccessMsg(`Payment ${reversalTarget.receiptNumber} successfully reversed and invoice balances restored.`);
@@ -2294,13 +2301,13 @@ export default function FeesPage() {
     if (paymentStandardFilter) {
       list = list.filter((s) => isStudentInStandard(s, paymentStandardFilter));
     }
-    const q = paymentStudentSearch.trim().toLowerCase();
+    const q = String(paymentStudentSearch || '').trim().toLowerCase();
     if (q) {
       list = list.filter((s) => {
-        const nameMatch = s.name.toLowerCase().includes(q);
-        const codeMatch = s.studentCode.toLowerCase().includes(q);
-        const admMatch = s.admissionNumber ? s.admissionNumber.toLowerCase().includes(q) : false;
-        const phoneMatch = s.phone ? s.phone.includes(q) : false;
+        const nameMatch = String(s.name || '').toLowerCase().includes(q);
+        const codeMatch = String(s.studentCode || '').toLowerCase().includes(q);
+        const admMatch = s.admissionNumber ? String(s.admissionNumber).toLowerCase().includes(q) : false;
+        const phoneMatch = s.phone ? String(s.phone).includes(q) : false;
         return nameMatch || codeMatch || admMatch || phoneMatch;
       });
     }
@@ -2309,13 +2316,13 @@ export default function FeesPage() {
 
   // Global search matches across all standards when searching
   const globalSearchMatches = useMemo(() => {
-    const q = paymentStudentSearch.trim().toLowerCase();
+    const q = String(paymentStudentSearch || '').trim().toLowerCase();
     if (!q) return [];
     return studentAccounts.filter((s) => {
-      const nameMatch = s.name.toLowerCase().includes(q);
-      const codeMatch = s.studentCode.toLowerCase().includes(q);
-      const admMatch = s.admissionNumber ? s.admissionNumber.toLowerCase().includes(q) : false;
-      const phoneMatch = s.phone ? s.phone.includes(q) : false;
+      const nameMatch = String(s.name || '').toLowerCase().includes(q);
+      const codeMatch = String(s.studentCode || '').toLowerCase().includes(q);
+      const admMatch = s.admissionNumber ? String(s.admissionNumber).toLowerCase().includes(q) : false;
+      const phoneMatch = s.phone ? String(s.phone).includes(q) : false;
       return nameMatch || codeMatch || admMatch || phoneMatch;
     });
   }, [paymentStudentSearch, studentAccounts]);
@@ -2353,30 +2360,31 @@ export default function FeesPage() {
   // Client-side instant filter on student accounts
   const filteredStudentAccounts = useMemo(() => {
     return studentAccounts.filter((account) => {
-      if (searchQuery.trim()) {
-        const q = searchQuery.toLowerCase().trim();
-        const matchesName = account.name.toLowerCase().includes(q);
-        const matchesCode = account.studentCode.toLowerCase().includes(q);
-        const matchesAdm = account.admissionNumber?.toLowerCase().includes(q);
+      const trimmedSearch = String(searchQuery || '').trim();
+      if (trimmedSearch) {
+        const q = trimmedSearch.toLowerCase();
+        const matchesName = String(account.name || '').toLowerCase().includes(q);
+        const matchesCode = String(account.studentCode || '').toLowerCase().includes(q);
+        const matchesAdm = account.admissionNumber ? String(account.admissionNumber).toLowerCase().includes(q) : false;
         if (!matchesName && !matchesCode && !matchesAdm) return false;
       }
 
       if (filterCourseId) {
         const selectedCourse = availableCourses.find((c) => c.id === filterCourseId);
-        const hasCourse = account.enrolledCourses.some(
+        const hasCourse = (account.enrolledCourses || []).some(
           (c: any) =>
             c.courseId === filterCourseId ||
-            (selectedCourse && c.courseName?.toLowerCase() === selectedCourse.name?.toLowerCase()),
+            (selectedCourse && String(c?.courseName || c?.className || '').toLowerCase() === String(selectedCourse?.name || '').toLowerCase()),
         );
         if (!hasCourse) return false;
       }
 
       if (filterSubjectId) {
         const selectedSubject = availableSubjectsForFilter.find((s) => s.id === filterSubjectId);
-        const hasSubject = account.enrolledCourses.some(
+        const hasSubject = (account.enrolledCourses || []).some(
           (c: any) =>
             c.subjectId === filterSubjectId ||
-            (selectedSubject && c.subjectName?.toLowerCase() === selectedSubject.name?.toLowerCase()),
+            (selectedSubject && String(c?.subjectName || '').toLowerCase() === String(selectedSubject?.name || '').toLowerCase()),
         );
         if (!hasSubject) return false;
       }
@@ -3869,7 +3877,7 @@ export default function FeesPage() {
                           <option value="">-- Select Faculty --</option>
                           {staffOptions.map((s) => {
                             const cleanLast = s.lastName && s.lastName !== '.' ? s.lastName : '';
-                            const displayName = s.firstName ? `${s.firstName} ${cleanLast}`.trim() : (s.name || s.email);
+                            const displayName = s.firstName ? String(`${s.firstName} ${cleanLast}`).trim() : (s.name || s.email);
                             return (
                               <option key={s.id} value={s.id}>
                                 {displayName} ({s.designation || 'Faculty'})
@@ -4278,7 +4286,7 @@ export default function FeesPage() {
                   <button
                     type="button"
                     onClick={() => {
-                      const [y, m] = selectedSettlementMonth.split('-').map(Number);
+                      const [y, m] = String(selectedSettlementMonth || new Date().toISOString().substring(0, 7)).split('-').map(Number);
                       const prevDate = new Date(Date.UTC(y, m - 2, 1));
                       setSelectedSettlementMonth(prevDate.toISOString().slice(0, 7));
                     }}
@@ -4293,7 +4301,7 @@ export default function FeesPage() {
                   <button
                     type="button"
                     onClick={() => {
-                      const [y, m] = selectedSettlementMonth.split('-').map(Number);
+                      const [y, m] = String(selectedSettlementMonth || new Date().toISOString().substring(0, 7)).split('-').map(Number);
                       const nextDate = new Date(Date.UTC(y, m, 1));
                       setSelectedSettlementMonth(nextDate.toISOString().slice(0, 7));
                     }}
@@ -4438,12 +4446,16 @@ export default function FeesPage() {
                           )
                         : enrolledInCourse;
 
-                      const targetSubName = (as.subject?.name || as.subjectName || '').trim().toLowerCase();
+                      const targetSubName = String(as.subject?.name || (typeof as.subjectName === 'string' ? as.subjectName : as.subjectName?.name) || '').trim().toLowerCase();
                       const filteredEligibleStudents = targetSubName
                         ? filteredByBatch.filter((sa) => {
-                            const courseEntries = (sa.enrolledCourses || []).filter((ec) => ec.courseId === as.classId);
-                            const distinctSubs = new Set(courseEntries.map((e) => (e.subjectName || '').trim().toLowerCase()).filter(Boolean));
-                            return distinctSubs.size >= 3 || courseEntries.some((e) => !e.subjectName) || distinctSubs.has(targetSubName);
+                            const courseEntries = (sa.enrolledCourses || []).filter((ec: any) => ec.courseId === as.classId);
+                            const distinctSubs = new Set(
+                              courseEntries
+                                .map((e: any) => String(typeof e?.subjectName === 'string' ? e.subjectName : e?.subjectName?.name || e?.subject?.name || '').trim().toLowerCase())
+                                .filter(Boolean),
+                            );
+                            return distinctSubs.size >= 3 || courseEntries.some((e: any) => !e?.subjectName) || distinctSubs.has(targetSubName);
                           })
                         : filteredByBatch;
 
@@ -4528,7 +4540,7 @@ export default function FeesPage() {
                             <td className="py-3 px-4">
                               <div className="flex items-center gap-2.5">
                                 <div className="w-8 h-8 rounded-xl bg-[#FFF4E5] text-[#CC6B00] border border-[#FF8500]/25 flex items-center justify-center font-bold text-xs uppercase shrink-0">
-                                  {as.staffName ? as.staffName.charAt(0) : 'F'}
+                                  {as.staffName ? String(as.staffName).charAt(0) : 'F'}
                                 </div>
                                 <div className="min-w-0">
                                   <div className="font-bold text-neutral-900 truncate flex items-center gap-1.5">
@@ -5747,7 +5759,7 @@ export default function FeesPage() {
                     <div className="absolute left-0 right-0 top-full mt-1.5 bg-white border border-neutral-200 rounded-xl shadow-xl z-50 max-h-64 overflow-y-auto divide-y divide-neutral-100 p-1">
                       <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-neutral-400 bg-neutral-50 rounded flex items-center justify-between">
                         <span>
-                          {paymentStudentSearch.trim()
+                          {String(paymentStudentSearch || '').trim()
                             ? `Search Matches (${filteredModalStudents.length})`
                             : `Students in Standard (${filteredModalStudents.length})`}
                         </span>
@@ -6271,12 +6283,12 @@ export default function FeesPage() {
                         value={paymentDiscountReason}
                         onChange={(e) => {
                           setPaymentDiscountReason(e.target.value);
-                          if (discountError && e.target.value.trim()) {
+                          if (discountError && String(e.target.value || '').trim()) {
                             setDiscountError(null);
                           }
                         }}
                         className={`w-full px-2.5 py-1.5 bg-neutral-50 border rounded-lg text-xs text-black focus:bg-white focus:outline-none focus:ring-1 focus:ring-[#FF8500] ${
-                          appliedPaymentDiscount > 0 && !paymentDiscountReason.trim()
+                          appliedPaymentDiscount > 0 && !String(paymentDiscountReason || '').trim()
                             ? 'border-amber-400 bg-amber-50/40 ring-1 ring-amber-300'
                             : 'border-neutral-300'
                         }`}
@@ -6623,7 +6635,7 @@ export default function FeesPage() {
                         isExcessPayment ||
                         Number(paymentAmount) <= 0 ||
                         (!paymentProofFile && !paymentProofName) ||
-                        (appliedPaymentDiscount > 0 && !paymentDiscountReason.trim()) ||
+                        (appliedPaymentDiscount > 0 && !String(paymentDiscountReason || '').trim()) ||
                         Boolean(discountError)
                       }
                     >
@@ -6633,7 +6645,7 @@ export default function FeesPage() {
                         ? 'Select a Student'
                         : studentOpenInvoices.length === 0 || modalTargetBalance <= 0
                         ? 'No Due Fees for this Student'
-                        : appliedPaymentDiscount > 0 && !paymentDiscountReason.trim()
+                        : appliedPaymentDiscount > 0 && !String(paymentDiscountReason || '').trim()
                         ? 'Provide Reason for Discount'
                         : (!paymentProofFile && !paymentProofName)
                         ? 'Upload Proof to Record'
@@ -7568,7 +7580,7 @@ export default function FeesPage() {
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="flex items-center gap-2">
                           <div className="w-6 h-6 rounded-full bg-orange-100 text-[#CC6B00] flex items-center justify-center font-bold text-[10px] uppercase">
-                            {matchingAssign.staffName ? matchingAssign.staffName.charAt(0) : 'F'}
+                            {matchingAssign.staffName ? String(matchingAssign.staffName).charAt(0) : 'F'}
                           </div>
                           <div>
                             <span className="text-xs font-bold text-neutral-900">{matchingAssign.staffName}</span>
@@ -8096,7 +8108,7 @@ export default function FeesPage() {
                     <option value="">-- Select Faculty --</option>
                     {staffOptions.map((s) => {
                       const cleanLast = s.lastName && s.lastName !== '.' ? s.lastName : '';
-                      const displayName = s.firstName ? `${s.firstName} ${cleanLast}`.trim() : (s.name || s.email);
+                      const displayName = s.firstName ? String(`${s.firstName} ${cleanLast}`).trim() : (s.name || s.email);
                       const assignedStandards = Array.from(
                         new Set(
                           (s.assignments || [])
@@ -8846,7 +8858,7 @@ export default function FeesPage() {
                 </div>
               ) : proofViewer.downloadUrl ? (
                 proofViewer.mimeType === 'application/pdf' ||
-                proofViewer.fileName.toLowerCase().endsWith('.pdf') ? (
+                String(proofViewer.fileName || '').toLowerCase().endsWith('.pdf') ? (
                   <div className="w-full h-[520px] flex flex-col">
                     <iframe
                       src={proofViewer.downloadUrl}
