@@ -38,7 +38,7 @@ export function DesktopSidebar() {
       {/* Navigation Links (Fixed, no scrollbar) */}
       <nav className="flex-1 px-3 py-5 space-y-1 overflow-y-auto no-scrollbar">
         {authorizedItems.map((item) => {
-          const isActive = pathname === item.href || pathname.startsWith(`${item.href}/`);
+          const isActive = pathname === item.href || Boolean(pathname?.startsWith(`${item.href}/`));
           const Icon = item.icon;
           return (
             <Link

@@ -6,14 +6,25 @@ const prisma = new PrismaClient();
 async function main() {
   console.log('🌱 Starting RCA2.O Database Seeding (Admin User Only)...');
 
-  // 1. Ensure Super Admin Role Exists
-  const superAdminRole = await prisma.role.upsert({
+  // 1. Ensure Standard System Roles Exist
+  const standardRoles = [
+    { name: UserRoleType.SUPER_ADMIN, description: 'Universal system administrator and academy owner' },
+    { name: UserRoleType.ACADEMY_ADMIN, description: 'Academy administrator with full operational access' },
+    { name: UserRoleType.TEACHER, description: 'Teaching faculty member and course instructor' },
+    { name: UserRoleType.ACCOUNTANT, description: 'Accountant managing student billing, fee receipts, and settlements' },
+    { name: UserRoleType.STAFF, description: 'General staff member (administrative, support, reception)' },
+  ];
+
+  for (const roleDef of standardRoles) {
+    await prisma.role.upsert({
+      where: { name: roleDef.name },
+      update: { description: roleDef.description },
+      create: roleDef,
+    });
+  }
+
+  const superAdminRole = await prisma.role.findUniqueOrThrow({
     where: { name: UserRoleType.SUPER_ADMIN },
-    update: {},
-    create: {
-      name: UserRoleType.SUPER_ADMIN,
-      description: 'Universal system administrator and academy owner',
-    },
   });
 
   // 2. Seed Default Admin User

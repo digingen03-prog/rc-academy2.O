@@ -257,15 +257,15 @@ export class FeesController {
   }
 
   @Delete('invoices/clear-all')
-  @Roles(UserRoleType.SUPER_ADMIN, UserRoleType.ACADEMY_ADMIN)
-  async clearAllInvoices() {
-    return this.feesService.clearAllInvoices();
+  @Roles(UserRoleType.SUPER_ADMIN)
+  async clearAllInvoices(@CurrentUser('id') actorId: string) {
+    return this.feesService.clearAllInvoices(actorId);
   }
 
   @Delete('invoices/:id')
-  @Roles(UserRoleType.SUPER_ADMIN, UserRoleType.ACADEMY_ADMIN, UserRoleType.ACCOUNTANT)
-  async deleteInvoice(@Param('id') id: string) {
-    return this.feesService.deleteInvoiceById(id);
+  @Roles(UserRoleType.SUPER_ADMIN)
+  async deleteInvoice(@Param('id') id: string, @CurrentUser('id') actorId: string) {
+    return this.feesService.deleteInvoiceById(id, actorId);
   }
 
   // ----------------------------------------------------

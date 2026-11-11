@@ -93,7 +93,7 @@ export class StaffService {
       id: s.id,
       firstName: s.firstName,
       lastName: s.lastName,
-      fullName: `${s.firstName} ${s.lastName}`,
+      fullName: (s.lastName && s.lastName !== '.' && s.lastName !== '-') ? `${s.firstName} ${s.lastName}` : s.firstName,
       email: s.email,
       phone: s.phone,
       designation: s.designation,
@@ -102,21 +102,43 @@ export class StaffService {
       fixedSalaryAmount: Number(s.fixedSalaryAmount),
       payFrequency: s.payFrequency,
       compensationEffectiveDate: s.compensationEffectiveDate,
+      dateOfJoining: s.dateOfJoining || s.compensationEffectiveDate || s.createdAt,
       attendanceCode: s.attendanceCode,
       status: s.status,
       roles: s.userRoles.map((ur) => ur.role.name),
       primaryRole: s.userRoles[0]?.role.name || 'STAFF',
       assignments: s.staffAssignments.map((a) => ({
         id: a.id,
+        classId: a.classId,
         courseId: a.classId,
+        className: a.class.name,
         courseName: a.class.name,
         courseCode: a.class.code,
+        class: {
+          id: a.class.id,
+          name: a.class.name,
+          code: a.class.code,
+        },
         batchId: a.batchId,
         batchName: a.batch?.name || null,
         batchCode: a.batch?.code || null,
+        batch: a.batch
+          ? {
+              id: a.batch.id,
+              name: a.batch.name,
+              code: a.batch.code,
+            }
+          : null,
         subjectId: a.subjectId || null,
         subjectName: a.subject?.name || null,
         subjectCode: a.subject?.code || null,
+        subject: a.subject
+          ? {
+              id: a.subject.id,
+              name: a.subject.name,
+              code: a.subject.code,
+            }
+          : null,
         role: a.role,
         staffSharePercentage: Number(a.staffSharePercentage),
         compensationRule: a.compensationRule,
@@ -168,7 +190,7 @@ export class StaffService {
       id: staff.id,
       firstName: staff.firstName,
       lastName: staff.lastName,
-      fullName: `${staff.firstName} ${staff.lastName}`,
+      fullName: (staff.lastName && staff.lastName !== '.' && staff.lastName !== '-') ? `${staff.firstName} ${staff.lastName}` : staff.firstName,
       email: staff.email,
       phone: staff.phone,
       designation: staff.designation,
@@ -177,6 +199,7 @@ export class StaffService {
       fixedSalaryAmount: Number(staff.fixedSalaryAmount),
       payFrequency: staff.payFrequency,
       compensationEffectiveDate: staff.compensationEffectiveDate,
+      dateOfJoining: staff.dateOfJoining || staff.compensationEffectiveDate || staff.createdAt,
       attendanceCode: staff.attendanceCode,
       status: staff.status,
       roles: staff.userRoles.map((ur) => ur.role.name),
@@ -250,9 +273,17 @@ export class StaffService {
       targetRoleName = 'ACADEMY_ADMIN';
     }
 
-    const roleRecord = await this.prisma.role.findFirst({
+    let roleRecord = await this.prisma.role.findFirst({
       where: { name: targetRoleName as UserRoleType },
     });
+    if (!roleRecord && Object.values(UserRoleType).includes(targetRoleName as UserRoleType)) {
+      roleRecord = await this.prisma.role.create({
+        data: {
+          name: targetRoleName as UserRoleType,
+          description: `${targetRoleName} system role`,
+        },
+      });
+    }
     if (!roleRecord) {
       throw new BadRequestException(`Role '${dto.role}' not recognized`);
     }
@@ -327,6 +358,12 @@ export class StaffService {
 
       const payFrequency = (dto.payFrequency as PayFrequency) || PayFrequency.MONTHLY;
 
+      const effectiveJoinDate = dto.dateOfJoining
+        ? new Date(dto.dateOfJoining)
+        : dto.compensationEffectiveDate
+        ? new Date(dto.compensationEffectiveDate)
+        : new Date();
+
       const user = await tx.user.create({
         data: {
           email: normalizedEmail,
@@ -339,9 +376,8 @@ export class StaffService {
           compensationModel,
           fixedSalaryAmount,
           payFrequency,
-          compensationEffectiveDate: dto.compensationEffectiveDate
-            ? new Date(dto.compensationEffectiveDate)
-            : new Date(),
+          compensationEffectiveDate: effectiveJoinDate,
+          dateOfJoining: effectiveJoinDate,
           status: UserStatus.ACTIVE,
         },
       });
@@ -380,6 +416,10 @@ export class StaffService {
             }
           }
 
+          if (sharePercent !== undefined) {
+            sharePercent = Decimal.min(new Decimal(100), Decimal.max(new Decimal(0), sharePercent));
+          }
+
           await tx.staffCourseAssignment.create({
             data: {
               userId: user.id,
@@ -389,9 +429,10 @@ export class StaffService {
               role: assign.role || dto.role,
               staffSharePercentage: sharePercent,
               compensationRule: compRule,
-              startDate: assign.startDate ? new Date(assign.startDate) : new Date(),
+              startDate: assign.startDate ? new Date(assign.startDate) : effectiveJoinDate,
               endDate: assign.endDate ? new Date(assign.endDate) : null,
               isActive: assign.isActive !== undefined ? assign.isActive : true,
+              effectiveFrom: effectiveJoinDate,
             },
           });
         }
@@ -436,12 +477,30 @@ export class StaffService {
     }
 
     return this.prisma.$transaction(async (tx) => {
+      let firstName = dto.firstName?.trim();
+      let lastName = dto.lastName?.trim();
+      if (dto.name) {
+        const parts = dto.name.trim().split(/\s+/);
+        firstName = parts[0] || 'Staff';
+        lastName = parts.slice(1).join(' ') || '.';
+      }
+
+      if (dto.email && dto.email.trim().toLowerCase() !== staff.email?.toLowerCase()) {
+        const existingEmail = await tx.user.findFirst({
+          where: { email: dto.email.trim().toLowerCase(), NOT: { id } },
+        });
+        if (existingEmail) {
+          throw new ConflictException(`User with email '${dto.email}' already exists`);
+        }
+      }
+
       // Update core user attributes - NEVER alter attendanceCode
       const updatedUser = await tx.user.update({
         where: { id },
         data: {
-          ...(dto.firstName && { firstName: dto.firstName.trim() }),
-          ...(dto.lastName && { lastName: dto.lastName.trim() }),
+          ...(firstName && { firstName }),
+          ...(lastName && { lastName }),
+          ...(dto.email && { email: dto.email.trim().toLowerCase() }),
           ...(dto.phone !== undefined && { phone: dto.phone?.trim() }),
           ...(dto.designation !== undefined && { designation: dto.designation?.trim() }),
           ...(dto.staffCategory && { staffCategory: dto.staffCategory as StaffCategory }),
@@ -449,6 +508,7 @@ export class StaffService {
           ...(dto.fixedSalaryAmount !== undefined && { fixedSalaryAmount: new Decimal(dto.fixedSalaryAmount) }),
           ...(dto.payFrequency && { payFrequency: dto.payFrequency as PayFrequency }),
           ...(dto.compensationEffectiveDate && { compensationEffectiveDate: new Date(dto.compensationEffectiveDate) }),
+          ...(dto.dateOfJoining && { dateOfJoining: new Date(dto.dateOfJoining) }),
           ...(dto.status && { status: dto.status }),
         },
       });
@@ -486,6 +546,75 @@ export class StaffService {
             roleId: newRole.id,
           },
         });
+      }
+
+      // Sync course assignments if provided
+      if (dto.courseAssignments !== undefined) {
+        // Deactivate all existing assignments first
+        await tx.staffCourseAssignment.updateMany({
+          where: { userId: id },
+          data: { isActive: false },
+        });
+
+        for (const assign of dto.courseAssignments) {
+          if (!assign.courseId) continue;
+
+          const existingAssign = await tx.staffCourseAssignment.findFirst({
+            where: {
+              userId: id,
+              classId: assign.courseId,
+              subjectId: assign.subjectId || null,
+              batchId: assign.batchId || null,
+            },
+          });
+
+          const compRule = assign.settlementConfig
+            ? (typeof assign.settlementConfig === 'string' ? assign.settlementConfig : JSON.stringify(assign.settlementConfig))
+            : assign.compensationRule || existingAssign?.compensationRule || 'REVENUE_SHARE_70_30';
+
+          let sharePercent = assign.staffSharePercentage !== undefined
+            ? new Decimal(assign.staffSharePercentage)
+            : new Decimal(70.0);
+
+          if (assign.settlementConfig && typeof assign.settlementConfig === 'object') {
+            if (assign.settlementConfig.mode === 'STUDENT_TIER_BASED' && assign.settlementConfig.singleSubject?.type === 'PERCENTAGE') {
+              sharePercent = new Decimal(assign.settlementConfig.singleSubject.value);
+            } else if (assign.settlementConfig.mode === 'REVENUE_SHARE_PERCENTAGE' && assign.settlementConfig.staffSharePercentage !== undefined) {
+              sharePercent = new Decimal(assign.settlementConfig.staffSharePercentage);
+            }
+          }
+
+          if (sharePercent !== undefined) {
+            sharePercent = Decimal.min(new Decimal(100), Decimal.max(new Decimal(0), sharePercent));
+          }
+
+          if (existingAssign) {
+            await tx.staffCourseAssignment.update({
+              where: { id: existingAssign.id },
+              data: {
+                isActive: assign.isActive !== undefined ? assign.isActive : true,
+                role: assign.role || dto.role || 'INSTRUCTOR',
+                staffSharePercentage: sharePercent,
+                compensationRule: compRule,
+              },
+            });
+          } else {
+            await tx.staffCourseAssignment.create({
+              data: {
+                userId: id,
+                classId: assign.courseId,
+                batchId: assign.batchId || null,
+                subjectId: assign.subjectId || null,
+                role: assign.role || dto.role || 'INSTRUCTOR',
+                staffSharePercentage: sharePercent,
+                compensationRule: compRule,
+                startDate: assign.startDate ? new Date(assign.startDate) : (dto.dateOfJoining ? new Date(dto.dateOfJoining) : new Date()),
+                effectiveFrom: assign.startDate ? new Date(assign.startDate) : (dto.dateOfJoining ? new Date(dto.dateOfJoining) : new Date()),
+                isActive: assign.isActive !== undefined ? assign.isActive : true,
+              },
+            });
+          }
+        }
       }
 
       await tx.auditLog.create({
@@ -570,6 +699,10 @@ export class StaffService {
           }
         }
 
+        if (sharePercent !== undefined) {
+          sharePercent = Decimal.min(new Decimal(100), Decimal.max(new Decimal(0), sharePercent));
+        }
+
         if (existing) {
           const updated = await tx.staffCourseAssignment.update({
             where: { id: existing.id },
@@ -633,13 +766,35 @@ export class StaffService {
       throw new NotFoundException(`Assignment ${assignmentId} not found for staff ${staffId}`);
     }
 
+    const targetClassId = dto.courseId || assignment.classId;
+
+    if (dto.courseId) {
+      const course = await this.prisma.class.findUnique({
+        where: { id: dto.courseId },
+      });
+      if (!course) {
+        throw new NotFoundException(`Course ${dto.courseId} not found`);
+      }
+    }
+
+    if (dto.batchId) {
+      const batch = await this.prisma.batch.findUnique({
+        where: { id: dto.batchId },
+      });
+      if (!batch || batch.classId !== targetClassId) {
+        throw new BadRequestException(
+          `Batch ${dto.batchId} does not belong to course ${targetClassId}`,
+        );
+      }
+    }
+
     if (dto.subjectId) {
       const subject = await this.prisma.subject.findUnique({
         where: { id: dto.subjectId },
       });
-      if (!subject || subject.classId !== assignment.classId) {
+      if (!subject || subject.classId !== targetClassId) {
         throw new BadRequestException(
-          `Subject ${dto.subjectId} does not belong to course ${assignment.classId}`,
+          `Subject ${dto.subjectId} does not belong to course ${targetClassId}`,
         );
       }
     }
@@ -660,9 +815,15 @@ export class StaffService {
       }
     }
 
+    if (sharePercent !== undefined) {
+      sharePercent = Decimal.min(new Decimal(100), Decimal.max(new Decimal(0), sharePercent));
+    }
+
     const updated = await this.prisma.staffCourseAssignment.update({
       where: { id: assignmentId },
       data: {
+        ...(dto.courseId && { classId: dto.courseId }),
+        ...(dto.batchId !== undefined && { batchId: dto.batchId || null }),
         ...(dto.role && { role: dto.role }),
         ...(dto.subjectId !== undefined && { subjectId: dto.subjectId || null }),
         ...(sharePercent !== undefined && {

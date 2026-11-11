@@ -77,454 +77,30 @@ import {
   parseSettlementToForm,
   getSettlementBadgeDisplay,
 } from '@/lib/utils/staff-settlement';
-
-// ----------------------------------------------------
-// Interfaces
-// ----------------------------------------------------
-
-interface CourseBreakdownItem {
-  courseId: string;
-  courseName: string;
-  courseCode: string;
-  invoiced: number;
-  collected: number;
-  outstanding: number;
-  collectionRate: number;
-  enrolledStudentsCount: number;
-}
-
-interface DashboardKpis {
-  totalInvoiced: number;
-  totalCollected: number;
-  outstandingReceivables: number;
-  overdueAmount: number;
-  totalReversals: number;
-  totalDiscounts: number;
-  totalInvoicesCount: number;
-  overdueInvoicesCount: number;
-  totalPaymentsCount: number;
-  pendingExceptionsCount: number;
-}
-
-interface StudentAccountSummary {
-  id: string;
-  studentCode: string;
-  admissionNumber: string;
-  name: string;
-  email?: string;
-  phone?: string;
-  status: string;
-  enrolledCourses: {
-    courseId: string;
-    courseName: string;
-    courseCode: string;
-    batchName: string;
-    subjectName?: string | null;
-  }[];
-  courseInvoicesCount: number;
-  consolidatedBilled: number;
-  consolidatedPaid: number;
-  consolidatedBalance: number;
-  consolidatedDiscounts: number;
-  overallStatus: 'PAID' | 'PARTIAL' | 'UNPAID' | 'OVERDUE';
-}
-
-interface CourseFeeDetail {
-  invoiceId: string;
-  invoiceNumber: string;
-  courseId: string;
-  courseName: string;
-  courseCode: string;
-  subjectId?: string | null;
-  subjectName?: string | null;
-  batchId?: string | null;
-  batchName?: string | null;
-  enrollmentId?: string | null;
-  billingPeriod: string;
-  totalAmount: number;
-  discountAmount: number;
-  paidAmount: number;
-  balanceAmount: number;
-  status: 'PAID' | 'PARTIAL' | 'UNPAID' | 'CANCELLED';
-  dueDate: string;
-  nextInstallmentDueDate?: string | null;
-  isOverdue: boolean;
-  lines: { id: string; description: string; amount: number }[];
-  adjustments: { id: string; type: string; amount: number; reason: string; createdAt: string }[];
-  allocations: {
-    allocationId: string;
-    paymentId: string;
-    receiptNumber: string;
-    paymentDate: string;
-    paymentMethod: string;
-    allocatedAmount: number;
-    recordedBy: string;
-  }[];
-}
-
-interface StudentPaymentHistoryItem {
-  id: string;
-  receiptNumber: string;
-  amount: number;
-  paymentMethod: string;
-  reference?: string | null;
-  notes?: string | null;
-  cycle?: string | null;
-  proofName?: string | null;
-  proofSize?: string | null;
-  proofObjectKey?: string | null;
-  proofFileName?: string | null;
-  proofFileSize?: number | null;
-  hasRealProof?: boolean;
-  proofMimeType?: string | null;
-  paidAt: string;
-  status: string;
-  recordedBy: string;
-  allocations: {
-    allocationId: string;
-    invoiceId: string;
-    invoiceNumber?: string;
-    allocatedAmount: number;
-    courseName?: string;
-    subjectName?: string;
-    batchName?: string;
-    isReversed: boolean;
-  }[];
-}
-
-interface StudentDetailedAccount {
-  student: {
-    id: string;
-    studentCode: string;
-    admissionNumber: string;
-    name: string;
-    email?: string;
-    phone?: string;
-    status: string;
-    parentName?: string | null;
-    parentPhone?: string | null;
-  };
-  enrolledCourses: {
-    enrollmentId: string;
-    courseId: string;
-    courseName: string;
-    courseCode: string;
-    batchId: string;
-    batchName: string;
-    subjectId?: string | null;
-    subjectName?: string | null;
-    startDate: string;
-  }[];
-  courseFees: CourseFeeDetail[];
-  payments?: StudentPaymentHistoryItem[];
-  consolidatedAccount: {
-    totalCoursesEnrolled: number;
-    consolidatedTotalBilled: number;
-    consolidatedDiscounts: number;
-    consolidatedNetPayable: number;
-    consolidatedPaid: number;
-    consolidatedBalance: number;
-    overallStatus: 'PAID' | 'PARTIAL' | 'UNPAID' | 'OVERDUE';
-  };
-}
-
-interface CourseFeeConfigItem {
-  id: string;
-  name: string;
-  academicYear: { id: string; name: string };
-  class: { id: string; name: string; code: string };
-  batch?: { id: string; name: string } | null;
-  subject?: { id: string; name: string } | null;
-  amount: number;
-  billingPeriod: string;
-  installmentCount: number;
-  effectiveStartDate: string;
-  effectiveEndDate?: string | null;
-  isActive: boolean;
-  description?: string | null;
-  allowedDiscounts?: any[] | null;
-  _count?: { invoices: number };
-}
-
-interface InvoiceRowItem {
-  id: string;
-  invoiceNumber: string;
-  student: { id: string; firstName: string; lastName: string; studentCode: string };
-  class?: { id: string; name: string; code: string } | null;
-  batch?: { id: string; name: string } | null;
-  subject?: { id: string; name: string } | null;
-  totalAmount: number;
-  discountAmount: number;
-  paidAmount: number;
-  balanceAmount: number;
-  status: 'PAID' | 'PARTIAL' | 'UNPAID' | 'CANCELLED';
-  dueDate: string;
-  billingPeriod?: string | null;
-  lines: { id: string; description: string; amount: number }[];
-  adjustments: { id: string; type: string; amount: number; reason: string }[];
-}
-
-interface PaymentRowItem {
-  id: string;
-  receiptNumber: string;
-  amount: number;
-  paymentMethod: string;
-  status: 'COMPLETED' | 'REVERSED';
-  reference?: string | null;
-  notes?: string | null;
-  paidAt: string;
-  student: { id: string; firstName: string; lastName: string; studentCode: string };
-  recordedBy: { firstName: string; lastName: string; email: string };
-  allocations: {
-    id: string;
-    allocatedAmount: number;
-    isReversed: boolean;
-    invoice: {
-      id: string;
-      invoiceNumber: string;
-      class?: { name: string } | null;
-      subject?: { name: string } | null;
-      balanceAmount: number;
-    };
-  }[];
-  proofObjectKey?: string | null;
-  proofFileName?: string | null;
-  proofFileSize?: number | null;
-  proofMimeType?: string | null;
-  proofUploadedAt?: string | null;
-}
-
-interface ProofViewerState {
-  isOpen: boolean;
-  paymentId: string;
-  receiptNumber?: string;
-  fileName: string;
-  fileSize?: string | number | null;
-  mimeType?: string | null;
-  downloadUrl?: string | null;
-  expiresIn?: number | null;
-  uploadedAt?: string | Date | null;
-  loading: boolean;
-  error?: string | null;
-}
-
-interface AttachProofModalState {
-  isOpen: boolean;
-  paymentId: string;
-  receiptNumber: string;
-  studentName: string;
-  amount: number;
-}
-
-interface OfficialReceiptData {
-  academy: {
-    name: string;
-    tagline: string;
-    address: string;
-    contact: string;
-  };
-  receiptNumber: string;
-  paymentDate: string;
-  student: {
-    id: string;
-    name: string;
-    studentCode: string;
-    admissionNumber: string;
-    enrolledCourses: { courseName: string; batchName: string; subjectName?: string | null }[];
-  };
-  payment: {
-    id?: string;
-    amount: number;
-    paymentMethod: string;
-    reference?: string | null;
-    notes?: string | null;
-    status: string;
-    reversedAt?: string | null;
-    reversalReason?: string | null;
-    recordedBy: string;
-    proofObjectKey?: string | null;
-    proofFileName?: string | null;
-    proofFileSize?: number | null;
-    proofMimeType?: string | null;
-    hasProofAttachment?: boolean;
-  };
-  allocations: {
-    invoiceNumber: string;
-    courseName: string;
-    batchName?: string | null;
-    subjectName?: string | null;
-    allocatedAmount: number;
-    invoiceTotal: number;
-    invoiceRemainingBalance: number;
-    isReversed: boolean;
-  }[];
-}
-
-// ----------------------------------------------------
-// Printable / Downloadable Simple Invoice Generator
-// ----------------------------------------------------
-interface SimpleInvoicePayload {
-  invoiceNumber: string;
-  date: string;
-  paymentDate?: string | null;
-  status: 'PAID' | 'PARTIAL' | 'UNPAID';
-  studentName: string;
-  studentCode: string;
-  admissionNumber?: string | null;
-  phone?: string | null;
-  email?: string | null;
-  parentName?: string | null;
-  parentPhone?: string | null;
-  courseOrClass?: string | null;
-  standard?: string | null;
-  batch?: string | null;
-  academicYear?: string | null;
-  items: {
-    description: string;
-    courseName?: string;
-    amount: number;
-    discount?: number;
-    paid: number;
-    balance: number;
-    billingPeriod?: string | null;
-  }[];
-  totalBilled: number;
-  totalDiscount?: number;
-  totalPaid: number;
-  totalBalance: number;
-  paymentMethod?: string;
-  paymentReference?: string | null;
-  recordedBy?: string | null;
-}
-
-function downloadOrPrintSimpleInvoice(data: SimpleInvoicePayload) {
-  const isPaid = data.status === 'PAID' || data.totalBalance <= 0;
-  openProfessionalInvoicePrintWindow({
-    documentTitle: isPaid ? 'OFFICIAL FEE RECEIPT' : 'FEE INVOICE',
-    invoiceNumber: data.invoiceNumber,
-    issueDate: data.date,
-    paymentDate: data.paymentDate || data.date,
-    paymentStatus: isPaid ? 'PAID' : data.status === 'PARTIAL' ? 'PARTIAL' : 'UNPAID',
-    student: {
-      fullName: data.studentName,
-      studentId: data.studentCode,
-      admissionNumber: data.admissionNumber,
-      phone: data.phone,
-      email: data.email,
-      parentName: data.parentName,
-      parentPhone: data.parentPhone,
-      courseOrClass: data.courseOrClass,
-      standard: data.standard,
-      batch: data.batch,
-      academicYear: data.academicYear,
-    },
-    items: data.items.map((item, idx) => ({
-      slNo: idx + 1,
-      description: item.description,
-      courseOrClass: item.courseName,
-      feeAmount: item.amount,
-      discountAmount: item.discount,
-      paidAmount: item.paid,
-      balanceAmount: item.balance,
-      billingPeriod: item.billingPeriod || null,
-    })),
-    summary: {
-      grossInvoiced: data.totalBilled,
-      totalDiscounts: data.totalDiscount,
-      totalPaid: data.totalPaid,
-      outstandingBalance: data.totalBalance,
-    },
-    paymentInfo: {
-      method: data.paymentMethod || 'CASH / UPI',
-      transactionRef: data.paymentReference,
-      receiptStatus: isPaid ? 'Full Clearance (Settled)' : 'Partial Settlement',
-      processedBy: data.recordedBy,
-    },
-  });
-}
-
-const BILLING_CYCLE_GROUPS = [
-  {
-    group: 'Standard Plan Types',
-    options: [
-      { label: 'Annual Tuition (All Year)', value: 'ANNUAL' },
-      { label: 'Monthly Tuition (All Months)', value: 'MONTHLY' },
-      { label: 'Term 1 Cycle', value: 'TERM_1' },
-      { label: 'Term 2 Cycle', value: 'TERM_2' },
-      { label: 'One-Time Registration', value: 'ONE_TIME' },
-    ],
-  },
-  {
-    group: 'Current & Future Months',
-    options: [
-      { label: 'October 2026 (Current)', value: 'October 2026' },
-      { label: 'November 2026', value: 'November 2026' },
-      { label: 'December 2026', value: 'December 2026' },
-      { label: 'January 2027', value: 'January 2027' },
-      { label: 'February 2027', value: 'February 2027' },
-      { label: 'March 2027', value: 'March 2027' },
-      { label: 'April 2027', value: 'April 2027' },
-      { label: 'May 2027', value: 'May 2027' },
-      { label: 'June 2027', value: 'June 2027' },
-      { label: 'July 2027', value: 'July 2027' },
-      { label: 'August 2027', value: 'August 2027' },
-      { label: 'September 2027', value: 'September 2027' },
-      { label: 'October 2027', value: 'October 2027' },
-      { label: 'November 2027', value: 'November 2027' },
-      { label: 'December 2027', value: 'December 2027' },
-    ],
-  },
-  {
-    group: 'Past Months (2026)',
-    options: [
-      { label: 'September 2026', value: 'September 2026' },
-      { label: 'August 2026', value: 'August 2026' },
-      { label: 'July 2026', value: 'July 2026' },
-      { label: 'June 2026', value: 'June 2026' },
-      { label: 'May 2026', value: 'May 2026' },
-      { label: 'April 2026', value: 'April 2026' },
-      { label: 'March 2026', value: 'March 2026' },
-      { label: 'February 2026', value: 'February 2026' },
-      { label: 'January 2026', value: 'January 2026' },
-    ],
-  },
-  {
-    group: 'Past Months (2025)',
-    options: [
-      { label: 'December 2025', value: 'December 2025' },
-      { label: 'November 2025', value: 'November 2025' },
-      { label: 'October 2025', value: 'October 2025' },
-      { label: 'September 2025', value: 'September 2025' },
-      { label: 'August 2025', value: 'August 2025' },
-      { label: 'July 2025', value: 'July 2025' },
-      { label: 'June 2025', value: 'June 2025' },
-      { label: 'May 2025', value: 'May 2025' },
-      { label: 'April 2025', value: 'April 2025' },
-      { label: 'March 2025', value: 'March 2025' },
-      { label: 'February 2025', value: 'February 2025' },
-      { label: 'January 2025', value: 'January 2025' },
-    ],
-  },
-  {
-    group: 'Past Months (2024)',
-    options: [
-      { label: 'December 2024', value: 'December 2024' },
-      { label: 'November 2024', value: 'November 2024' },
-      { label: 'October 2024', value: 'October 2024' },
-      { label: 'September 2024', value: 'September 2024' },
-      { label: 'August 2024', value: 'August 2024' },
-      { label: 'July 2024', value: 'July 2024' },
-      { label: 'June 2024', value: 'June 2024' },
-      { label: 'May 2024', value: 'May 2024' },
-      { label: 'April 2024', value: 'April 2024' },
-      { label: 'March 2024', value: 'March 2024' },
-      { label: 'February 2024', value: 'February 2024' },
-      { label: 'January 2024', value: 'January 2024' },
-    ],
-  },
-];
+import { StaffSettlementDrawer } from '@/components/finance-analytics/StaffSettlementDrawer';
+import { useAuthUser } from '@/lib/auth/use-role';
+import {
+  CourseBreakdownItem,
+  DashboardKpis,
+  StudentAccountSummary,
+  CourseFeeDetail,
+  StudentPaymentHistoryItem,
+  StudentDetailedAccount,
+  CourseFeeConfigItem,
+  InvoiceRowItem,
+  PaymentRowItem,
+  ProofViewerState,
+  AttachProofModalState,
+  OfficialReceiptData,
+} from './_types/fees.types';
+import { SimpleInvoicePayload } from './_types/invoice.types';
+import { downloadOrPrintSimpleInvoice, BILLING_CYCLE_GROUPS, getCurrentMonthBillingCycle } from './_utils/invoice-print.util';
+import { formatDateTime12h } from '@/lib/utils/time-format';
 
 export default function FeesPage() {
+  const { user } = useAuthUser();
+  const isSuperAdmin = user?.roles?.includes('SUPER_ADMIN') ?? false;
+
   const [activeTab, setActiveTab] = useState<
     'overview' | 'accounts' | 'configs' | 'invoices' | 'payments' | 'revenue_salary'
   >('overview');
@@ -533,11 +109,11 @@ export default function FeesPage() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
-  // Filter & Search states
+  // Filter & Search states (Default billingCycle to current month on page load)
   const [searchQuery, setSearchQuery] = useState('');
   const [filterCourseId, setFilterCourseId] = useState('');
   const [filterSubjectId, setFilterSubjectId] = useState('');
-  const [filterBillingCycle, setFilterBillingCycle] = useState('');
+  const [filterBillingCycle, setFilterBillingCycle] = useState<string>(() => getCurrentMonthBillingCycle());
   const [filterStatus, setFilterStatus] = useState('');
 
   // Student Detail Modal state
@@ -615,7 +191,7 @@ export default function FeesPage() {
   const [splitUpiAmount, setSplitUpiAmount] = useState<number>(0);
   const [paymentReference, setPaymentReference] = useState('');
   const [paymentNotes, setPaymentNotes] = useState('');
-  const [collectionMonth, setCollectionMonth] = useState('October 2026');
+  const [collectionMonth, setCollectionMonth] = useState<string>(() => getCurrentMonthBillingCycle());
   const [studentOpenInvoices, setStudentOpenInvoices] = useState<InvoiceRowItem[]>([]);
   const [multiAllocations, setMultiAllocations] = useState<{ [invoiceId: string]: number }>({});
   const [paymentModalError, setPaymentModalError] = useState<string | null>(null);
@@ -708,15 +284,87 @@ export default function FeesPage() {
   const [deleteRuleTarget, setDeleteRuleTarget] = useState<any | null>(null);
   const [deletingStaffPayRule, setDeletingStaffPayRule] = useState(false);
 
-  // Derived faculty assignments list with staff details
+  // Derived faculty assignments list with staff details (normalized with course/standard, batch, and subject objects)
   const facultyAssignments = useMemo(() => {
     const list: any[] = [];
     staffOptions.forEach((staff) => {
+      const cleanLastName = staff.lastName && staff.lastName !== '.' && staff.lastName !== '-' ? staff.lastName : '';
+      const cleanFullName = (staff.fullName || `${staff.firstName || ''} ${cleanLastName}`)
+        .replace(/\s+[\.\-]\s*$/, '')
+        .trim();
+
       (staff.assignments || []).forEach((as: any) => {
+        const resolvedClassId = as.classId || as.courseId || as.class?.id || '';
+        const matchedCourse = availableCourses.find((c) => c.id === resolvedClassId);
+        const resolvedCourseName =
+          as.class?.name ||
+          as.className ||
+          as.courseName ||
+          matchedCourse?.name ||
+          'General Course';
+        const resolvedCourseCode =
+          as.class?.code ||
+          as.courseCode ||
+          matchedCourse?.code ||
+          '';
+        const resolvedStandard =
+          (as.class as any)?.standard ||
+          (matchedCourse as any)?.standard ||
+          resolvedCourseName;
+
+        const resolvedBatchId = as.batchId || as.batch?.id || null;
+        const matchedBatch = matchedCourse?.batches?.find((b: any) => b.id === resolvedBatchId);
+        const resolvedBatchName =
+          as.batch?.name ||
+          as.batchName ||
+          matchedBatch?.name ||
+          null;
+        const resolvedBatchCode =
+          as.batch?.code ||
+          as.batchCode ||
+          matchedBatch?.code ||
+          null;
+
+        const resolvedSubjectId = as.subjectId || as.subject?.id || null;
+        const matchedSubject = matchedCourse?.subjects?.find((s: any) => s.id === resolvedSubjectId);
+        const resolvedSubjectName =
+          as.subject?.name ||
+          as.subjectName ||
+          matchedSubject?.name ||
+          null;
+        const resolvedSubjectCode =
+          as.subject?.code ||
+          as.subjectCode ||
+          matchedSubject?.code ||
+          null;
+
         list.push({
           ...as,
+          classId: resolvedClassId,
+          courseId: resolvedClassId,
+          className: resolvedCourseName,
+          courseName: resolvedCourseName,
+          courseCode: resolvedCourseCode,
+          standard: resolvedStandard,
+          class: {
+            id: resolvedClassId,
+            name: resolvedCourseName,
+            code: resolvedCourseCode,
+            standard: resolvedStandard,
+          },
+          batchId: resolvedBatchId,
+          batchName: resolvedBatchName,
+          batch: resolvedBatchName
+            ? { id: resolvedBatchId, name: resolvedBatchName, code: resolvedBatchCode }
+            : null,
+          subjectId: resolvedSubjectId,
+          subjectName: resolvedSubjectName,
+          subject: resolvedSubjectName
+            ? { id: resolvedSubjectId, name: resolvedSubjectName, code: resolvedSubjectCode }
+            : null,
           staffId: staff.id,
-          staffName: `${staff.firstName} ${staff.lastName}`,
+          userId: staff.id,
+          staffName: cleanFullName,
           staffEmail: staff.email,
           staffCode: staff.attendanceCode || staff.employeeId || '',
           designation: staff.designation || 'Faculty',
@@ -724,7 +372,54 @@ export default function FeesPage() {
       });
     });
     return list;
-  }, [staffOptions]);
+  }, [staffOptions, availableCourses]);
+
+  // ----------------------------------------------------
+  // Faculty & Staff Pay Tab States & Filters
+  // ----------------------------------------------------
+  const [facultySearchQuery, setFacultySearchQuery] = useState('');
+  const [facultyFilterCourseId, setFacultyFilterCourseId] = useState('');
+  const [facultyFilterStatus, setFacultyFilterStatus] = useState<'ALL' | 'ACTIVE' | 'INACTIVE'>('ALL');
+  const [selectedSettlementMonth, setSelectedSettlementMonth] = useState<string>(() =>
+    new Date().toISOString().slice(0, 7)
+  );
+  const [staffSettlementsData, setStaffSettlementsData] = useState<any[]>([]);
+  const [loadingSalaryData, setLoadingSalaryData] = useState(false);
+  const [settlementDrawerOpen, setSettlementDrawerOpen] = useState(false);
+  const [selectedStaffForDrawer, setSelectedStaffForDrawer] = useState<{
+    staffId: string;
+    staffName: string;
+    marginPct?: number;
+  } | null>(null);
+
+  const filteredFacultyAssignments = useMemo(() => {
+    return facultyAssignments.filter((as) => {
+      if (facultySearchQuery.trim()) {
+        const q = facultySearchQuery.toLowerCase();
+        const matchName = as.staffName?.toLowerCase().includes(q);
+        const matchCode = as.staffCode?.toLowerCase().includes(q);
+        const matchCourse = (as.class?.name || as.className || '').toLowerCase().includes(q);
+        const matchSubject = (as.subject?.name || '').toLowerCase().includes(q);
+        const matchBatch = (as.batch?.name || '').toLowerCase().includes(q);
+        if (!matchName && !matchCode && !matchCourse && !matchSubject && !matchBatch) {
+          return false;
+        }
+      }
+
+      if (facultyFilterCourseId && as.classId !== facultyFilterCourseId) {
+        return false;
+      }
+
+      if (facultyFilterStatus === 'ACTIVE' && as.isActive === false) {
+        return false;
+      }
+      if (facultyFilterStatus === 'INACTIVE' && as.isActive !== false) {
+        return false;
+      }
+
+      return true;
+    });
+  }, [facultyAssignments, facultySearchQuery, facultyFilterCourseId, facultyFilterStatus]);
 
   // ====================================================
   // Data Fetching
@@ -820,20 +515,29 @@ export default function FeesPage() {
 
   const fetchSalaryRevenueData = async () => {
     try {
-      const [metrics, config, ledgers, exceptions, staff]: any = await Promise.all([
+      setLoadingSalaryData(true);
+      const [metrics, config, ledgers, exceptions, staff, settlements]: any = await Promise.all([
         ApiClient.fetch('/salary/revenue-summary').catch(() => null),
         ApiClient.fetch('/salary/config').catch(() => null),
         ApiClient.fetch('/salary/ledger').catch(() => []),
         ApiClient.fetch('/salary/exceptions').catch(() => []),
         ApiClient.fetch('/staff').catch(() => []),
+        ApiClient.fetch(`/finance-analytics/staff-settlements?month=${selectedSettlementMonth}`).catch(() => []),
       ]);
       if (metrics) setRevenueMetrics(metrics);
       if (config) setSalaryConfig(config);
       if (ledgers) setSalaryLedgers(ledgers);
       if (exceptions) setSalaryExceptions(exceptions);
       if (staff) setStaffOptions(staff);
+      if (settlements) setStaffSettlementsData(Array.isArray(settlements) ? settlements : []);
+
+      if (courseConfigs.length === 0) fetchCourseConfigs();
+      if (availableCourses.length === 0) fetchCoursesList();
+      if (courseBreakdown.length === 0) fetchDashboardData();
     } catch (err) {
       console.error('Failed to load salary revenue data', err);
+    } finally {
+      setLoadingSalaryData(false);
     }
   };
 
@@ -841,11 +545,12 @@ export default function FeesPage() {
     setLoading(true);
     await Promise.all([
       fetchDashboardData(),
-      fetchStudentAccounts(),
+      fetchStudentAccounts(filterBillingCycle || getCurrentMonthBillingCycle()),
       fetchCourseConfigs(),
       fetchInvoices(),
       fetchPayments(),
       fetchCoursesList(),
+      fetchSalaryRevenueData(),
     ]);
     setLoading(false);
   };
@@ -860,7 +565,7 @@ export default function FeesPage() {
     } else if (activeTab === 'revenue_salary') {
       fetchSalaryRevenueData();
     }
-  }, [activeTab, filterBillingCycle]);
+  }, [activeTab, filterBillingCycle, selectedSettlementMonth]);
 
   // Load detailed student account drilldown
   const handleOpenStudentDetail = async (studentId: string) => {
@@ -1948,9 +1653,14 @@ export default function FeesPage() {
     }
   };
 
-  // Clear All Invoices
+  // Clear All Invoices (Super Admin Only)
   const handleClearAllInvoices = async () => {
-    if (!window.confirm('Are you sure you want to clear ALL fee invoices? This will delete all generated invoice records and cannot be undone.')) {
+    if (!isSuperAdmin) {
+      alert('Access Restricted: Only Super Admin can clear all fee invoices.');
+      return;
+    }
+
+    if (!window.confirm('Are you sure you want to clear ALL fee invoices? This will delete all generated invoice records, recorded payments, and uploaded proof documents. This action cannot be undone.')) {
       return;
     }
 
@@ -1959,7 +1669,7 @@ export default function FeesPage() {
       const res: any = await ApiClient.fetch('/fees/invoices/clear-all', {
         method: 'DELETE',
       });
-      setSuccessMsg(res?.message || 'All invoices have been cleared successfully.');
+      setSuccessMsg(res?.message || 'All invoices, payments, and proof documents have been cleared successfully.');
       await reloadAll();
       if (selectedStudentDetail) {
         await handleOpenStudentDetail(selectedStudentDetail.student.id);
@@ -1971,9 +1681,18 @@ export default function FeesPage() {
     }
   };
 
-  // Delete Single Invoice
-  const handleDeleteSingleInvoice = async (invoiceId: string, invoiceNumber: string) => {
-    if (!window.confirm(`Are you sure you want to delete invoice "${invoiceNumber}"?`)) {
+  // Delete Single Invoice (Super Admin Only)
+  const handleDeleteSingleInvoice = async (invoiceId: string, invoiceNumber: string, paidAmount: number = 0) => {
+    if (!isSuperAdmin) {
+      alert('Access Restricted: Only Super Admin can delete invoices.');
+      return;
+    }
+
+    const confirmMsg = paidAmount > 0
+      ? `Are you sure you want to delete invoice "${invoiceNumber}"? This invoice has recorded payments of ₹${paidAmount.toLocaleString()}. Deleting it will permanently clear this month's invoice, its payment records, and all uploaded proof documents. This action is restricted to Super Admin and cannot be undone.`
+      : `Are you sure you want to delete invoice "${invoiceNumber}"? This action cannot be undone.`;
+
+    if (!window.confirm(confirmMsg)) {
       return;
     }
 
@@ -1982,7 +1701,7 @@ export default function FeesPage() {
       const res: any = await ApiClient.fetch(`/fees/invoices/${invoiceId}`, {
         method: 'DELETE',
       });
-      setSuccessMsg(res?.message || `Invoice ${invoiceNumber} deleted.`);
+      setSuccessMsg(res?.message || `Invoice ${invoiceNumber} deleted successfully.`);
       await reloadAll();
       if (selectedStudentDetail) {
         await handleOpenStudentDetail(selectedStudentDetail.student.id);
@@ -2053,15 +1772,77 @@ export default function FeesPage() {
   // Staff Pay Rule Management Handlers (Fees <-> Staff)
   // ----------------------------------------------------
 
+  // Helper to resolve exact configured Fee Rules amounts for a Standard (no synthetic per-subject auto-math)
+  const resolveConfiguredFeesForStandard = (targetClassId?: string, targetSubjectId?: string) => {
+    if (!targetClassId) return { allFee: 0, twoFee: 0, singleFee: 0 };
+    const matchingConfigs = courseConfigs.filter(
+      (cfg) => cfg.class?.id === targetClassId && cfg.isActive !== false
+    );
+    const getConfigTier = (c: CourseFeeConfigItem) => {
+      if (c.tier) return c.tier;
+      const d = Array.isArray(c.allowedDiscounts)
+        ? (c.allowedDiscounts as any[]).find((x) => x && (x.tier || x.type))
+        : null;
+      if (d?.tier) return d.tier;
+      if (d?.type === 'TWO_SUBJECTS_BUNDLE') return 'TWO_SUBJECTS';
+      if (d?.type === 'SINGLE_SUBJECT') return 'SINGLE_SUBJECT';
+      if (c.subject) return 'SINGLE_SUBJECT';
+      if (c.name?.toLowerCase().includes('2 subject') || c.name?.toLowerCase().includes('2 course')) return 'TWO_SUBJECTS';
+      if (c.name?.toLowerCase().includes('1 subject') || c.name?.toLowerCase().includes('1 course')) return 'SINGLE_SUBJECT';
+      return 'ALL';
+    };
+    const getNetConfigAmount = (c?: CourseFeeConfigItem) => {
+      if (!c) return 0;
+      const disc = Array.isArray(c.allowedDiscounts)
+        ? (c.allowedDiscounts as any[]).find((x) => x && Number(x.amount) > 0)
+        : null;
+      return Math.max(0, Number(c.amount) - (disc ? Number(disc.amount) || 0 : 0));
+    };
+
+    const allCfg =
+      matchingConfigs.find((c) => getConfigTier(c) === 'ALL' && !c.batch) ||
+      matchingConfigs.find((c) => getConfigTier(c) === 'ALL') ||
+      matchingConfigs[0];
+    const allFee = getNetConfigAmount(allCfg);
+
+    const twoCfg = matchingConfigs.find((c) => getConfigTier(c) === 'TWO_SUBJECTS');
+    const twoFee = twoCfg ? getNetConfigAmount(twoCfg) : 0;
+
+    const singleCfg =
+      (targetSubjectId
+        ? matchingConfigs.find((c) => c.subject?.id === targetSubjectId)
+        : undefined) ||
+      matchingConfigs.find((c) => getConfigTier(c) === 'SINGLE_SUBJECT');
+    const singleFee = singleCfg ? getNetConfigAmount(singleCfg) : 0;
+
+    return { allFee, twoFee, singleFee };
+  };
+
   const handleOpenCreateStaffPayRule = (defaultClassId?: string, defaultSubjectId?: string) => {
     setEditingStaffAssignmentId(null);
+    const chosenClassId = defaultClassId || availableCourses[0]?.id || '';
+    const { allFee: baseFee, twoFee, singleFee } = resolveConfiguredFeesForStandard(
+      chosenClassId,
+      defaultSubjectId,
+    );
+
+    const initialAll = baseFee > 0 ? Math.round((baseFee * 0.2) / 50) * 50 : 0;
+    const initialTwo = twoFee > 0 ? Math.round((twoFee * 0.2) / 50) * 50 : 0;
+    const initialSingle = singleFee > 0 ? Math.round((singleFee * 0.25) / 50) * 50 : 0;
+
     setStaffPayRuleForm({
       userId: staffOptions[0]?.id || '',
-      classId: defaultClassId || availableCourses[0]?.id || '',
+      classId: chosenClassId,
       batchId: '',
       subjectId: defaultSubjectId || '',
       role: 'TEACHER',
-      settlement: { ...defaultSettlementState, includeTwoSubjects: true },
+      settlement: {
+        ...defaultSettlementState,
+        includeTwoSubjects: true,
+        allSubjectsValue: initialAll,
+        twoSubjectsValue: initialTwo,
+        singleSubjectValue: initialSingle,
+      },
     });
     setShowStaffPayRuleModal(true);
   };
@@ -2075,7 +1856,7 @@ export default function FeesPage() {
     parsedSettlement.includeTwoSubjects = true;
     setStaffPayRuleForm({
       userId: assignment.userId || assignment.staffId,
-      classId: assignment.classId || assignment.class?.id || '',
+      classId: assignment.classId || assignment.courseId || assignment.class?.id || '',
       batchId: assignment.batchId || assignment.batch?.id || '',
       subjectId: assignment.subjectId || assignment.subject?.id || '',
       role: assignment.role || 'TEACHER',
@@ -2096,12 +1877,14 @@ export default function FeesPage() {
       const settlementPayload = buildSettlementPayload(staffPayRuleForm.settlement);
 
       if (editingStaffAssignmentId) {
-        // Update existing assignment compensation rule
+        // Update existing assignment compensation rule & standard/course/batch/subject
         await ApiClient.fetch(
           `/staff/${staffPayRuleForm.userId}/assignments/${editingStaffAssignmentId}`,
           {
             method: 'PATCH',
             body: JSON.stringify({
+              courseId: staffPayRuleForm.classId || undefined,
+              batchId: staffPayRuleForm.batchId || undefined,
               subjectId: staffPayRuleForm.subjectId || undefined,
               role: staffPayRuleForm.role || 'TEACHER',
               compensationRule: settlementPayload.compensationRule,
@@ -2169,6 +1952,44 @@ export default function FeesPage() {
     } finally {
       setDeletingStaffPayRule(false);
     }
+  };
+
+  const handleToggleStaffPayRuleActive = async (assignment: any) => {
+    const isCurrentlyActive = assignment.isActive !== false;
+    const newActiveState = !isCurrentlyActive;
+    const actionLabel = newActiveState ? 'activate' : 'deactivate';
+
+    const confirmed = window.confirm(
+      newActiveState
+        ? `Activate pay rule for ${assignment.staffName}?`
+        : `Deactivate pay rule for ${assignment.staffName}? All historical compensation and ledger records will be strictly preserved.`
+    );
+    if (!confirmed) return;
+
+    try {
+      await ApiClient.fetch(
+        `/staff/${assignment.userId || assignment.staffId}/assignments/${assignment.id}`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({ isActive: newActiveState }),
+        }
+      );
+      setSuccessMsg(`Staff pay rule ${actionLabel}d successfully!`);
+      await fetchSalaryRevenueData();
+    } catch (err: any) {
+      alert(`Failed to ${actionLabel} rule: ${err?.message || 'Unknown error'}`);
+    }
+  };
+
+  const handleOpenSettlementDrawer = (assignment: any) => {
+    const staffId = assignment.userId || assignment.staffId;
+    const matchingSettlement = staffSettlementsData.find((s: any) => s.staffId === staffId);
+    setSelectedStaffForDrawer({
+      staffId,
+      staffName: assignment.staffName,
+      marginPct: matchingSettlement?.marginPct,
+    });
+    setSettlementDrawerOpen(true);
   };
 
   // Selected course object for batch/subject dropdowns in config form
@@ -2266,9 +2087,16 @@ export default function FeesPage() {
   // Course breakdown aggregate totals for single-view ledger footer
   const totalCourses = courseBreakdown.length;
   const totalEnrolled = courseBreakdown.reduce((sum, c) => sum + (c.enrolledStudentsCount || 0), 0);
-  const totalCourseInvoiced = courseBreakdown.reduce((sum, c) => sum + (c.invoiced || 0), 0);
+  const totalCourseAutoBase = courseBreakdown.reduce((sum, c) => sum + (c.autoCurrentMonthBaseAmount || 0), 0);
+  const totalCourseInvoiced = courseBreakdown.reduce(
+    (sum, c) => sum + (c.effectiveInvoiced ?? (c.isAutoBase ? (c.autoCurrentMonthBaseAmount || 0) : c.invoiced || 0)),
+    0,
+  );
   const totalCourseCollected = courseBreakdown.reduce((sum, c) => sum + (c.collected || 0), 0);
-  const totalCourseOutstanding = courseBreakdown.reduce((sum, c) => sum + (c.outstanding || 0), 0);
+  const totalCourseOutstanding = courseBreakdown.reduce(
+    (sum, c) => sum + (c.effectiveOutstanding ?? (c.isAutoBase ? Math.max(0, (c.autoCurrentMonthBaseAmount || 0) - (c.collected || 0)) : c.outstanding || 0)),
+    0,
+  );
   const overallCollectionRate = totalCourseInvoiced > 0 ? Math.round((totalCourseCollected / totalCourseInvoiced) * 100) : 0;
 
   const studentSearchContainerRef = React.useRef<HTMLDivElement>(null);
@@ -2524,14 +2352,34 @@ export default function FeesPage() {
               {/* Metric 1: Total Invoiced */}
               <div className="px-3 sm:px-4 py-1 flex items-center justify-between">
                 <div>
-                  <div className="text-[11px] uppercase font-bold tracking-wider text-neutral-500">
-                    Total Invoiced
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[11px] uppercase font-bold tracking-wider text-neutral-500">
+                      Total Invoiced
+                    </span>
+                    {dashboardKpis?.isAutoBaseActive && (
+                      <span className="inline-flex items-center px-1.5 py-0.2 rounded text-[9px] font-bold bg-[#FFF4E5] text-[#CC6B00] border border-[#FFE0B2]">
+                        Auto Base
+                      </span>
+                    )}
                   </div>
                   <div className="text-xl sm:text-2xl font-bold font-mono text-neutral-900 mt-0.5">
-                    ₹{(dashboardKpis?.totalInvoiced || 0).toLocaleString()}
+                    ₹{((dashboardKpis?.isAutoBaseActive ? dashboardKpis?.effectiveTotalInvoiced : dashboardKpis?.totalInvoiced) || 0).toLocaleString()}
                   </div>
                   <div className="text-[11px] text-neutral-500 mt-0.5">
-                    {dashboardKpis?.totalInvoicesCount || 0} course obligations
+                    {dashboardKpis?.isAutoBaseActive ? (
+                      <span className="text-[#CC6B00] font-medium">
+                        Auto Base: ₹{(dashboardKpis?.autoCurrentMonthBaseAmount || 0).toLocaleString()}/mo ({dashboardKpis?.activeFeeRulesCount || 0} active rules)
+                      </span>
+                    ) : (
+                      <span>
+                        {dashboardKpis?.totalInvoicesCount || 0} course obligations
+                        {Boolean(dashboardKpis?.autoCurrentMonthBaseAmount) && (
+                          <span className="text-neutral-400 ml-1.5">
+                            (Base: ₹{(dashboardKpis?.autoCurrentMonthBaseAmount || 0).toLocaleString()}/mo)
+                          </span>
+                        )}
+                      </span>
+                    )}
                   </div>
                 </div>
                 <div className="w-9 h-9 rounded-xl bg-neutral-100 flex items-center justify-center text-neutral-700 shrink-0">
@@ -2564,10 +2412,10 @@ export default function FeesPage() {
                     Outstanding Balance
                   </div>
                   <div className="text-xl sm:text-2xl font-bold font-mono text-[#CC6B00] mt-0.5">
-                    ₹{(dashboardKpis?.outstandingReceivables || 0).toLocaleString()}
+                    ₹{((dashboardKpis?.isAutoBaseActive ? dashboardKpis?.effectiveOutstandingReceivables : dashboardKpis?.outstandingReceivables) || 0).toLocaleString()}
                   </div>
                   <div className="text-[11px] text-neutral-500 mt-0.5">
-                    Pending student tuition
+                    {dashboardKpis?.isAutoBaseActive ? 'Auto base pending collection' : 'Pending student tuition'}
                   </div>
                 </div>
                 <div className="w-9 h-9 rounded-xl bg-[#FFF4E5] text-[#CC6B00] flex items-center justify-center shrink-0">
@@ -2607,12 +2455,18 @@ export default function FeesPage() {
                       Course-Wise Collections & Outstanding Breakdown
                     </h3>
                     <p className="text-[11px] text-neutral-500 leading-tight">
-                      Real-time academic standard breakdown & collection performance
+                      Real-time academic standard breakdown, student base fee & collection performance
                     </p>
                   </div>
                 </div>
 
                 <div className="flex items-center gap-2">
+                  {totalCourseAutoBase > 0 && (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-mono font-bold bg-[#FFF4E5] text-[#CC6B00] border border-[#FFE0B2]">
+                      <Zap className="w-3 h-3 text-[#FF8500]" />
+                      Auto Month Base: ₹{totalCourseAutoBase.toLocaleString()}
+                    </span>
+                  )}
                   <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-mono font-semibold bg-neutral-100 text-neutral-700 border border-neutral-200">
                     {totalCourses} Courses
                   </span>
@@ -2632,16 +2486,17 @@ export default function FeesPage() {
                       <th className="py-2.5 px-3 text-center w-12 font-semibold text-neutral-600">S.No</th>
                       <th className="py-2.5 px-3.5">Course / Standard</th>
                       <th className="py-2.5 px-3 text-center">Enrolled</th>
+                      <th className="py-2.5 px-3.5 text-right">Student Base Fee (₹)</th>
                       <th className="py-2.5 px-3.5 text-right">Invoiced (₹)</th>
                       <th className="py-2.5 px-3.5 text-right">Collected (₹)</th>
                       <th className="py-2.5 px-3.5 text-right">Outstanding (₹)</th>
-                      <th className="py-2.5 px-3.5 w-40 text-center">Collection Rate</th>
+                      <th className="py-2.5 px-3.5 w-36 text-center">Collection Rate</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-neutral-100 text-neutral-800">
                     {courseBreakdown.length === 0 ? (
                       <tr>
-                        <td colSpan={7} className="py-12 text-center text-neutral-400">
+                        <td colSpan={8} className="py-12 text-center text-neutral-400">
                           No course financial records available yet.
                         </td>
                       </tr>
@@ -2653,21 +2508,66 @@ export default function FeesPage() {
                           </td>
                           <td className="py-2 px-3.5">
                             <div className="font-bold text-neutral-900 text-xs sm:text-sm">{c.courseName}</div>
-                            <div className="text-[10px] text-neutral-400 font-mono">{c.courseCode}</div>
+                            <div className="text-[10px] text-neutral-400 font-mono flex items-center gap-1.5">
+                              <span>{c.courseCode}</span>
+                              {c.hasFeeRule && (
+                                <span className="inline-flex items-center px-1.5 py-0.2 rounded text-[9px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                  Rule Active
+                                </span>
+                              )}
+                            </div>
                           </td>
                           <td className="py-2 px-3 text-center">
                             <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-neutral-100 text-neutral-700 text-[11px] font-semibold">
                               {c.enrolledStudentsCount}
                             </span>
                           </td>
-                          <td className="py-2 px-3.5 text-right font-mono font-medium text-xs">
-                            ₹{c.invoiced.toLocaleString()}
+                          {/* Student Base Fee & Current Month Base from Rules */}
+                          <td className="py-2 px-3.5 text-right font-mono text-xs">
+                            {c.hasFeeRule ? (
+                              <div>
+                                <div className="font-bold text-neutral-900">
+                                  ₹{(c.baseFeeAmount || 0).toLocaleString()}
+                                  <span className="text-[10px] font-normal text-neutral-500"> / student</span>
+                                </div>
+                                <div className="text-[10px] font-medium text-[#CC6B00]">
+                                  Auto Month Base: ₹{(c.autoCurrentMonthBaseAmount || 0).toLocaleString()}
+                                </div>
+                              </div>
+                            ) : (
+                              <span className="text-neutral-400 text-[11px] italic font-sans">
+                                No fee rule set
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-2 px-3.5 text-right font-mono text-xs">
+                            {c.isAutoBase ? (
+                              <div>
+                                <div className="font-bold text-[#CC6B00]">
+                                  ₹{(c.effectiveInvoiced || c.autoCurrentMonthBaseAmount || 0).toLocaleString()}
+                                </div>
+                                <span className="inline-flex items-center px-1.5 py-0.2 rounded text-[9px] font-bold bg-[#FFF4E5] text-[#CC6B00] border border-[#FFE0B2]">
+                                  Auto Base
+                                </span>
+                              </div>
+                            ) : (
+                              <div>
+                                <div className="font-medium text-neutral-900">
+                                  ₹{(c.invoiced || 0).toLocaleString()}
+                                </div>
+                                {Boolean(c.autoCurrentMonthBaseAmount) && (
+                                  <div className="text-[10px] text-neutral-400">
+                                    Base: ₹{(c.autoCurrentMonthBaseAmount || 0).toLocaleString()}
+                                  </div>
+                                )}
+                              </div>
+                            )}
                           </td>
                           <td className="py-2 px-3.5 text-right font-mono font-bold text-xs text-emerald-600">
-                            ₹{c.collected.toLocaleString()}
+                            ₹{(c.collected || 0).toLocaleString()}
                           </td>
                           <td className="py-2 px-3.5 text-right font-mono font-bold text-xs text-[#CC6B00]">
-                            ₹{c.outstanding.toLocaleString()}
+                            ₹{(c.effectiveOutstanding ?? (c.isAutoBase ? Math.max(0, (c.autoCurrentMonthBaseAmount || 0) - (c.collected || 0)) : c.outstanding || 0)).toLocaleString()}
                           </td>
                           <td className="py-2 px-3.5">
                             <div className="flex items-center gap-2">
@@ -2697,11 +2597,19 @@ export default function FeesPage() {
                   {courseBreakdown.length > 0 && (
                     <tfoot className="sticky bottom-0 z-10 bg-neutral-100/95 font-semibold text-neutral-900 border-t-2 border-neutral-300 shadow-[0_-1px_0_0_#d4d4d4]">
                       <tr>
-                        <td className="py-2.5 px-3.5 font-bold uppercase text-[11px] tracking-wider text-neutral-700">
+                        <td colSpan={2} className="py-2.5 px-3.5 font-bold uppercase text-[11px] tracking-wider text-neutral-700">
                           Total Portfolio ({totalCourses} Courses)
                         </td>
                         <td className="py-2.5 px-3 text-center font-bold text-neutral-900">
                           {totalEnrolled}
+                        </td>
+                        <td className="py-2.5 px-3.5 text-right font-mono text-xs">
+                          <div className="font-bold text-[#CC6B00]">
+                            ₹{totalCourseAutoBase.toLocaleString()}
+                          </div>
+                          <div className="text-[10px] text-neutral-500 font-normal">
+                            Auto Month Base
+                          </div>
                         </td>
                         <td className="py-2.5 px-3.5 text-right font-mono font-bold text-neutral-900">
                           ₹{totalCourseInvoiced.toLocaleString()}
@@ -2817,12 +2725,20 @@ export default function FeesPage() {
                   ))}
                 </select>
 
-                {/* Monthly Payment Cycle Filter */}
+                {/* Monthly Payment Cycle Filter (Defaults to Current Month; Allows Switching to Any Previous/All Months) */}
                 <select
                   value={filterBillingCycle}
-                  onChange={(e) => setFilterBillingCycle(e.target.value)}
-                  className="px-3 py-1.5 bg-white border border-neutral-200 rounded-lg text-xs text-black font-medium focus:outline-none focus:ring-2 focus:ring-[#FF8500]"
-                  title="Filter by Payment / Billing Cycle"
+                  onChange={(e) => {
+                    const cycle = e.target.value;
+                    setFilterBillingCycle(cycle);
+                    fetchStudentAccounts(cycle);
+                  }}
+                  className={`px-3 py-1.5 bg-white border rounded-lg text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-[#FF8500] cursor-pointer ${
+                    filterBillingCycle === getCurrentMonthBillingCycle()
+                      ? 'border-[#FF8500] text-neutral-900 bg-[#FFFBF5]'
+                      : 'border-neutral-200 text-black'
+                  }`}
+                  title="Filter by Payment / Billing Cycle (Defaults to Current Month)"
                 >
                   <option value="">All Payment / Billing Cycles</option>
                   {BILLING_CYCLE_GROUPS.map((grp) => (
@@ -2850,17 +2766,19 @@ export default function FeesPage() {
                 </select>
 
                 {/* Reset Filters Button */}
-                {(searchQuery || filterCourseId || filterSubjectId || filterBillingCycle || filterStatus) && (
+                {(searchQuery || filterCourseId || filterSubjectId || (filterBillingCycle !== getCurrentMonthBillingCycle()) || filterStatus) && (
                   <button
                     onClick={() => {
+                      const curMonth = getCurrentMonthBillingCycle();
                       setSearchQuery('');
                       setFilterCourseId('');
                       setFilterSubjectId('');
-                      setFilterBillingCycle('');
+                      setFilterBillingCycle(curMonth);
                       setFilterStatus('');
+                      fetchStudentAccounts(curMonth);
                     }}
                     className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-neutral-200 hover:bg-neutral-100 text-neutral-600 text-xs font-semibold transition cursor-pointer"
-                    title="Clear all active filters"
+                    title="Reset all filters back to current month default"
                   >
                     <RotateCcw className="w-3.5 h-3.5 text-neutral-500" />
                     <span>Reset</span>
@@ -3255,12 +3173,12 @@ export default function FeesPage() {
                   Individual enrollment billing records, balance tracking, and authorized scholarship adjustments
                 </p>
               </div>
-              {invoicesList.length > 0 && (
+              {isSuperAdmin && invoicesList.length > 0 && (
                 <button
                   type="button"
                   onClick={handleClearAllInvoices}
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border border-red-200 text-red-600 bg-red-50 hover:bg-red-100 transition cursor-pointer"
-                  title="Clear all generated fee invoices"
+                  title="Clear all generated fee invoices (Super Admin Only)"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
                   <span>Clear All Invoices</span>
@@ -3371,12 +3289,12 @@ export default function FeesPage() {
                                   Collect
                                 </Button>
                               )}
-                              {inv.paidAmount === 0 && (
+                              {isSuperAdmin && (
                                 <button
                                   type="button"
-                                  onClick={() => handleDeleteSingleInvoice(inv.id, inv.invoiceNumber)}
+                                  onClick={() => handleDeleteSingleInvoice(inv.id, inv.invoiceNumber, inv.paidAmount)}
                                   className="p-1.5 text-neutral-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition cursor-pointer"
-                                  title={`Delete invoice ${inv.invoiceNumber}`}
+                                  title={`Delete invoice ${inv.invoiceNumber} (Super Admin Only)`}
                                 >
                                   <Trash2 className="w-3.5 h-3.5" />
                                 </button>
@@ -3581,191 +3499,472 @@ export default function FeesPage() {
         )}
 
         {/* ==================================================================== */}
-        {/* TAB 6: FACULTY 70/30 REVENUE SHARING */}
+        {/* TAB 6: FACULTY & STAFF PAY (STRUCTURED CONFIGURATION & SETTLEMENTS) */}
         {/* ==================================================================== */}
         {activeTab === 'revenue_salary' && (
-          <div className="space-y-6">
-            {/* Dual Staff Model & Finance Metrics */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
-              <div className="bg-white p-4 rounded-xl border border-neutral-200 shadow-card">
-                <span className="text-[11px] font-semibold uppercase tracking-wider text-neutral-500">
-                  Eligible Collections
-                </span>
-                <div className="text-xl font-bold font-mono text-black mt-1.5">
-                  ₹{(revenueMetrics?.totalCollectedFees || 0).toLocaleString()}
-                </div>
-                <div className="text-[10px] text-neutral-400 mt-1">From student fee payments</div>
+          <div className="space-y-4">
+            {/* Header & Main Action */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <h3 className="text-base font-bold text-black">Faculty & Staff Pay Rules</h3>
+                <p className="text-xs text-neutral-500">
+                  Per-student fixed rupee allocation rules, billing periods, and entitlement settlements for faculty
+                </p>
               </div>
-
-              <div className="bg-white p-4 rounded-xl border border-neutral-200 shadow-card">
-                <span className="text-[11px] font-semibold uppercase tracking-wider text-neutral-500">
-                  Faculty Pool (70%)
-                </span>
-                <div className="text-xl font-bold font-mono text-[#CC6B00] mt-1.5">
-                  ₹{(revenueMetrics?.facultyCompensationAccrued ?? revenueMetrics?.staffCompensationAccrued ?? 0).toLocaleString()}
-                </div>
-                <div className="text-[10px] text-neutral-400 mt-1">Paid: ₹{(revenueMetrics?.facultyPaid || 0).toLocaleString()}</div>
-              </div>
-
-              <div className="bg-white p-4 rounded-xl border border-neutral-200 shadow-card">
-                <span className="text-[11px] font-semibold uppercase tracking-wider text-neutral-500">
-                  Faculty Payable
-                </span>
-                <div className="text-xl font-bold font-mono text-blue-700 mt-1.5">
-                  ₹{(revenueMetrics?.outstandingFacultyPayable ?? revenueMetrics?.outstandingStaffPayable ?? 0).toLocaleString()}
-                </div>
-                <div className="text-[10px] text-neutral-400 mt-1">Pending 70% disbursements</div>
-              </div>
-
-              <div className="bg-white p-4 rounded-xl border border-neutral-200 shadow-card">
-                <span className="text-[11px] font-semibold uppercase tracking-wider text-neutral-500">
-                  Fixed Salary Payable
-                </span>
-                <div className="text-xl font-bold font-mono text-purple-700 mt-1.5">
-                  ₹{(revenueMetrics?.outstandingFixedPayable || 0).toLocaleString()}
-                </div>
-                <div className="text-[10px] text-neutral-400 mt-1">Accrued: ₹{(revenueMetrics?.fixedSalaryAccrued || 0).toLocaleString()}</div>
-              </div>
-
-              <div className="bg-white p-4 rounded-xl border border-neutral-200 shadow-card">
-                <span className="text-[11px] font-semibold uppercase tracking-wider text-neutral-500">
-                  Academy Share (30%)
-                </span>
-                <div className="text-xl font-bold font-mono text-emerald-700 mt-1.5">
-                  ₹{(revenueMetrics?.academyShareAccrued || 0).toLocaleString()}
-                </div>
-                <div className="text-[10px] text-neutral-400 mt-1">Gross share (before expenses)</div>
-              </div>
-
-              <div className="bg-white p-4 rounded-xl border border-neutral-200 shadow-card">
-                <span className="text-[11px] font-semibold uppercase tracking-wider text-neutral-500">
-                  Reversals & Refunds
-                </span>
-                <div className="text-xl font-bold font-mono text-rose-600 mt-1.5">
-                  ₹{(revenueMetrics?.totalRefunds || 0).toLocaleString()}
-                </div>
-                <div className="text-[10px] text-neutral-400 mt-1">{revenueMetrics?.unallocatedCollectionsCount || 0} unallocated items</div>
+              <div className="flex items-center gap-2">
+                <Button size="sm" variant="primary" onClick={() => handleOpenCreateStaffPayRule()}>
+                  <Plus className="w-3.5 h-3.5" />
+                  Configure Staff Pay Rule
+                </Button>
               </div>
             </div>
 
-            {/* Faculty Compensation & Staff Pay Rules Table */}
-            <div className="bg-white rounded-2xl border border-neutral-200 shadow-card overflow-hidden">
-              <div className="p-4 sm:p-5 border-b border-neutral-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-gradient-to-r from-orange-50/40 to-neutral-50/40">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-[#FF8500] to-[#E65100] flex items-center justify-center text-white shadow-sm">
-                    <Sparkles className="w-5 h-5 text-white" />
-                  </div>
-                  <div>
-                    <h4 className="text-base font-bold text-neutral-900">Faculty Compensation & Staff Pay Rules</h4>
-                    <p className="text-xs text-neutral-500">
-                      Configure faculty settlement formulas: Student Tier-based % or ₹, Fixed per-student amount, or Revenue sharing %
-                    </p>
-                  </div>
+            {/* Search, Filter & Period Control Toolbar */}
+            <div className="bg-white p-3.5 rounded-xl border border-neutral-200 shadow-card flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center gap-2 flex-1">
+                <div className="relative flex-1 min-w-[200px] max-w-sm">
+                  <Search className="w-4 h-4 absolute left-3 top-2.5 text-neutral-400" />
+                  <input
+                    type="text"
+                    placeholder="Search by faculty member, course, or subject..."
+                    value={facultySearchQuery}
+                    onChange={(e) => setFacultySearchQuery(e.target.value)}
+                    className="w-full pl-9 pr-3 py-1.5 bg-neutral-50 border border-neutral-200 rounded-lg text-xs text-black focus:outline-none focus:ring-2 focus:ring-[#FF8500]"
+                  />
                 </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => handleOpenCreateStaffPayRule()}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#FF8500] hover:bg-[#E67600] text-white text-xs font-bold shadow-sm transition cursor-pointer"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    <span>+ Configure Staff Pay Rule</span>
-                  </button>
-                </div>
+
+                {/* Course / Standard Filter */}
+                <select
+                  value={facultyFilterCourseId}
+                  onChange={(e) => setFacultyFilterCourseId(e.target.value)}
+                  className="px-3 py-1.5 bg-white border border-neutral-200 rounded-lg text-xs text-black font-medium focus:outline-none focus:ring-2 focus:ring-[#FF8500]"
+                >
+                  <option value="">All Courses / Standards</option>
+                  {availableCourses.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name} {c.code ? `(${c.code})` : ''}
+                    </option>
+                  ))}
+                </select>
+
+                {/* Status Filter */}
+                <select
+                  value={facultyFilterStatus}
+                  onChange={(e) => setFacultyFilterStatus(e.target.value as any)}
+                  className="px-3 py-1.5 bg-white border border-neutral-200 rounded-lg text-xs text-black font-medium focus:outline-none focus:ring-2 focus:ring-[#FF8500]"
+                >
+                  <option value="ALL">All Statuses</option>
+                  <option value="ACTIVE">Active Rules</option>
+                  <option value="INACTIVE">Inactive Rules</option>
+                </select>
               </div>
 
+              {/* Pay Period & Refresh */}
+              <div className="flex items-center gap-2 self-end lg:self-auto">
+                <div className="flex items-center gap-1.5 bg-neutral-50 px-2.5 py-1 rounded-lg border border-neutral-200 text-xs font-semibold text-neutral-700">
+                  <Calendar className="w-3.5 h-3.5 text-[#FF8500]" />
+                  <span>Period:</span>
+                  <input
+                    type="month"
+                    value={selectedSettlementMonth}
+                    onChange={(e) => setSelectedSettlementMonth(e.target.value)}
+                    className="bg-transparent font-bold text-neutral-900 border-none outline-none text-xs cursor-pointer"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => fetchSalaryRevenueData()}
+                  className="p-1.5 rounded-lg border border-neutral-200 text-neutral-600 hover:text-black hover:bg-neutral-100 transition cursor-pointer"
+                  title="Refresh staff settlement data"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${loadingSalaryData ? 'animate-spin text-[#FF8500]' : ''}`} />
+                </button>
+              </div>
+            </div>
+
+            {/* Standards / Courses Quick Filter Strip */}
+            {availableCourses.length > 0 && (
+              <div className="flex items-center gap-2 overflow-x-auto pb-1 no-scrollbar">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-neutral-500 shrink-0 mr-1">
+                  Standards:
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setFacultyFilterCourseId('')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition shrink-0 flex items-center gap-1.5 cursor-pointer ${
+                    facultyFilterCourseId === ''
+                      ? 'bg-[#FF8500] text-white border-[#FF8500] shadow-2xs'
+                      : 'bg-white text-neutral-700 border-neutral-200 hover:border-neutral-300'
+                  }`}
+                >
+                  <span>All Standards</span>
+                  <span
+                    className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+                      facultyFilterCourseId === ''
+                        ? 'bg-white/20 text-white'
+                        : 'bg-neutral-100 text-neutral-600'
+                    }`}
+                  >
+                    {facultyAssignments.length}
+                  </span>
+                </button>
+                {availableCourses.map((course) => {
+                  const isSelected = facultyFilterCourseId === course.id;
+                  const ruleCount = facultyAssignments.filter((a) => a.classId === course.id).length;
+                  return (
+                    <button
+                      key={course.id}
+                      type="button"
+                      onClick={() => setFacultyFilterCourseId(isSelected ? '' : course.id)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition shrink-0 flex items-center gap-1.5 cursor-pointer ${
+                        isSelected
+                          ? 'bg-[#FF8500] text-white border-[#FF8500] shadow-2xs'
+                          : 'bg-white text-neutral-700 border-neutral-200 hover:border-[#FF8500]/50 hover:bg-[#FFF4E5]/40'
+                      }`}
+                    >
+                      <span>{course.name}</span>
+                      {course.code && (
+                        <span
+                          className={`font-mono text-[10px] px-1.5 py-0.2 rounded ${
+                            isSelected
+                              ? 'bg-black/20 text-white'
+                              : 'bg-neutral-100 text-neutral-500'
+                          }`}
+                        >
+                          {course.code}
+                        </span>
+                      )}
+                      <span
+                        className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+                          isSelected
+                            ? 'bg-white/20 text-white'
+                            : ruleCount > 0
+                            ? 'bg-[#FFF4E5] text-[#CC6B00]'
+                            : 'bg-neutral-100 text-neutral-400'
+                        }`}
+                      >
+                        {ruleCount}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Faculty Pay Configuration Table (Matching Fee Rules Tab) */}
+            <div className="bg-white rounded-2xl border border-neutral-200 shadow-card overflow-hidden">
               <div className="overflow-x-auto">
                 <table className="w-full text-left border-collapse text-xs">
                   <thead>
                     <tr className="bg-neutral-50 border-b border-neutral-200 text-neutral-600 uppercase font-semibold text-[11px] tracking-wider">
+                      <th className="py-3 px-3 text-center w-14 font-semibold text-neutral-600">S.No</th>
                       <th className="py-3 px-4">Faculty Member</th>
-                      <th className="py-3 px-4">Assigned Course</th>
+                      <th className="py-3 px-4">Course / Standard</th>
+                      <th className="py-3 px-4">Batch</th>
                       <th className="py-3 px-4">Subject</th>
-                      <th className="py-3 px-4">Staff Pay Rule</th>
-                      <th className="py-3 px-4">Role</th>
+                      <th className="py-3 px-4 text-right">Amount Per Student (₹)</th>
+                      <th className="py-3 px-4 text-center">Billing Period</th>
+                      <th className="py-3 px-4 text-center">Eligible Students</th>
+                      <th className="py-3 px-4 text-right">Total Entitlement (₹)</th>
+                      <th className="py-3 px-4 text-center">Status</th>
                       <th className="py-3 px-4 text-right">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-neutral-100 text-neutral-800">
-                    {facultyAssignments.length === 0 ? (
+                    {filteredFacultyAssignments.length === 0 ? (
                       <tr>
-                        <td colSpan={6} className="py-8 text-center text-neutral-400">
-                          <p className="text-xs">No faculty course assignments configured yet.</p>
+                        <td colSpan={11} className="py-12 text-center text-neutral-400">
+                          <Users className="w-8 h-8 text-neutral-300 mx-auto mb-2" />
+                          <p className="text-xs font-semibold text-neutral-700">No faculty pay rules found.</p>
+                          <p className="text-[11px] text-neutral-400 mt-0.5">
+                            {facultySearchQuery || facultyFilterCourseId || facultyFilterStatus !== 'ALL'
+                              ? 'Try adjusting your search query or filter options.'
+                              : 'Click "Configure Staff Pay Rule" to add a per-student subject allocation.'}
+                          </p>
                           <button
                             type="button"
-                            onClick={() => handleOpenCreateStaffPayRule()}
-                            className="mt-2 text-xs text-[#FF8500] font-semibold hover:underline inline-flex items-center gap-1"
+                            onClick={() => handleOpenCreateStaffPayRule(facultyFilterCourseId || undefined)}
+                            className="mt-3 text-xs text-[#FF8500] font-semibold hover:underline inline-flex items-center gap-1 cursor-pointer"
                           >
-                            <Plus className="w-3 h-3" /> Add first faculty pay rule
+                            <Plus className="w-3.5 h-3.5" /> Configure Staff Pay Rule
                           </button>
                         </td>
                       </tr>
                     ) : (
-                      facultyAssignments.map((as: any) => {
-                        const badge = getSettlementBadgeDisplay(as);
+                      filteredFacultyAssignments.map((as: any, index: number) => {
+                        const parsed = parseSettlementToForm(
+                          as.compensationRule,
+                          as.staffSharePercentage ?? 70,
+                        );
+                        const amountPerStudent = Number(parsed.perStudentAmount) || 0;
+                        const billingPeriod =
+                          (as.compensationRule as any)?.config?.billingPeriod ||
+                          (as.compensationRule as any)?.billingPeriod ||
+                          'MONTHLY';
+
+                        const matchingSettlement = staffSettlementsData.find(
+                          (s: any) => s.staffId === (as.userId || as.staffId),
+                        );
+                        const assignmentSettlement =
+                          matchingSettlement?.byAssignment?.[as.id] || matchingSettlement;
+                        const courseItem = courseBreakdown.find((b) => b.courseId === as.classId);
+
+                        // Live student tier breakdown for this standard/batch/subject
+                        const enrolledInCourse = studentAccounts.filter((sa) =>
+                          sa.enrolledCourses?.some((c) => c.courseId === as.classId)
+                        );
+                        const filteredByBatch = as.batch?.name
+                          ? enrolledInCourse.filter((sa) =>
+                              sa.enrolledCourses?.some(
+                                (c) =>
+                                  c.courseId === as.classId &&
+                                  (c.batchName === as.batch.name || (c as any).batchId === as.batchId)
+                              )
+                            )
+                          : enrolledInCourse;
+
+                        const targetSubName = (as.subject?.name || as.subjectName || '').trim().toLowerCase();
+                        const filteredEligibleStudents = targetSubName
+                          ? filteredByBatch.filter((sa) => {
+                              const courseEntries = (sa.enrolledCourses || []).filter((ec) => ec.courseId === as.classId);
+                              const distinctSubs = new Set(courseEntries.map((e) => (e.subjectName || '').trim().toLowerCase()).filter(Boolean));
+                              return distinctSubs.size >= 3 || courseEntries.some((e) => !e.subjectName) || distinctSubs.has(targetSubName);
+                            })
+                          : filteredByBatch;
+
+                        let liveAllCount = 0;
+                        let liveTwoCount = 0;
+                        let liveSingleCount = 0;
+                        let livePaidStudentsCount = 0;
+                        let liveRealizedAmount = 0;
+
+                        if (filteredEligibleStudents.length > 0) {
+                          filteredEligibleStudents.forEach((st) => {
+                            const courseEntries = st.enrolledCourses.filter((ec) => ec.courseId === as.classId);
+                            const distinctSubjects = new Set(courseEntries.map((e) => e.subjectName).filter(Boolean));
+                            let stStaffShare = amountPerStudent;
+                            if (distinctSubjects.size >= 3 || courseEntries.some((e) => !e.subjectName)) {
+                              liveAllCount++;
+                              if (parsed.mode === 'STUDENT_TIER_BASED') {
+                                stStaffShare = Number(parsed.allSubjectsValue) || 0;
+                              }
+                            } else if (distinctSubjects.size === 2) {
+                              liveTwoCount++;
+                              if (parsed.mode === 'STUDENT_TIER_BASED') {
+                                stStaffShare = Number(parsed.twoSubjectsValue) || 0;
+                              }
+                            } else {
+                              liveSingleCount++;
+                              if (parsed.mode === 'STUDENT_TIER_BASED') {
+                                stStaffShare = Number(parsed.singleSubjectValue) || 0;
+                              }
+                            }
+
+                            if (st.overallStatus === 'PAID') {
+                              livePaidStudentsCount++;
+                              liveRealizedAmount += stStaffShare;
+                            } else if (st.overallStatus === 'PARTIAL' && st.consolidatedBilled > 0 && st.consolidatedPaid > 0) {
+                              livePaidStudentsCount++;
+                              liveRealizedAmount += Math.round(stStaffShare * Math.min(1, st.consolidatedPaid / st.consolidatedBilled));
+                            }
+                          });
+                        }
+
+                        const liveEligibleCount =
+                          filteredEligibleStudents.length > 0
+                            ? filteredEligibleStudents.length
+                            : (courseItem?.enrolledStudentsCount ?? 0);
+
+                        const eligibleStudents =
+                          assignmentSettlement?.eligibleStudents && assignmentSettlement.eligibleStudents > 0
+                            ? assignmentSettlement.eligibleStudents
+                            : liveEligibleCount;
+
+                        const computedTierEntitlement =
+                          parsed.mode === 'STUDENT_TIER_BASED'
+                            ? liveAllCount * (Number(parsed.allSubjectsValue) || 0) +
+                              liveTwoCount * (Number(parsed.twoSubjectsValue) || 0) +
+                              liveSingleCount * (Number(parsed.singleSubjectValue) || 0)
+                            : eligibleStudents * amountPerStudent;
+
+                        const totalEntitlement =
+                          assignmentSettlement?.totalEntitlement && assignmentSettlement.totalEntitlement > 0
+                            ? assignmentSettlement.totalEntitlement
+                            : computedTierEntitlement;
+
+                        const realizedAmount =
+                          assignmentSettlement?.realizedAmount !== undefined
+                            ? assignmentSettlement.realizedAmount
+                            : liveRealizedAmount;
+
+                        const paidStudentsCount =
+                          assignmentSettlement?.paidStudentsCount !== undefined
+                            ? assignmentSettlement.paidStudentsCount
+                            : livePaidStudentsCount;
+
+                        const activeTiers = assignmentSettlement?.tiers || matchingSettlement?.tiers;
+
                         return (
-                          <tr key={as.id || `${as.staffId}-${as.classId}`} className="hover:bg-neutral-50/70 transition-colors">
-                            <td className="py-3.5 px-4 font-bold text-black">
-                              <div className="flex items-center gap-2">
-                                <div className="w-7 h-7 rounded-full bg-orange-100 text-[#CC6B00] flex items-center justify-center font-bold text-xs uppercase">
+                          <tr
+                            key={as.id || `${as.staffId}-${as.classId}-${index}`}
+                            onClick={() => handleOpenSettlementDrawer(as)}
+                            className="hover:bg-neutral-50/70 transition-colors cursor-pointer"
+                          >
+                            <td className="py-3.5 px-3 text-center font-mono text-neutral-500 font-semibold text-xs">
+                              {index + 1}
+                            </td>
+
+                            <td className="py-3.5 px-4 font-bold text-black text-sm">
+                              <div className="flex items-center gap-2.5">
+                                <div className="w-8 h-8 rounded-full bg-orange-100 text-[#CC6B00] flex items-center justify-center font-bold text-xs uppercase shrink-0">
                                   {as.staffName ? as.staffName.charAt(0) : 'F'}
                                 </div>
                                 <div>
                                   <div className="font-bold text-neutral-900">{as.staffName}</div>
-                                  <div className="text-[10px] text-neutral-400 font-normal">
+                                  <div className="text-[11px] font-normal text-neutral-400">
                                     {as.designation || 'Faculty'} {as.staffCode ? `• ${as.staffCode}` : ''}
                                   </div>
                                 </div>
                               </div>
                             </td>
+
                             <td className="py-3.5 px-4">
-                              <div className="font-semibold text-neutral-900">{as.class?.name || as.className || 'General Course'}</div>
-                              {as.batch?.name && (
-                                <div className="text-[10px] text-neutral-400">Batch: {as.batch.name}</div>
-                              )}
-                            </td>
-                            <td className="py-3.5 px-4">
-                              <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-neutral-100 text-neutral-700">
-                                {as.subject?.name || 'All Subjects'}
-                              </span>
-                            </td>
-                            <td className="py-3.5 px-4">
-                              <div className="flex flex-col gap-1 items-start">
-                                <span
-                                  className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold border shadow-2xs ${badge.badgeClass}`}
-                                  title={badge.tooltip}
-                                >
-                                  <Sparkles className="w-3.5 h-3.5 text-[#FF8500]" />
-                                  <span>{badge.text}</span>
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span className="font-bold text-black text-xs">
+                                  {as.class?.name || as.className || as.courseName || 'General Course'}
                                 </span>
-                                <span className="text-[10px] text-neutral-500 font-mono">
-                                  {badge.tooltip}
-                                </span>
+                                {(as.class?.code || as.courseCode) && (
+                                  <span className="px-1.5 py-0.5 rounded bg-[#FFF4E5] text-[#CC6B00] border border-[#FF8500]/25 font-mono font-bold text-[10px]">
+                                    {as.class?.code || as.courseCode}
+                                  </span>
+                                )}
                               </div>
                             </td>
+
                             <td className="py-3.5 px-4">
-                              <span className="text-[11px] font-semibold text-neutral-600 bg-neutral-100 px-2 py-0.5 rounded">
-                                {as.role || 'TEACHER'}
+                              {as.batch?.name || as.batchName ? (
+                                <span className="px-2 py-0.5 rounded bg-neutral-100 text-neutral-700 font-medium text-xs">
+                                  {as.batch?.name || as.batchName}
+                                </span>
+                              ) : (
+                                <span className="text-neutral-400 text-xs">All Batches</span>
+                              )}
+                            </td>
+
+                            <td className="py-3.5 px-4">
+                              {as.subject?.name || as.subjectName ? (
+                                <span className="px-2 py-0.5 rounded bg-[#FFF4E5] text-[#CC6B00] font-semibold text-xs border border-[#FF8500]/25">
+                                  {as.subject?.name || as.subjectName}
+                                </span>
+                              ) : (
+                                <span className="text-neutral-400 text-xs">All Subjects</span>
+                              )}
+                            </td>
+
+                            <td className="py-3.5 px-4 text-right font-mono">
+                              {parsed.mode === 'STUDENT_TIER_BASED' ? (
+                                <div className="flex flex-col items-end gap-0.5 text-xs">
+                                  <div className="font-semibold text-neutral-900">
+                                    <span className="text-[10px] text-neutral-400 font-sans mr-1">All:</span>
+                                    ₹{Number(parsed.allSubjectsValue || 0).toLocaleString('en-IN')}
+                                  </div>
+                                  <div className="font-semibold text-neutral-700">
+                                    <span className="text-[10px] text-neutral-400 font-sans mr-1">2-Sub:</span>
+                                    ₹{Number(parsed.twoSubjectsValue || 0).toLocaleString('en-IN')}
+                                  </div>
+                                  <div className="font-semibold text-neutral-700">
+                                    <span className="text-[10px] text-neutral-400 font-sans mr-1">1-Sub:</span>
+                                    ₹{Number(parsed.singleSubjectValue || 0).toLocaleString('en-IN')}
+                                  </div>
+                                </div>
+                              ) : (
+                                <>
+                                  <div className="font-bold text-sm text-black">
+                                    ₹{amountPerStudent.toLocaleString('en-IN')}
+                                  </div>
+                                  <div className="text-[10.5px] text-neutral-400 font-sans">per student</div>
+                                </>
+                              )}
+                            </td>
+
+                            <td className="py-3.5 px-4 text-center font-medium text-neutral-700">
+                              <span className="px-2 py-0.5 rounded bg-neutral-100 text-neutral-800 text-xs font-semibold">
+                                {billingPeriod}
                               </span>
                             </td>
-                            <td className="py-3.5 px-4 text-right">
+
+                            <td className="py-3.5 px-4 text-center font-mono">
+                              <div className="font-bold text-xs text-neutral-900">
+                                {eligibleStudents}{' '}
+                                <span className="font-sans font-normal text-neutral-500 text-[11px]">std</span>
+                              </div>
+                              {(activeTiers && (activeTiers.all?.students > 0 || activeTiers.two?.students > 0 || activeTiers.single?.students > 0)) ? (
+                                <div className="text-[10px] text-neutral-400 font-sans mt-0.5">
+                                  {activeTiers.all?.students || 0} All • {activeTiers.two?.students || 0} 2-Sub • {activeTiers.single?.students || 0} 1-Sub
+                                </div>
+                              ) : (liveAllCount > 0 || liveTwoCount > 0 || liveSingleCount > 0) ? (
+                                <div className="text-[10px] text-neutral-400 font-sans mt-0.5">
+                                  {liveAllCount} All • {liveTwoCount} 2-Sub • {liveSingleCount} 1-Sub
+                                </div>
+                              ) : null}
+                            </td>
+
+                            <td className="py-3.5 px-4 text-right font-mono">
+                              <div className="font-bold text-sm text-[#CC6B00]">
+                                ₹{totalEntitlement.toLocaleString('en-IN')}
+                              </div>
+                              <div
+                                className={`text-[10px] font-semibold font-sans mt-0.5 ${
+                                  realizedAmount > 0 ? 'text-emerald-600' : 'text-neutral-400'
+                                }`}
+                              >
+                                ₹{(realizedAmount || 0).toLocaleString('en-IN')} shared ({paidStudentsCount}/{eligibleStudents} paid)
+                              </div>
+                            </td>
+
+                            <td className="py-3.5 px-4 text-center">
+                              <Badge variant={as.isActive !== false ? 'success' : 'neutral'}>
+                                {as.isActive !== false ? 'ACTIVE' : 'INACTIVE'}
+                              </Badge>
+                            </td>
+
+                            <td className="py-3.5 px-4 text-right" onClick={(e) => e.stopPropagation()}>
                               <div className="flex items-center justify-end gap-1.5">
                                 <button
                                   type="button"
-                                  onClick={() => handleOpenEditStaffPayRule(as)}
-                                  className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold rounded-lg border border-neutral-200 text-neutral-700 hover:text-[#FF8500] hover:border-[#FF8500] hover:bg-orange-50 transition cursor-pointer"
+                                  onClick={() => handleOpenSettlementDrawer(as)}
+                                  className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold rounded-lg border border-[#FF8500]/30 text-[#CC6B00] bg-[#FFF4E5] hover:bg-[#FFE8CC] transition cursor-pointer"
+                                  title="View Settlement details and audit history"
                                 >
-                                  <Pencil className="w-3.5 h-3.5 text-[#FF8500]" />
-                                  <span>Edit Rule</span>
+                                  <Eye className="w-3.5 h-3.5 text-[#FF8500]" />
+                                  <span>View Settlement</span>
                                 </button>
+
                                 <button
                                   type="button"
-                                  onClick={() => handleInitiateDeleteStaffPayRule(as)}
-                                  className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold rounded-lg border border-neutral-200 text-neutral-600 hover:text-red-600 hover:border-red-300 hover:bg-red-50 transition cursor-pointer"
-                                  title="Delete Staff Pay Rule"
+                                  onClick={() => handleOpenEditStaffPayRule(as)}
+                                  className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold rounded-lg border border-neutral-200 text-neutral-700 hover:text-[#FF8500] hover:border-[#FF8500] hover:bg-[#FFF4E5]/40 transition cursor-pointer"
+                                  title="Edit Staff Pay Rule"
                                 >
-                                  <Trash2 className="w-3.5 h-3.5 text-neutral-400 group-hover:text-red-600" />
-                                  <span>Delete</span>
+                                  <Pencil className="w-3.5 h-3.5 text-[#FF8500]" />
+                                  <span>Edit</span>
+                                </button>
+
+                                <button
+                                  type="button"
+                                  onClick={() => handleToggleStaffPayRuleActive(as)}
+                                  className={`inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold rounded-lg border transition cursor-pointer ${
+                                    as.isActive !== false
+                                      ? 'border-neutral-200 text-neutral-600 hover:text-red-600 hover:border-red-300 hover:bg-red-50'
+                                      : 'border-emerald-200 text-emerald-700 hover:bg-emerald-50'
+                                  }`}
+                                  title={
+                                    as.isActive !== false
+                                      ? 'Deactivate rule (preserves historical ledger)'
+                                      : 'Activate rule'
+                                  }
+                                >
+                                  <span>{as.isActive !== false ? 'Deactivate' : 'Activate'}</span>
                                 </button>
                               </div>
                             </td>
@@ -3778,92 +3977,19 @@ export default function FeesPage() {
               </div>
             </div>
 
-            <div className="flex items-center justify-between">
-              <div>
-                <h4 className="text-base font-bold text-black">Dual Staff Compensation & Revenue Ledger</h4>
-                <p className="text-xs text-neutral-500">
-                  Unified auditable records for Faculty Revenue Sharing (70%) and General Staff Fixed Salary Accruals
-                </p>
-              </div>
-              <Button size="sm" variant="primary" onClick={() => setShowPayoutModal(true)}>
-                Disburse Payout
-              </Button>
-            </div>
-
-            <div className="bg-white rounded-2xl border border-neutral-200 shadow-card overflow-hidden">
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse text-xs">
-                  <thead>
-                    <tr className="bg-neutral-50 border-b border-neutral-200 text-neutral-600 uppercase font-semibold text-[11px] tracking-wider">
-                      <th className="py-3 px-4">Staff Member</th>
-                      <th className="py-3 px-4">Model</th>
-                      <th className="py-3 px-4">Course / Offering</th>
-                      <th className="py-3 px-4">Subject / Period</th>
-                      <th className="py-3 px-4">Reference / Receipt</th>
-                      <th className="py-3 px-4 text-right">Collected / Incurred (₹)</th>
-                      <th className="py-3 px-4 text-right">Staff Earnings (₹)</th>
-                      <th className="py-3 px-4 text-right">Academy 30% (₹)</th>
-                      <th className="py-3 px-4 text-center">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-neutral-100 text-neutral-800">
-                    {salaryLedgers.length === 0 ? (
-                      <tr>
-                        <td colSpan={9} className="py-8 text-center text-neutral-400">
-                          No compensation revenue entries recorded yet.
-                        </td>
-                      </tr>
-                    ) : (
-                      salaryLedgers.map((l) => (
-                        <tr key={l.id} className="hover:bg-neutral-50/70 transition-colors">
-                          <td className="py-3.5 px-4 font-bold text-black">
-                            {l.user?.firstName} {l.user?.lastName}
-                          </td>
-                          <td className="py-3.5 px-4">
-                            <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold ${
-                              l.compensationModel === 'FIXED_SALARY'
-                                ? 'bg-purple-100 text-purple-800'
-                                : 'bg-amber-100 text-amber-800'
-                            }`}>
-                              {l.compensationModel === 'FIXED_SALARY' ? 'Fixed Salary' : 'Faculty 70%'}
-                            </span>
-                          </td>
-                          <td className="py-3.5 px-4 font-medium text-neutral-800">
-                            {l.class?.name || (l.compensationModel === 'FIXED_SALARY' ? 'Fixed Staff Accrual' : 'General Offering')}
-                          </td>
-                          <td className="py-3.5 px-4 text-neutral-600">
-                            {l.subject?.name || (l.payPeriod ? `Period: ${l.payPeriod}` : '—')}
-                          </td>
-                          <td className="py-3.5 px-4 font-mono text-neutral-700">
-                            {l.receiptNumber || l.ruleApplied || 'ACCRUAL'}
-                          </td>
-                          <td className="py-3.5 px-4 text-right font-mono font-medium">
-                            {l.compensationModel === 'FIXED_SALARY'
-                              ? '—'
-                              : `₹${Number(l.collectedAmount).toLocaleString()}`}
-                          </td>
-                          <td className="py-3.5 px-4 text-right font-mono font-bold text-[#CC6B00]">
-                            ₹{Number(l.earnedAmount || l.staffPoolAmount).toLocaleString()}
-                          </td>
-                          <td className="py-3.5 px-4 text-right font-mono font-bold text-emerald-700">
-                            {l.compensationModel === 'FIXED_SALARY'
-                              ? '—'
-                              : `₹${Number(l.academyShareAmount || 0).toLocaleString()}`}
-                          </td>
-                          <td className="py-3.5 px-4 text-center">
-                            <Badge variant={l.status === 'ACCRUED' ? 'warning' : l.status === 'CANCELLED' ? 'error' : 'success'}>
-                              {l.status}
-                            </Badge>
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
+            {/* Staff Settlement Drawer for Payout Details & Audit Trail */}
+            <StaffSettlementDrawer
+              isOpen={settlementDrawerOpen}
+              onClose={() => setSettlementDrawerOpen(false)}
+              staffId={selectedStaffForDrawer?.staffId || null}
+              staffName={selectedStaffForDrawer?.staffName}
+              month={selectedSettlementMonth}
+              marginPct={selectedStaffForDrawer?.marginPct}
+              onMonthChange={(newMonth) => setSelectedSettlementMonth(newMonth)}
+            />
           </div>
         )}
+
 
         {/* ==================================================================== */}
         {/* MODAL 1: STUDENT CONSOLIDATED ACCOUNT DRILLDOWN */}
@@ -3981,7 +4107,7 @@ export default function FeesPage() {
 
                             <div className="flex items-center gap-1 text-xs text-neutral-500 font-mono">
                               <Clock className="w-3.5 h-3.5 text-neutral-400" />
-                              <span>{new Date(p.paidAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}</span>
+                              <span>{formatDateTime12h(p.paidAt)}</span>
                             </div>
 
                             {p.cycle && (
@@ -4273,6 +4399,17 @@ export default function FeesPage() {
                               >
                                 Pay This Course
                               </Button>
+                            )}
+
+                            {isSuperAdmin && course.invoiceId && (
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteSingleInvoice(course.invoiceId, course.invoiceNumber, course.paidAmount)}
+                                className="p-1.5 text-neutral-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition cursor-pointer"
+                                title={`Delete invoice ${course.invoiceNumber} (Super Admin Only)`}
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
                             )}
                           </div>
                         </div>
@@ -6790,7 +6927,7 @@ export default function FeesPage() {
                     <span className="text-[10px] uppercase font-bold text-neutral-400 block">Receipt Number</span>
                     <strong className="font-mono text-sm text-[#CC6B00]">{selectedReceipt.receiptNumber}</strong>
                     <div className="text-[11px] font-mono text-neutral-600 mt-0.5">
-                      Date: {new Date(selectedReceipt.paymentDate).toLocaleString()}
+                      Date: {formatDateTime12h(selectedReceipt.paymentDate)}
                     </div>
                   </div>
                 </div>
@@ -7044,658 +7181,613 @@ export default function FeesPage() {
           maxWidth="6xl"
         >
           <form onSubmit={handleSaveStaffPayRule} className="space-y-3">
-            {/* Top Row: Offering Assignment (Left) & Rule Model Mode (Right) */}
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 items-stretch">
-              {/* Left 7 cols: Faculty & Offering Selection */}
-              <div className="lg:col-span-7 p-3 bg-neutral-50 rounded-xl border border-neutral-200">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-neutral-500 block mb-2">
+            {/* Top Selection Strip: Faculty Member & Course Offering */}
+            <div className="p-3.5 bg-neutral-50 rounded-xl border border-neutral-200">
+              <div className="flex items-center gap-2 mb-2.5">
+                <span className="w-2 h-2 rounded-full bg-[#FF8500]" />
+                <span className="text-[11px] font-bold uppercase tracking-wider text-neutral-700">
                   1. Faculty Member & Course Offering
                 </span>
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
-                  <div>
-                    <label className="text-[10.5px] font-semibold text-neutral-700 block mb-1">
-                      Faculty Member <span className="text-red-500">*</span>
-                    </label>
-                    <select
-                      value={staffPayRuleForm.userId}
-                      onChange={(e) => setStaffPayRuleForm((prev) => ({ ...prev, userId: e.target.value }))}
-                      disabled={Boolean(editingStaffAssignmentId)}
-                      className="w-full px-2 py-1.5 bg-white border border-neutral-300 rounded-lg text-xs text-black disabled:bg-neutral-100 disabled:cursor-not-allowed"
-                      required
-                    >
-                      <option value="">-- Faculty --</option>
-                      {staffOptions.map((s) => (
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+                <div>
+                  <label className="text-xs font-semibold text-neutral-700 block mb-1">
+                    Faculty Member <span className="text-red-500">*</span>
+                  </label>
+                  <select
+                    value={staffPayRuleForm.userId}
+                    onChange={(e) => {
+                      const newUserId = e.target.value;
+                      const selectedStaff = staffOptions.find((s) => s.id === newUserId);
+                      const firstAssign = selectedStaff?.assignments?.[0];
+                      const nextClassId =
+                        firstAssign?.classId ||
+                        firstAssign?.courseId ||
+                        firstAssign?.class?.id ||
+                        staffPayRuleForm.classId;
+                      const nextBatchId = firstAssign?.batchId || firstAssign?.batch?.id || '';
+                      const nextSubjectId = firstAssign?.subjectId || firstAssign?.subject?.id || '';
+
+                      const { allFee: baseFee, twoFee, singleFee } = resolveConfiguredFeesForStandard(
+                        nextClassId,
+                        nextSubjectId,
+                      );
+
+                      setStaffPayRuleForm((prev) => ({
+                        ...prev,
+                        userId: newUserId,
+                        classId: nextClassId,
+                        batchId: nextBatchId,
+                        subjectId: nextSubjectId,
+                        settlement: {
+                          ...prev.settlement,
+                          allSubjectsValue: baseFee > 0 ? Math.round((baseFee * 0.2) / 50) * 50 : prev.settlement.allSubjectsValue,
+                          twoSubjectsValue: twoFee > 0 ? Math.round((twoFee * 0.2) / 50) * 50 : prev.settlement.twoSubjectsValue,
+                          singleSubjectValue: singleFee > 0 ? Math.round((singleFee * 0.25) / 50) * 50 : prev.settlement.singleSubjectValue,
+                        },
+                      }));
+                    }}
+                    disabled={Boolean(editingStaffAssignmentId)}
+                    className="w-full px-2.5 py-1.5 bg-white border border-neutral-300 rounded-lg text-xs text-black disabled:bg-neutral-100 disabled:cursor-not-allowed focus:outline-none focus:border-[#FF8500] focus:ring-1 focus:ring-[#FF8500]"
+                    required
+                  >
+                    <option value="">-- Select Faculty --</option>
+                    {staffOptions.map((s) => {
+                      const cleanLast = s.lastName && s.lastName !== '.' ? s.lastName : '';
+                      const displayName = s.firstName ? `${s.firstName} ${cleanLast}`.trim() : (s.name || s.email);
+                      const assignedStandards = Array.from(
+                        new Set(
+                          (s.assignments || [])
+                            .map((a: any) => a.courseName || a.className || a.class?.name)
+                            .filter(Boolean)
+                        )
+                      ).join(', ');
+                      return (
                         <option key={s.id} value={s.id}>
-                          {s.firstName ? `${s.firstName} ${s.lastName}` : (s.name || s.email)} ({s.designation || s.role || 'Faculty'})
+                          {displayName} ({s.designation || s.role || 'Faculty'})
+                          {assignedStandards ? ` — [${assignedStandards}]` : ''}
                         </option>
-                      ))}
-                    </select>
-                  </div>
+                      );
+                    })}
+                  </select>
+                </div>
 
-                  <div>
-                    <label className="text-[10.5px] font-semibold text-neutral-700 block mb-1">
-                      Course <span className="text-red-500">*</span>
-                    </label>
-                    <select
-                      value={staffPayRuleForm.classId}
-                      onChange={(e) => {
-                        const newClassId = e.target.value;
-                        setStaffPayRuleForm((prev) => ({
-                          ...prev,
-                          classId: newClassId,
-                          batchId: '',
-                          subjectId: '',
-                        }));
-                      }}
-                      disabled={Boolean(editingStaffAssignmentId)}
-                      className="w-full px-2 py-1.5 bg-white border border-neutral-300 rounded-lg text-xs text-black disabled:bg-neutral-100 disabled:cursor-not-allowed"
-                      required
-                    >
-                      <option value="">-- Course --</option>
-                      {availableCourses.map((c) => (
+                <div>
+                  <label className="text-xs font-semibold text-neutral-700 block mb-1">
+                    Course / Standard <span className="text-red-500">*</span>
+                  </label>
+                  <select
+                    value={staffPayRuleForm.classId}
+                    onChange={(e) => {
+                      const newClassId = e.target.value;
+                      const { allFee: baseFee, twoFee, singleFee } = resolveConfiguredFeesForStandard(
+                        newClassId,
+                      );
+
+                      setStaffPayRuleForm((prev) => ({
+                        ...prev,
+                        classId: newClassId,
+                        batchId: '',
+                        subjectId: '',
+                        settlement: {
+                          ...prev.settlement,
+                          allSubjectsValue: baseFee > 0 ? Math.round((baseFee * 0.2) / 50) * 50 : 0,
+                          twoSubjectsValue: twoFee > 0 ? Math.round((twoFee * 0.2) / 50) * 50 : 0,
+                          singleSubjectValue: singleFee > 0 ? Math.round((singleFee * 0.25) / 50) * 50 : 0,
+                        },
+                      }));
+                    }}
+                    className="w-full px-2.5 py-1.5 bg-white border border-neutral-300 rounded-lg text-xs text-black focus:outline-none focus:border-[#FF8500] focus:ring-1 focus:ring-[#FF8500]"
+                    required
+                  >
+                    <option value="">-- Select Course / Standard --</option>
+                    {availableCourses.map((c) => {
+                      const selectedStaff = staffOptions.find((s) => s.id === staffPayRuleForm.userId);
+                      const isAssignedToStaff = (selectedStaff?.assignments || []).some(
+                        (a: any) => (a.classId || a.courseId || a.class?.id) === c.id
+                      );
+                      return (
                         <option key={c.id} value={c.id}>
-                          {c.name} {c.code ? `(${c.code})` : ''}
+                          {c.name} {c.code ? `(${c.code})` : ''}{isAssignedToStaff ? ' ★ Assigned' : ''}
                         </option>
-                      ))}
-                    </select>
-                  </div>
+                      );
+                    })}
+                  </select>
+                </div>
 
+                {(() => {
+                  const selectedCourse = availableCourses.find((c) => c.id === staffPayRuleForm.classId);
+                  const courseBatches = selectedCourse?.batches || [];
+                  const courseSubjects = selectedCourse?.subjects || [];
+
+                  return (
+                    <>
+                      <div>
+                        <label className="text-xs font-semibold text-neutral-700 block mb-1">
+                          Batch <span className="text-neutral-400 font-normal">(Optional)</span>
+                        </label>
+                        <select
+                          value={staffPayRuleForm.batchId}
+                          onChange={(e) => setStaffPayRuleForm((prev) => ({ ...prev, batchId: e.target.value }))}
+                          disabled={courseBatches.length === 0}
+                          className="w-full px-2.5 py-1.5 bg-white border border-neutral-300 rounded-lg text-xs text-black disabled:bg-neutral-100 focus:outline-none focus:border-[#FF8500] focus:ring-1 focus:ring-[#FF8500]"
+                        >
+                          <option value="">All Batches</option>
+                          {courseBatches.map((b: any) => (
+                            <option key={b.id} value={b.id}>
+                              {b.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="text-xs font-semibold text-neutral-700 block mb-1">
+                          Subject <span className="text-neutral-400 font-normal">(Optional)</span>
+                        </label>
+                        <select
+                          value={staffPayRuleForm.subjectId}
+                          onChange={(e) => {
+                            const newSubId = e.target.value;
+                            const subCfg = courseConfigs.find(
+                              (c) =>
+                                c.class?.id === staffPayRuleForm.classId &&
+                                c.subject?.id === newSubId &&
+                                c.isActive !== false
+                            );
+                            setStaffPayRuleForm((prev) => {
+                              const subFee = subCfg ? Number(subCfg.amount) : 0;
+                              return {
+                                ...prev,
+                                subjectId: newSubId,
+                                settlement: {
+                                  ...prev.settlement,
+                                  singleSubjectValue:
+                                    subFee > 0
+                                      ? Math.round((subFee * 0.25) / 50) * 50
+                                      : prev.settlement.singleSubjectValue,
+                                },
+                              };
+                            });
+                          }}
+                          className="w-full px-2.5 py-1.5 bg-white border border-neutral-300 rounded-lg text-xs text-black focus:outline-none focus:border-[#FF8500] focus:ring-1 focus:ring-[#FF8500]"
+                        >
+                          <option value="">All Subjects</option>
+                          {courseSubjects.map((s: any) => (
+                            <option key={s.id} value={s.id}>
+                              {s.name} {s.code ? `(${s.code})` : ''}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </>
+                  );
+                })()}
+              </div>
+
+              {/* Dynamic Fee Configs of Selected Course */}
+              {staffPayRuleForm.classId && (
+                <div className="mt-3 pt-3 border-t border-neutral-200">
                   {(() => {
                     const selectedCourse = availableCourses.find((c) => c.id === staffPayRuleForm.classId);
-                    const courseBatches = selectedCourse?.batches || [];
-                    const courseSubjects = selectedCourse?.subjects || [];
-
+                    const selectedConfigs = courseConfigs.filter(
+                      (cfg) => cfg.class?.id === staffPayRuleForm.classId && cfg.isActive !== false
+                    );
+                    if (selectedConfigs.length > 0) {
+                      return (
+                        <div className="space-y-1.5">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[11px] font-bold text-neutral-700 flex items-center gap-1.5">
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                              <span>Active Fee Rules for {selectedCourse?.name || 'Selected Course'} ({selectedConfigs.length})</span>
+                            </span>
+                            <span className="text-[10px] text-neutral-400">Fetched dynamically from Fee Rules tab</span>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            {selectedConfigs.map((cfg) => (
+                              <div
+                                key={cfg.id}
+                                className={`px-2.5 py-1 rounded-md text-xs border flex items-center gap-2 ${
+                                  staffPayRuleForm.subjectId && cfg.subject?.id === staffPayRuleForm.subjectId
+                                    ? 'bg-[#FFF4E5] border-[#FF8500]/40 text-[#CC6B00] font-semibold'
+                                    : 'bg-white border-neutral-200 text-neutral-800'
+                                }`}
+                              >
+                                <span className="font-medium">{cfg.name}</span>
+                                <span className="font-mono font-bold text-black">
+                                  ₹{Number(cfg.amount).toLocaleString('en-IN')}
+                                </span>
+                                {cfg.subject && (
+                                  <span className="text-[10px] bg-purple-50 text-purple-700 px-1.5 py-0.5 rounded border border-purple-200 font-medium">
+                                    {cfg.subject.name}
+                                  </span>
+                                )}
+                                {cfg.batch && (
+                                  <span className="text-[10px] bg-neutral-100 text-neutral-600 px-1.5 py-0.5 rounded font-medium">
+                                    {cfg.batch.name}
+                                  </span>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    }
                     return (
-                      <>
-                        <div>
-                          <label className="text-[10.5px] font-semibold text-neutral-700 block mb-1">
-                            Batch <span className="text-neutral-400 font-normal">(Opt)</span>
-                          </label>
-                          <select
-                            value={staffPayRuleForm.batchId}
-                            onChange={(e) => setStaffPayRuleForm((prev) => ({ ...prev, batchId: e.target.value }))}
-                            disabled={Boolean(editingStaffAssignmentId) || courseBatches.length === 0}
-                            className="w-full px-2 py-1.5 bg-white border border-neutral-300 rounded-lg text-xs text-black disabled:bg-neutral-100"
-                          >
-                            <option value="">All Batches</option>
-                            {courseBatches.map((b: any) => (
-                              <option key={b.id} value={b.id}>
-                                {b.name}
-                              </option>
-                            ))}
-                          </select>
+                      <div className="p-2.5 rounded-lg bg-amber-50/70 border border-amber-200 text-xs flex items-center justify-between">
+                        <div className="flex items-center gap-2 text-amber-900">
+                          <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                          <span>
+                            No active Fee Rules configured for <strong>{selectedCourse?.name || 'this course'}</strong> yet in Fee Rules.
+                          </span>
                         </div>
-
-                        <div>
-                          <label className="text-[10.5px] font-semibold text-neutral-700 block mb-1">
-                            Subject <span className="text-neutral-400 font-normal">(Opt)</span>
-                          </label>
-                          <select
-                            value={staffPayRuleForm.subjectId}
-                            onChange={(e) => setStaffPayRuleForm((prev) => ({ ...prev, subjectId: e.target.value }))}
-                            className="w-full px-2 py-1.5 bg-white border border-neutral-300 rounded-lg text-xs text-black"
-                          >
-                            <option value="">All Subjects</option>
-                            {courseSubjects.map((s: any) => (
-                              <option key={s.id} value={s.id}>
-                                {s.name} {s.code ? `(${s.code})` : ''}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                      </>
+                        <span className="text-[11px] text-amber-700 font-medium">
+                          Enter custom per-student pay amounts below
+                        </span>
+                      </div>
                     );
                   })()}
                 </div>
-              </div>
-
-              {/* Right 5 cols: Compensation Mode & Presets */}
-              <div className="lg:col-span-5 p-3 bg-neutral-50 rounded-xl border border-neutral-200 flex flex-col justify-between">
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-neutral-500">
-                      2. Rule Model Mode
-                    </span>
-                    <span className="text-[10px] text-neutral-400 font-medium">Select type</span>
-                  </div>
-                  <div className="grid grid-cols-3 gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setStaffPayRuleForm((prev) => ({
-                          ...prev,
-                          settlement: {
-                            ...prev.settlement,
-                            mode: 'STUDENT_TIER_BASED',
-                            includeTwoSubjects: true,
-                          },
-                        }))
-                      }
-                      className={`p-1.5 rounded-lg border text-center transition cursor-pointer ${
-                        staffPayRuleForm.settlement.mode === 'STUDENT_TIER_BASED'
-                          ? 'border-[#FF8500] bg-orange-100/70 text-neutral-900 font-bold shadow-2xs ring-1 ring-[#FF8500]'
-                          : 'border-neutral-200 bg-white text-neutral-600 hover:bg-neutral-100 font-medium'
-                      }`}
-                    >
-                      <div className="text-[11px] leading-tight">Tier-Based</div>
-                      <div className="text-[9.5px] text-[#CC6B00] font-semibold">All vs Single</div>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setStaffPayRuleForm((prev) => ({
-                          ...prev,
-                          settlement: { ...prev.settlement, mode: 'PER_STUDENT_FIXED' },
-                        }))
-                      }
-                      className={`p-1.5 rounded-lg border text-center transition cursor-pointer ${
-                        staffPayRuleForm.settlement.mode === 'PER_STUDENT_FIXED'
-                          ? 'border-[#FF8500] bg-orange-100/70 text-neutral-900 font-bold shadow-2xs ring-1 ring-[#FF8500]'
-                          : 'border-neutral-200 bg-white text-neutral-600 hover:bg-neutral-100 font-medium'
-                      }`}
-                    >
-                      <div className="text-[11px] leading-tight">Per-Student ₹</div>
-                      <div className="text-[9.5px] text-neutral-500">Flat Rupee</div>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setStaffPayRuleForm((prev) => ({
-                          ...prev,
-                          settlement: { ...prev.settlement, mode: 'REVENUE_SHARE_PERCENTAGE' },
-                        }))
-                      }
-                      className={`p-1.5 rounded-lg border text-center transition cursor-pointer ${
-                        staffPayRuleForm.settlement.mode === 'REVENUE_SHARE_PERCENTAGE'
-                          ? 'border-[#FF8500] bg-orange-100/70 text-neutral-900 font-bold shadow-2xs ring-1 ring-[#FF8500]'
-                          : 'border-neutral-200 bg-white text-neutral-600 hover:bg-neutral-100 font-medium'
-                      }`}
-                    >
-                      <div className="text-[11px] leading-tight">Rev Share %</div>
-                      <div className="text-[9.5px] text-neutral-500">Flat % Split</div>
-                    </button>
-                  </div>
-                </div>
-
-                {/* Quick Presets Bar */}
-                <div className="mt-2 pt-2 border-t border-neutral-200/60 flex items-center gap-1.5 overflow-x-auto">
-                  <span className="text-[9.5px] font-bold text-neutral-500 uppercase shrink-0">Presets:</span>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setStaffPayRuleForm((prev) => ({
-                        ...prev,
-                        settlement: {
-                          ...defaultSettlementState,
-                          mode: 'STUDENT_TIER_BASED',
-                          allSubjectsType: 'PERCENTAGE',
-                          allSubjectsValue: 25,
-                          twoSubjectsType: 'PERCENTAGE',
-                          twoSubjectsValue: 35,
-                          singleSubjectType: 'PERCENTAGE',
-                          singleSubjectValue: 70,
-                          includeTwoSubjects: true,
-                        },
-                      }))
-                    }
-                    className="px-2 py-0.5 rounded text-[10.5px] font-semibold bg-white border border-neutral-200 hover:border-[#FF8500] hover:text-[#FF8500] whitespace-nowrap transition cursor-pointer"
-                  >
-                    12th Class: All 25% • Single 70%
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setStaffPayRuleForm((prev) => ({
-                        ...prev,
-                        settlement: {
-                          ...defaultSettlementState,
-                          mode: 'STUDENT_TIER_BASED',
-                          allSubjectsType: 'FIXED_AMOUNT',
-                          allSubjectsValue: 1200,
-                          twoSubjectsType: 'FIXED_AMOUNT',
-                          twoSubjectsValue: 1200,
-                          singleSubjectType: 'FIXED_AMOUNT',
-                          singleSubjectValue: 1200,
-                          includeTwoSubjects: true,
-                        },
-                      }))
-                    }
-                    className="px-2 py-0.5 rounded text-[10.5px] font-semibold bg-white border border-neutral-200 hover:border-[#FF8500] hover:text-[#FF8500] whitespace-nowrap transition cursor-pointer"
-                  >
-                    Fixed ₹1,200 / Student
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setStaffPayRuleForm((prev) => ({
-                        ...prev,
-                        settlement: {
-                          ...defaultSettlementState,
-                          mode: 'REVENUE_SHARE_PERCENTAGE',
-                          staffSharePercentage: 70,
-                        },
-                      }))
-                    }
-                    className="px-2 py-0.5 rounded text-[10.5px] font-semibold bg-white border border-neutral-200 hover:border-[#FF8500] hover:text-[#FF8500] whitespace-nowrap transition cursor-pointer"
-                  >
-                    70/30 Share
-                  </button>
-                </div>
-              </div>
+              )}
             </div>
 
-            {/* Mode 1: STUDENT_TIER_BASED - WIDE 3-COLUMN SEPARATION */}
-            {staffPayRuleForm.settlement.mode === 'STUDENT_TIER_BASED' && (
-              <div className="space-y-2.5">
-                {/* 3 Dedicated Side-by-Side Cards (Takes full 6xl width) */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                  {/* TIER 1: ALL SUBJECTS BUNDLE */}
-                  <div className="bg-gradient-to-b from-blue-50/60 to-white p-3 rounded-xl border border-blue-200 shadow-2xs flex flex-col justify-between">
+            {/* Dynamic Enrollment Tiers & Faculty Pay Configuration */}
+            {(() => {
+              const selectedCourse = availableCourses.find((c) => c.id === staffPayRuleForm.classId);
+              const selectedConfigs = courseConfigs.filter(
+                (cfg) => cfg.class?.id === staffPayRuleForm.classId && cfg.isActive !== false
+              );
+
+              const {
+                allFee: allSubjectsFee,
+                twoFee: twoSubjectsFee,
+                singleFee: singleSubjectFee,
+              } = resolveConfiguredFeesForStandard(
+                staffPayRuleForm.classId,
+                staffPayRuleForm.subjectId,
+              );
+              const matchingSubjectCfg = staffPayRuleForm.subjectId
+                ? selectedConfigs.find((c) => c.subject?.id === staffPayRuleForm.subjectId)
+                : null;
+
+              // Real enrolled student counts
+              const enrolledInCourse = studentAccounts.filter((sa) =>
+                sa.enrolledCourses?.some((c) => c.courseId === staffPayRuleForm.classId)
+              );
+              const courseBreakdownItem = courseBreakdown.find((b) => b.courseId === staffPayRuleForm.classId);
+              const liveCourseCount = enrolledInCourse.length > 0
+                ? enrolledInCourse.length
+                : (courseBreakdownItem?.enrolledStudentsCount || 0);
+
+              const selectedBatchObj = selectedCourse?.batches?.find((b: any) => b.id === staffPayRuleForm.batchId);
+              const filteredStudents = selectedBatchObj
+                ? enrolledInCourse.filter((sa) =>
+                    sa.enrolledCourses?.some(
+                      (c) => c.courseId === staffPayRuleForm.classId && (c.batchName === selectedBatchObj.name || (c as any).batchId === staffPayRuleForm.batchId)
+                    )
+                  )
+                : enrolledInCourse;
+
+              const totalEligibleStudents = staffPayRuleForm.batchId
+                ? filteredStudents.length
+                : liveCourseCount;
+
+              let allCount = 0;
+              let twoCount = 0;
+              let singleCount = 0;
+
+              if (filteredStudents.length > 0) {
+                filteredStudents.forEach((st) => {
+                  const courseEntries = st.enrolledCourses.filter((ec) => ec.courseId === staffPayRuleForm.classId);
+                  const distinctSubjects = new Set(courseEntries.map((e) => e.subjectName).filter(Boolean));
+                  if (distinctSubjects.size >= 3 || courseEntries.some((e) => !e.subjectName)) {
+                    allCount++;
+                  } else if (distinctSubjects.size === 2) {
+                    twoCount++;
+                  } else {
+                    singleCount++;
+                  }
+                });
+              } else if (totalEligibleStudents > 0) {
+                allCount = totalEligibleStudents;
+              }
+
+              // Entitlements per category
+              const allVal = Number(staffPayRuleForm.settlement.allSubjectsValue) || 0;
+              const twoVal = Number(staffPayRuleForm.settlement.twoSubjectsValue) || 0;
+              const singleVal = Number(staffPayRuleForm.settlement.singleSubjectValue) || 0;
+
+              const allEntitlement = allCount * allVal;
+              const twoEntitlement = twoCount * twoVal;
+              const singleEntitlement = singleCount * singleVal;
+              const totalFacultyEntitlement = allEntitlement + twoEntitlement + singleEntitlement;
+
+              const allTuitionPool = allCount * allSubjectsFee;
+              const twoTuitionPool = twoCount * twoSubjectsFee;
+              const singleTuitionPool = singleCount * singleSubjectFee;
+              const totalTuitionPool = allTuitionPool + twoTuitionPool + singleTuitionPool;
+
+              const remainingAcademyShare = Math.max(0, totalTuitionPool - totalFacultyEntitlement);
+              const academyMarginPercent = totalTuitionPool > 0 ? Math.round((remainingAcademyShare / totalTuitionPool) * 100) : 0;
+
+              return (
+                <div className="space-y-3.5">
+                  {/* Section Title */}
+                  <div className="flex items-center justify-between">
                     <div>
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-blue-100 text-blue-900 border border-blue-200">
-                          <Sparkles className="w-3 h-3 text-blue-600" />
-                          <span>All Subjects (Bundle)</span>
-                        </span>
-                        <span className="text-[10px] font-mono font-bold text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded">3+ Subjects</span>
-                      </div>
-                      <p className="text-[10.5px] text-neutral-600 mb-2">
-                        Student joins Maths + Chem + Physics paying <strong>₹5,000 bundle fee</strong>.
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-neutral-500 block">
+                        2. Faculty Pay Configuration (Mirrors Selected Course Fee Rules)
+                      </span>
+                      <p className="text-[11px] text-neutral-500">
+                        Configure independent fixed rupee allocations per eligible student for each enrollment category.
                       </p>
+                    </div>
+                    <span className="px-2.5 py-1 rounded-md text-xs font-semibold bg-[#FFF4E5] text-[#CC6B00] border border-[#FF8500]/25">
+                      Fixed Rupee Allocation Mode
+                    </span>
+                  </div>
 
-                      <div className="space-y-1.5">
-                        <div className="flex items-center gap-1 bg-neutral-100 p-0.5 rounded-lg text-[11px]">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setStaffPayRuleForm((prev) => ({
-                                ...prev,
-                                settlement: { ...prev.settlement, allSubjectsType: 'PERCENTAGE' },
-                              }))
-                            }
-                            className={`flex-1 py-1 rounded font-semibold transition text-center cursor-pointer ${
-                              staffPayRuleForm.settlement.allSubjectsType === 'PERCENTAGE'
-                                ? 'bg-white text-blue-900 shadow-xs'
-                                : 'text-neutral-500 hover:text-black'
-                            }`}
-                          >
-                            % Share
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setStaffPayRuleForm((prev) => ({
-                                ...prev,
-                                settlement: { ...prev.settlement, allSubjectsType: 'FIXED_AMOUNT' },
-                              }))
-                            }
-                            className={`flex-1 py-1 rounded font-semibold transition text-center cursor-pointer ${
-                              staffPayRuleForm.settlement.allSubjectsType === 'FIXED_AMOUNT'
-                                ? 'bg-white text-blue-900 shadow-xs'
-                                : 'text-neutral-500 hover:text-black'
-                            }`}
-                          >
-                            Fixed Rupee (₹)
-                          </button>
-                        </div>
+                  {/* 3 Enrollment Tier Cards (Home Color Code, No Gradients) */}
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    {/* Tier 1 Card: All Subjects */}
+                    <div className="p-4 bg-white rounded-xl border border-neutral-200 shadow-2xs hover:border-neutral-300 transition-colors space-y-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold text-black flex items-center gap-1.5">
+                          <span className="w-2 h-2 rounded-full bg-[#FF8500]" />
+                          <span>All Subjects Package</span>
+                        </span>
+                        <span
+                          className={`text-xs font-mono font-semibold px-2.5 py-0.5 rounded border ${
+                            allSubjectsFee > 0
+                              ? 'text-neutral-800 bg-neutral-100 border-neutral-200'
+                              : 'text-amber-800 bg-amber-50 border-amber-200'
+                          }`}
+                        >
+                          Fee: {allSubjectsFee > 0 ? `₹${allSubjectsFee.toLocaleString('en-IN')}` : 'Not Configured (₹0)'}
+                        </span>
+                      </div>
 
+                      <div>
+                        <label className="text-xs font-semibold text-neutral-700 block mb-1">
+                          Faculty Amount / Student (₹) <span className="text-red-500">*</span>
+                        </label>
                         <div className="relative">
+                          <span className="absolute left-3 top-2 text-sm text-neutral-400 font-bold">₹</span>
                           <input
                             type="number"
                             min="0"
-                            step={staffPayRuleForm.settlement.allSubjectsType === 'PERCENTAGE' ? '1' : '50'}
+                            step="any"
                             value={staffPayRuleForm.settlement.allSubjectsValue}
                             onChange={(e) =>
                               setStaffPayRuleForm((prev) => ({
                                 ...prev,
                                 settlement: {
                                   ...prev.settlement,
+                                  mode: 'STUDENT_TIER_BASED',
+                                  allSubjectsType: 'FIXED_AMOUNT',
                                   allSubjectsValue: Number(e.target.value) || 0,
                                 },
                               }))
                             }
-                            className="w-full pl-3 pr-8 py-1.5 bg-white border border-blue-300 rounded-lg text-sm font-mono font-bold text-neutral-900 focus:ring-2 focus:ring-blue-400/30"
-                            placeholder={staffPayRuleForm.settlement.allSubjectsType === 'PERCENTAGE' ? '25' : '1200'}
+                            className="w-full pl-8 pr-3 py-1.5 bg-white border border-neutral-200 rounded-lg text-sm font-mono font-bold text-neutral-900 focus:outline-none focus:border-[#FF8500] focus:ring-1 focus:ring-[#FF8500]"
+                            placeholder="e.g. 1000"
                             required
                           />
-                          <span className="absolute right-3 top-2 text-xs font-bold text-neutral-400">
-                            {staffPayRuleForm.settlement.allSubjectsType === 'PERCENTAGE' ? '%' : '₹'}
-                          </span>
                         </div>
+                      </div>
+
+                      <div className="pt-2 border-t border-neutral-100 flex items-center justify-between text-xs">
+                        <span className="text-neutral-500">Tier Payout Preview:</span>
+                        <strong className="font-mono font-bold text-neutral-900">
+                          {allCount} std × ₹{allVal.toLocaleString('en-IN')} = ₹{allEntitlement.toLocaleString('en-IN')}
+                        </strong>
                       </div>
                     </div>
 
-                    {/* Live Calculation Badge on ₹5,000 Bundle */}
-                    <div className="mt-2.5 p-2 bg-blue-50/80 rounded-lg border border-blue-200/60 text-[11px]">
-                      <span className="font-semibold text-blue-900 block text-[10.5px]">Simulation on ₹5,000 Bundle:</span>
-                      {(() => {
-                        const earned =
-                          staffPayRuleForm.settlement.allSubjectsType === 'PERCENTAGE'
-                            ? Math.round((5000 * staffPayRuleForm.settlement.allSubjectsValue) / 100)
-                            : staffPayRuleForm.settlement.allSubjectsValue;
-                        const academy = Math.max(0, 5000 - earned);
-                        return (
-                          <div className="mt-0.5 flex justify-between items-center font-mono text-[10.5px]">
-                            <span>Faculty: <strong className="text-blue-800">₹{earned.toLocaleString('en-IN')}</strong></span>
-                            <span>Academy: <strong className="text-emerald-700">₹{academy.toLocaleString('en-IN')}</strong></span>
-                          </div>
-                        );
-                      })()}
-                    </div>
-                  </div>
-
-                  {/* TIER 2: 2 SUBJECTS COMBO */}
-                  <div className="bg-gradient-to-b from-amber-50/60 to-white p-3 rounded-xl border border-amber-200 shadow-2xs flex flex-col justify-between">
-                    <div>
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-amber-100 text-amber-900 border border-amber-200">
-                          <BookOpen className="w-3 h-3 text-amber-600" />
-                          <span>2-Subject Combo</span>
+                    {/* Tier 2 Card: Two Subjects */}
+                    <div className="p-4 bg-white rounded-xl border border-neutral-200 shadow-2xs hover:border-neutral-300 transition-colors space-y-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold text-black flex items-center gap-1.5">
+                          <span className="w-2 h-2 rounded-full bg-[#FF8500]" />
+                          <span>Two Subjects Package</span>
                         </span>
-                        <span className="text-[10px] font-mono font-bold text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded">2 Subjects</span>
+                        <span
+                          className={`text-xs font-mono font-semibold px-2.5 py-0.5 rounded border ${
+                            twoSubjectsFee > 0
+                              ? 'text-neutral-800 bg-neutral-100 border-neutral-200'
+                              : 'text-amber-800 bg-amber-50 border-amber-200'
+                          }`}
+                        >
+                          Fee: {twoSubjectsFee > 0 ? `₹${twoSubjectsFee.toLocaleString('en-IN')}` : 'Not Configured (₹0)'}
+                        </span>
                       </div>
-                      <p className="text-[10.5px] text-neutral-600 mb-2">
-                        Student joins 2 subjects (Maths + Physics) paying <strong>₹3,500 combo fee</strong>.
-                      </p>
 
-                      <div className="space-y-1.5">
-                        <div className="flex items-center gap-1 bg-neutral-100 p-0.5 rounded-lg text-[11px]">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setStaffPayRuleForm((prev) => ({
-                                ...prev,
-                                settlement: { ...prev.settlement, twoSubjectsType: 'PERCENTAGE', includeTwoSubjects: true },
-                              }))
-                            }
-                            className={`flex-1 py-1 rounded font-semibold transition text-center cursor-pointer ${
-                              staffPayRuleForm.settlement.twoSubjectsType === 'PERCENTAGE'
-                                ? 'bg-white text-amber-900 shadow-xs'
-                                : 'text-neutral-500 hover:text-black'
-                            }`}
-                          >
-                            % Share
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setStaffPayRuleForm((prev) => ({
-                                ...prev,
-                                settlement: { ...prev.settlement, twoSubjectsType: 'FIXED_AMOUNT', includeTwoSubjects: true },
-                              }))
-                            }
-                            className={`flex-1 py-1 rounded font-semibold transition text-center cursor-pointer ${
-                              staffPayRuleForm.settlement.twoSubjectsType === 'FIXED_AMOUNT'
-                                ? 'bg-white text-amber-900 shadow-xs'
-                                : 'text-neutral-500 hover:text-black'
-                            }`}
-                          >
-                            Fixed Rupee (₹)
-                          </button>
-                        </div>
-
+                      <div>
+                        <label className="text-xs font-semibold text-neutral-700 block mb-1">
+                          Faculty Amount / Student (₹) <span className="text-red-500">*</span>
+                        </label>
                         <div className="relative">
+                          <span className="absolute left-3 top-2 text-sm text-neutral-400 font-bold">₹</span>
                           <input
                             type="number"
                             min="0"
-                            step={staffPayRuleForm.settlement.twoSubjectsType === 'PERCENTAGE' ? '1' : '50'}
+                            step="any"
                             value={staffPayRuleForm.settlement.twoSubjectsValue}
                             onChange={(e) =>
                               setStaffPayRuleForm((prev) => ({
                                 ...prev,
                                 settlement: {
                                   ...prev.settlement,
+                                  mode: 'STUDENT_TIER_BASED',
+                                  twoSubjectsType: 'FIXED_AMOUNT',
                                   twoSubjectsValue: Number(e.target.value) || 0,
                                   includeTwoSubjects: true,
                                 },
                               }))
                             }
-                            className="w-full pl-3 pr-8 py-1.5 bg-white border border-amber-300 rounded-lg text-sm font-mono font-bold text-neutral-900 focus:ring-2 focus:ring-amber-400/30"
-                            placeholder={staffPayRuleForm.settlement.twoSubjectsType === 'PERCENTAGE' ? '35' : '1000'}
+                            className="w-full pl-8 pr-3 py-1.5 bg-white border border-neutral-200 rounded-lg text-sm font-mono font-bold text-neutral-900 focus:outline-none focus:border-[#FF8500] focus:ring-1 focus:ring-[#FF8500]"
+                            placeholder="e.g. 700"
+                            required
                           />
-                          <span className="absolute right-3 top-2 text-xs font-bold text-neutral-400">
-                            {staffPayRuleForm.settlement.twoSubjectsType === 'PERCENTAGE' ? '%' : '₹'}
-                          </span>
                         </div>
+                      </div>
+
+                      <div className="pt-2 border-t border-neutral-100 flex items-center justify-between text-xs">
+                        <span className="text-neutral-500">Tier Payout Preview:</span>
+                        <strong className="font-mono font-bold text-neutral-900">
+                          {twoCount} std × ₹{twoVal.toLocaleString('en-IN')} = ₹{twoEntitlement.toLocaleString('en-IN')}
+                        </strong>
                       </div>
                     </div>
 
-                    {/* Live Calculation Badge on ₹3,500 Combo */}
-                    <div className="mt-2.5 p-2 bg-amber-50/80 rounded-lg border border-amber-200/60 text-[11px]">
-                      <span className="font-semibold text-amber-900 block text-[10.5px]">Simulation on ₹3,500 Combo:</span>
-                      {(() => {
-                        const earned =
-                          staffPayRuleForm.settlement.twoSubjectsType === 'PERCENTAGE'
-                            ? Math.round((3500 * staffPayRuleForm.settlement.twoSubjectsValue) / 100)
-                            : staffPayRuleForm.settlement.twoSubjectsValue;
-                        const academy = Math.max(0, 3500 - earned);
-                        return (
-                          <div className="mt-0.5 flex justify-between items-center font-mono text-[10.5px]">
-                            <span>Faculty: <strong className="text-amber-800">₹{earned.toLocaleString('en-IN')}</strong></span>
-                            <span>Academy: <strong className="text-emerald-700">₹{academy.toLocaleString('en-IN')}</strong></span>
-                          </div>
-                        );
-                      })()}
-                    </div>
-                  </div>
-
-                  {/* TIER 3: SINGLE 1-SUBJECT */}
-                  <div className="bg-gradient-to-b from-orange-50/60 to-white p-3 rounded-xl border border-orange-200 shadow-2xs flex flex-col justify-between">
-                    <div>
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-orange-100 text-orange-950 border border-orange-200">
-                          <DollarSign className="w-3 h-3 text-[#FF8500]" />
-                          <span>1 Single Subject</span>
+                    {/* Tier 3 Card: Single Subject */}
+                    <div className="p-4 bg-white rounded-xl border border-neutral-200 shadow-2xs hover:border-neutral-300 transition-colors space-y-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold text-black flex items-center gap-1.5">
+                          <span className="w-2 h-2 rounded-full bg-[#FF8500]" />
+                          <span>Single Subject Enrollment</span>
                         </span>
-                        <span className="text-[10px] font-mono font-bold text-[#CC6B00] bg-orange-50 px-1.5 py-0.5 rounded">1 Subject Only</span>
+                        <span
+                          className={`text-xs font-mono font-semibold px-2.5 py-0.5 rounded border ${
+                            singleSubjectFee > 0
+                              ? 'text-neutral-800 bg-neutral-100 border-neutral-200'
+                              : 'text-amber-800 bg-amber-50 border-amber-200'
+                          }`}
+                        >
+                          {matchingSubjectCfg ? `${matchingSubjectCfg.subject?.name || 'Subject'} Fee:` : 'Fee:'}{' '}
+                          {singleSubjectFee > 0 ? `₹${singleSubjectFee.toLocaleString('en-IN')}` : 'Not Configured (₹0)'}
+                        </span>
                       </div>
-                      <p className="text-[10.5px] text-neutral-600 mb-2">
-                        Student joins <strong>only 1 subject (Maths)</strong> paying <strong>₹1,800 subject fee</strong>.
-                      </p>
 
-                      <div className="space-y-1.5">
-                        <div className="flex items-center gap-1 bg-neutral-100 p-0.5 rounded-lg text-[11px]">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setStaffPayRuleForm((prev) => ({
-                                ...prev,
-                                settlement: { ...prev.settlement, singleSubjectType: 'PERCENTAGE' },
-                              }))
-                            }
-                            className={`flex-1 py-1 rounded font-semibold transition text-center cursor-pointer ${
-                              staffPayRuleForm.settlement.singleSubjectType === 'PERCENTAGE'
-                                ? 'bg-white text-orange-950 shadow-xs'
-                                : 'text-neutral-500 hover:text-black'
-                            }`}
-                          >
-                            % Share
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setStaffPayRuleForm((prev) => ({
-                                ...prev,
-                                settlement: { ...prev.settlement, singleSubjectType: 'FIXED_AMOUNT' },
-                              }))
-                            }
-                            className={`flex-1 py-1 rounded font-semibold transition text-center cursor-pointer ${
-                              staffPayRuleForm.settlement.singleSubjectType === 'FIXED_AMOUNT'
-                                ? 'bg-white text-orange-950 shadow-xs'
-                                : 'text-neutral-500 hover:text-black'
-                            }`}
-                          >
-                            Fixed Rupee (₹)
-                          </button>
-                        </div>
-
+                      <div>
+                        <label className="text-xs font-semibold text-neutral-700 block mb-1">
+                          Faculty Amount / Student (₹) <span className="text-red-500">*</span>
+                        </label>
                         <div className="relative">
+                          <span className="absolute left-3 top-2 text-sm text-neutral-400 font-bold">₹</span>
                           <input
                             type="number"
                             min="0"
-                            step={staffPayRuleForm.settlement.singleSubjectType === 'PERCENTAGE' ? '1' : '50'}
+                            step="any"
                             value={staffPayRuleForm.settlement.singleSubjectValue}
                             onChange={(e) =>
                               setStaffPayRuleForm((prev) => ({
                                 ...prev,
                                 settlement: {
                                   ...prev.settlement,
+                                  mode: 'STUDENT_TIER_BASED',
+                                  singleSubjectType: 'FIXED_AMOUNT',
                                   singleSubjectValue: Number(e.target.value) || 0,
                                 },
                               }))
                             }
-                            className="w-full pl-3 pr-8 py-1.5 bg-white border border-orange-300 rounded-lg text-sm font-mono font-bold text-neutral-900 focus:ring-2 focus:ring-[#FF8500]/30"
-                            placeholder={staffPayRuleForm.settlement.singleSubjectType === 'PERCENTAGE' ? '70' : '1260'}
+                            className="w-full pl-8 pr-3 py-1.5 bg-white border border-neutral-200 rounded-lg text-sm font-mono font-bold text-neutral-900 focus:outline-none focus:border-[#FF8500] focus:ring-1 focus:ring-[#FF8500]"
+                            placeholder="e.g. 500"
                             required
                           />
-                          <span className="absolute right-3 top-2 text-xs font-bold text-neutral-400">
-                            {staffPayRuleForm.settlement.singleSubjectType === 'PERCENTAGE' ? '%' : '₹'}
-                          </span>
                         </div>
                       </div>
-                    </div>
 
-                    {/* Live Calculation Badge on ₹1,800 Single Fee */}
-                    <div className="mt-2.5 p-2 bg-orange-50/80 rounded-lg border border-orange-200/60 text-[11px]">
-                      <span className="font-semibold text-orange-900 block text-[10.5px]">Simulation on ₹1,800 Single Subject:</span>
-                      {(() => {
-                        const earned =
-                          staffPayRuleForm.settlement.singleSubjectType === 'PERCENTAGE'
-                            ? Math.round((1800 * staffPayRuleForm.settlement.singleSubjectValue) / 100)
-                            : staffPayRuleForm.settlement.singleSubjectValue;
-                        const academy = Math.max(0, 1800 - earned);
-                        return (
-                          <div className="mt-0.5 flex justify-between items-center font-mono text-[10.5px]">
-                            <span>Faculty: <strong className="text-[#CC6B00]">₹{earned.toLocaleString('en-IN')}</strong></span>
-                            <span>Academy: <strong className="text-emerald-700">₹{academy.toLocaleString('en-IN')}</strong></span>
-                          </div>
-                        );
-                      })()}
+                      <div className="pt-2 border-t border-neutral-100 flex items-center justify-between text-xs">
+                        <span className="text-neutral-500">Tier Payout Preview:</span>
+                        <strong className="font-mono font-bold text-neutral-900">
+                          {singleCount} std × ₹{singleVal.toLocaleString('en-IN')} = ₹{singleEntitlement.toLocaleString('en-IN')}
+                        </strong>
+                      </div>
                     </div>
                   </div>
-                </div>
 
-                {/* Real-World Scenario Side-by-Side Comparison Banner */}
-                <div className="p-2.5 bg-neutral-900 text-white rounded-xl shadow-xs text-xs flex flex-col sm:flex-row items-center justify-between gap-3">
-                  <div className="flex items-center gap-2">
-                    <Sparkles className="w-4 h-4 text-amber-400 shrink-0" />
-                    <div>
-                      <span className="font-bold text-amber-400 text-xs block">
-                        Real-World 12th Standard Scenario Check:
-                      </span>
-                      <span className="text-[11px] text-neutral-300">
-                        When student fees are collected, RCA2.O automatically checks student course enrollment and applies the corresponding tier payout.
+                  {/* Live Allocation Preview: 4 Clean Cards (Home Color Code, No Dark Gradients) */}
+                  <div className="p-4 bg-neutral-50/80 rounded-xl border border-neutral-200 space-y-3">
+                    <div className="flex items-center justify-between border-b border-neutral-200 pb-2">
+                      <div className="flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-full bg-[#FF8500]" />
+                        <h6 className="text-xs font-bold text-neutral-900 uppercase tracking-wider">
+                          Live Multi-Tier Allocation Summary
+                        </h6>
+                      </div>
+                      <span className="text-xs font-mono text-neutral-600 bg-white px-2.5 py-0.5 rounded border border-neutral-200">
+                        Cohort: All ({allCount}) • Two ({twoCount}) • Single ({singleCount})
                       </span>
                     </div>
-                  </div>
 
-                  <div className="flex items-center gap-3 shrink-0 font-mono text-[11px]">
-                    <div className="bg-white/10 px-2.5 py-1 rounded-lg border border-white/5">
-                      <span className="text-neutral-400">3-Sub (₹5k fee): </span>
-                      <strong className="text-emerald-400">
-                        {staffPayRuleForm.settlement.allSubjectsType === 'PERCENTAGE'
-                          ? `₹${Math.round((5000 * staffPayRuleForm.settlement.allSubjectsValue) / 100).toLocaleString('en-IN')} (${staffPayRuleForm.settlement.allSubjectsValue}%)`
-                          : `₹${staffPayRuleForm.settlement.allSubjectsValue.toLocaleString('en-IN')}`}
-                      </strong>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                      {/* Card 1: Eligible Student Count */}
+                      <div className="p-3 bg-white rounded-lg border border-neutral-200 shadow-2xs space-y-1">
+                        <span className="text-[10px] uppercase font-bold text-neutral-500 block tracking-wider">
+                          Eligible Student Count
+                        </span>
+                        <div className="text-lg font-bold font-mono text-black">
+                          {totalEligibleStudents} {totalEligibleStudents === 1 ? 'Student' : 'Students'}
+                        </div>
+                        <span className="text-xs text-neutral-500 font-mono block">
+                          {totalEligibleStudents > 0
+                            ? `${allCount} All • ${twoCount} Two • ${singleCount} Single`
+                            : 'No enrolled students in this course'}
+                        </span>
+                      </div>
+
+                      {/* Card 2: Faculty Rates Snapshot */}
+                      <div className="p-3 bg-white rounded-lg border border-neutral-200 shadow-2xs space-y-1">
+                        <span className="text-[10px] uppercase font-bold text-neutral-500 block tracking-wider">
+                          Configured Rates / Student
+                        </span>
+                        <div className="text-lg font-bold font-mono text-neutral-900">
+                          ₹{allVal.toLocaleString('en-IN')} <span className="text-neutral-300 font-normal">|</span> ₹{twoVal.toLocaleString('en-IN')} <span className="text-neutral-300 font-normal">|</span> ₹{singleVal.toLocaleString('en-IN')}
+                        </div>
+                        <span className="text-xs text-neutral-500 block">
+                          All • 2-Sub • 1-Sub
+                        </span>
+                      </div>
+
+                      {/* Card 3: Total Faculty Entitlement (Highlighted with Home Accent) */}
+                      <div className="p-3 bg-[#FFF4E5] rounded-lg border border-[#FF8500]/30 shadow-2xs space-y-1">
+                        <span className="text-[10px] uppercase font-bold text-[#CC6B00] block tracking-wider">
+                          Total Faculty Entitlement
+                        </span>
+                        <div className="text-lg font-bold font-mono text-[#CC6B00]">
+                          ₹{totalFacultyEntitlement.toLocaleString('en-IN')}
+                        </div>
+                        <span className="text-xs text-neutral-600 font-mono block">
+                          {totalEligibleStudents > 0 ? 'Sum of all 3 category tiers' : 'Based on 0 enrolled students'}
+                        </span>
+                      </div>
+
+                      {/* Card 4: Remaining Academy Share */}
+                      <div className="p-3 bg-white rounded-lg border border-neutral-200 shadow-2xs space-y-1">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px] uppercase font-bold text-neutral-500 block tracking-wider">
+                            Academy Retained Share
+                          </span>
+                          <span className="text-[10px] font-bold text-neutral-700 bg-neutral-100 px-1.5 py-0.5 rounded border border-neutral-200 font-mono">
+                            {academyMarginPercent}% Margin
+                          </span>
+                        </div>
+                        <div className="text-lg font-bold font-mono text-black">
+                          ₹{remainingAcademyShare.toLocaleString('en-IN')}
+                        </div>
+                        <span className="text-xs text-neutral-500 font-mono block">
+                          Pool ₹{totalTuitionPool.toLocaleString('en-IN')} - Entitlement
+                        </span>
+                      </div>
                     </div>
-
-                    <div className="bg-white/10 px-2.5 py-1 rounded-lg border border-white/5">
-                      <span className="text-neutral-400">1-Sub (₹1.8k fee): </span>
-                      <strong className="text-amber-400">
-                        {staffPayRuleForm.settlement.singleSubjectType === 'PERCENTAGE'
-                          ? `₹${Math.round((1800 * staffPayRuleForm.settlement.singleSubjectValue) / 100).toLocaleString('en-IN')} (${staffPayRuleForm.settlement.singleSubjectValue}%)`
-                          : `₹${staffPayRuleForm.settlement.singleSubjectValue.toLocaleString('en-IN')}`}
-                      </strong>
-                    </div>
                   </div>
                 </div>
-              </div>
-            )}
+              );
+            })()}
 
-            {/* Mode 2: PER_STUDENT_FIXED */}
-            {staffPayRuleForm.settlement.mode === 'PER_STUDENT_FIXED' && (
-              <div className="p-4 bg-neutral-50 rounded-xl border border-neutral-200 space-y-3">
-                <label className="text-xs font-bold text-neutral-800 block mb-1">
-                  Fixed Rupee Amount Earned per Student (₹)
-                </label>
-                <div className="relative max-w-sm">
-                  <span className="absolute left-3 top-2.5 text-sm text-neutral-400 font-semibold">₹</span>
-                  <input
-                    type="number"
-                    min="0"
-                    step="50"
-                    value={staffPayRuleForm.settlement.perStudentAmount}
-                    onChange={(e) =>
-                      setStaffPayRuleForm((prev) => ({
-                        ...prev,
-                        settlement: {
-                          ...prev.settlement,
-                          perStudentAmount: Number(e.target.value) || 0,
-                        },
-                      }))
-                    }
-                    className="w-full pl-8 pr-3 py-2 bg-white border border-neutral-300 rounded-lg text-sm font-mono font-bold text-neutral-900"
-                    required
-                  />
-                </div>
-                <p className="text-[11px] text-neutral-500">
-                  Faculty will receive this flat ₹ amount every time a student fee payment is recorded for this course offering.
-                </p>
-              </div>
-            )}
-
-            {/* Mode 3: REVENUE_SHARE_PERCENTAGE */}
-            {staffPayRuleForm.settlement.mode === 'REVENUE_SHARE_PERCENTAGE' && (
-              <div className="p-4 bg-neutral-50 rounded-xl border border-neutral-200">
-                <label className="text-xs font-bold text-neutral-800 block mb-1.5">
-                  Faculty Revenue Share Percentage (%)
-                </label>
-                <div className="flex items-center gap-3 max-w-md">
-                  <div className="relative flex-1">
-                    <input
-                      type="number"
-                      min="0"
-                      max="100"
-                      value={staffPayRuleForm.settlement.staffSharePercentage}
-                      onChange={(e) =>
-                        setStaffPayRuleForm((prev) => ({
-                          ...prev,
-                          settlement: {
-                            ...prev.settlement,
-                            staffSharePercentage: Number(e.target.value) || 0,
-                          },
-                        }))
-                      }
-                      className="w-full pl-3 pr-7 py-2 bg-white border border-neutral-300 rounded-lg text-sm font-mono font-bold text-neutral-900"
-                      required
-                    />
-                    <span className="absolute right-3 top-2 text-sm text-neutral-400">%</span>
-                  </div>
-                  <div className="text-xs text-neutral-500 font-medium">
-                    Academy Share: <strong className="text-emerald-700">{Math.max(0, 100 - staffPayRuleForm.settlement.staffSharePercentage)}%</strong>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Overall Rule Summary Bar & Action Buttons */}
-            <div className="p-2.5 bg-gradient-to-r from-orange-50/80 to-amber-50/80 rounded-xl border border-orange-200 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-3">
-              <div className="flex items-center gap-2">
-                <Sparkles className="w-4 h-4 text-[#FF8500]" />
+            {/* Overall Rule Summary Bar & Action Buttons (Home Color Code, No Gradient) */}
+            <div className="pt-3 border-t border-neutral-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#FFF4E5] border border-[#FF8500]/25 text-xs">
+                <span className="w-2 h-2 rounded-full bg-[#FF8500]" />
                 <span className="font-semibold text-neutral-800">Active Rule:</span>
                 <span className="font-mono font-bold text-[#CC6B00]">
-                  {staffPayRuleForm.settlement.mode === 'STUDENT_TIER_BASED'
-                    ? `All: ${staffPayRuleForm.settlement.allSubjectsValue}${staffPayRuleForm.settlement.allSubjectsType === 'PERCENTAGE' ? '%' : '₹'} • 2-Sub: ${staffPayRuleForm.settlement.twoSubjectsValue}${staffPayRuleForm.settlement.twoSubjectsType === 'PERCENTAGE' ? '%' : '₹'} • 1-Sub: ${staffPayRuleForm.settlement.singleSubjectValue}${staffPayRuleForm.settlement.singleSubjectType === 'PERCENTAGE' ? '%' : '₹'}`
-                    : staffPayRuleForm.settlement.mode === 'PER_STUDENT_FIXED'
-                    ? `Flat ₹${staffPayRuleForm.settlement.perStudentAmount.toLocaleString('en-IN')} / Student`
-                    : `Flat ${staffPayRuleForm.settlement.staffSharePercentage}% Faculty Share`}
+                  All: ₹{Number(staffPayRuleForm.settlement.allSubjectsValue || 0).toLocaleString('en-IN')} • 2-Sub: ₹{Number(staffPayRuleForm.settlement.twoSubjectsValue || 0).toLocaleString('en-IN')} • 1-Sub: ₹{Number(staffPayRuleForm.settlement.singleSubjectValue || 0).toLocaleString('en-IN')}
                 </span>
               </div>
 
-              <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2 w-full">
-                {editingStaffAssignmentId ? (
+              <div className="flex items-center justify-end gap-2">
+                {editingStaffAssignmentId && (
                   <button
                     type="button"
                     onClick={() => {
@@ -7705,23 +7797,19 @@ export default function FeesPage() {
                       }
                     }}
                     disabled={deletingStaffPayRule}
-                    className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-200 text-red-600 bg-red-50 hover:bg-red-100 font-semibold text-xs transition cursor-pointer"
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-red-200 text-red-600 bg-red-50 hover:bg-red-100 font-semibold text-xs transition cursor-pointer"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                     <span>Delete Rule</span>
                   </button>
-                ) : (
-                  <div />
                 )}
 
-                <div className="flex items-center justify-end gap-2">
-                  <Button type="button" variant="outline" onClick={() => setShowStaffPayRuleModal(false)}>
-                    Cancel
-                  </Button>
-                  <Button type="submit" variant="primary" disabled={savingStaffPayRule}>
-                    {savingStaffPayRule ? 'Saving Rule...' : 'Save Staff Pay Rule'}
-                  </Button>
-                </div>
+                <Button type="button" variant="outline" onClick={() => setShowStaffPayRuleModal(false)}>
+                  Cancel
+                </Button>
+                <Button type="submit" variant="primary" disabled={savingStaffPayRule}>
+                  {savingStaffPayRule ? 'Saving Rule...' : 'Save Staff Pay Rule'}
+                </Button>
               </div>
             </div>
           </form>

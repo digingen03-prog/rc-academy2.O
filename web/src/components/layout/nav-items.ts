@@ -9,6 +9,7 @@ import {
   LuFileText,
   LuFileCheck2,
   LuEllipsis,
+  LuTrendingUp,
 } from '@/components/icons';
 import { UserRole } from '@/lib/auth/use-role';
 
@@ -75,6 +76,14 @@ export const ALL_NAV_ITEMS: NavItem[] = [
     href: '/fees',
     icon: LuWallet,
     roles: ['SUPER_ADMIN', 'ACADEMY_ADMIN', 'ACCOUNTANT'],
+  },
+  {
+    id: 'finance-analytics',
+    name: 'Finance & Settlements',
+    shortName: 'Analytics',
+    href: '/finance-analytics',
+    icon: LuTrendingUp,
+    roles: ['SUPER_ADMIN'],
   },
   {
     id: 'examinations',

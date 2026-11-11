@@ -1,6 +1,6 @@
 import { Injectable, Logger, BadRequestException, InternalServerErrorException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import * as crypto from 'crypto';
 import * as path from 'path';
@@ -254,5 +254,38 @@ export class S3StorageService {
     const buffer = fs.readFileSync(fullPath);
     const { detectedMimeType } = this.validateFileSignatureAndSize(buffer, 'application/octet-stream');
     return { buffer, mimeType: detectedMimeType };
+  }
+
+  /**
+   * Securely deletes an uploaded payment proof file from S3 or local disk storage.
+   */
+  async deleteFile(objectKey?: string | null): Promise<void> {
+    if (!objectKey) return;
+
+    if (this.storageDriver === 's3') {
+      try {
+        const command = new DeleteObjectCommand({
+          Bucket: this.bucketName,
+          Key: objectKey,
+        });
+        await this.s3Client.send(command);
+        this.logger.log(`Deleted payment proof from S3: s3://${this.bucketName}/${objectKey}`);
+      } catch (err: any) {
+        this.logger.warn(`Failed to delete proof from S3 (${objectKey}): ${err.message}`);
+      }
+      return;
+    }
+
+    // Local Driver Fallback
+    try {
+      const safeKey = path.normalize(objectKey).replace(/^(\.\.[\/\\])+/, '');
+      const fullPath = path.join(this.localRoot, safeKey);
+      if (fs.existsSync(fullPath)) {
+        fs.unlinkSync(fullPath);
+        this.logger.log(`Deleted local payment proof: ${fullPath}`);
+      }
+    } catch (err: any) {
+      this.logger.warn(`Failed to delete local payment proof (${objectKey}): ${err.message}`);
+    }
   }
 }

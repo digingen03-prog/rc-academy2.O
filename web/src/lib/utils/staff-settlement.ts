@@ -39,13 +39,13 @@ export interface SettlementFormState {
 
 export const defaultSettlementState: SettlementFormState = {
   mode: 'STUDENT_TIER_BASED',
-  allSubjectsType: 'PERCENTAGE',
-  allSubjectsValue: 25,
-  singleSubjectType: 'PERCENTAGE',
-  singleSubjectValue: 70,
-  twoSubjectsType: 'PERCENTAGE',
-  twoSubjectsValue: 35,
-  includeTwoSubjects: false,
+  allSubjectsType: 'FIXED_AMOUNT',
+  allSubjectsValue: 1000,
+  singleSubjectType: 'FIXED_AMOUNT',
+  singleSubjectValue: 500,
+  twoSubjectsType: 'FIXED_AMOUNT',
+  twoSubjectsValue: 700,
+  includeTwoSubjects: true,
   perStudentAmount: 1000,
   staffSharePercentage: 70,
 };
@@ -59,48 +59,40 @@ export function buildSettlementPayload(state: SettlementFormState): {
   settlementConfig: StaffSettlementConfig;
 } {
   if (state.mode === 'STUDENT_TIER_BASED') {
-    const allDesc =
-      state.allSubjectsType === 'PERCENTAGE'
-        ? `${state.allSubjectsValue}%`
-        : `₹${state.allSubjectsValue.toLocaleString('en-IN')}`;
-    const singleDesc =
-      state.singleSubjectType === 'PERCENTAGE'
-        ? `${state.singleSubjectValue}%`
-        : `₹${state.singleSubjectValue.toLocaleString('en-IN')}`;
+    const safeAllVal = Math.max(0, Number(state.allSubjectsValue) || 0);
+    const safeSingleVal = Math.max(0, Number(state.singleSubjectValue) || 0);
+    const safeTwoVal = Math.max(0, Number(state.twoSubjectsValue) || 0);
+
+    const allDesc = `₹${safeAllVal.toLocaleString('en-IN')}`;
+    const singleDesc = `₹${safeSingleVal.toLocaleString('en-IN')}`;
+    const twoDesc = `₹${safeTwoVal.toLocaleString('en-IN')}`;
 
     const config: StaffSettlementConfig = {
       mode: 'STUDENT_TIER_BASED',
       allSubjects: {
-        type: state.allSubjectsType,
-        value: Number(state.allSubjectsValue) || 0,
+        type: 'FIXED_AMOUNT',
+        value: safeAllVal,
       },
       singleSubject: {
-        type: state.singleSubjectType,
-        value: Number(state.singleSubjectValue) || 0,
+        type: 'FIXED_AMOUNT',
+        value: safeSingleVal,
       },
-      ...(state.includeTwoSubjects && {
-        twoSubjects: {
-          type: state.twoSubjectsType,
-          value: Number(state.twoSubjectsValue) || 0,
-        },
-      }),
-      label: `All-Sub ${allDesc} | Single ${singleDesc}`,
+      twoSubjects: {
+        type: 'FIXED_AMOUNT',
+        value: safeTwoVal,
+      },
+      label: `All: ${allDesc} | 2-Sub: ${twoDesc} | 1-Sub: ${singleDesc}`,
     };
-
-    const effectiveShare =
-      state.singleSubjectType === 'PERCENTAGE'
-        ? Number(state.singleSubjectValue) || 70
-        : 70;
 
     return {
       compensationRule: JSON.stringify(config),
-      staffSharePercentage: effectiveShare,
+      staffSharePercentage: 70,
       settlementConfig: config,
     };
   }
 
   if (state.mode === 'PER_STUDENT_FIXED') {
-    const amt = Number(state.perStudentAmount) || 0;
+    const amt = Math.max(0, Number(state.perStudentAmount) || 0);
     const config: StaffSettlementConfig = {
       mode: 'PER_STUDENT_FIXED',
       perStudentAmount: amt,
@@ -114,7 +106,7 @@ export function buildSettlementPayload(state: SettlementFormState): {
   }
 
   // REVENUE_SHARE_PERCENTAGE
-  const share = Number(state.staffSharePercentage) || 70;
+  const share = Math.min(100, Math.max(0, Number(state.staffSharePercentage) || 70));
   const config: StaffSettlementConfig = {
     mode: 'REVENUE_SHARE_PERCENTAGE',
     staffSharePercentage: share,
@@ -145,25 +137,37 @@ export function parseSettlementToForm(
     try {
       const parsed: StaffSettlementConfig = JSON.parse(rawRule);
       if (parsed.mode === 'STUDENT_TIER_BASED') {
+        const allVal = Number(parsed.allSubjects?.value ?? 1000);
+        const twoVal = Number(parsed.twoSubjects?.value ?? 700);
+        const singleVal = Number(parsed.singleSubject?.value ?? 500);
+
         return {
           mode: 'STUDENT_TIER_BASED',
-          allSubjectsType: parsed.allSubjects?.type || 'PERCENTAGE',
-          allSubjectsValue: parsed.allSubjects?.value ?? 25,
-          singleSubjectType: parsed.singleSubject?.type || 'PERCENTAGE',
-          singleSubjectValue: parsed.singleSubject?.value ?? 70,
-          twoSubjectsType: parsed.twoSubjects?.type || 'PERCENTAGE',
-          twoSubjectsValue: parsed.twoSubjects?.value ?? 35,
-          includeTwoSubjects: Boolean(parsed.twoSubjects),
-          perStudentAmount: 1000,
+          allSubjectsType: 'FIXED_AMOUNT',
+          allSubjectsValue: allVal,
+          singleSubjectType: 'FIXED_AMOUNT',
+          singleSubjectValue: singleVal,
+          twoSubjectsType: 'FIXED_AMOUNT',
+          twoSubjectsValue: twoVal,
+          includeTwoSubjects: true,
+          perStudentAmount: allVal,
           staffSharePercentage: fallbackShare,
         };
       }
 
       if (parsed.mode === 'PER_STUDENT_FIXED') {
+        const base = Number(parsed.perStudentAmount ?? 1000);
         return {
           ...defaultSettlementState,
-          mode: 'PER_STUDENT_FIXED',
-          perStudentAmount: parsed.perStudentAmount ?? 1000,
+          mode: 'STUDENT_TIER_BASED',
+          allSubjectsType: 'FIXED_AMOUNT',
+          allSubjectsValue: base,
+          twoSubjectsType: 'FIXED_AMOUNT',
+          twoSubjectsValue: Math.round(base * 0.7),
+          singleSubjectType: 'FIXED_AMOUNT',
+          singleSubjectValue: Math.round(base * 0.5),
+          includeTwoSubjects: true,
+          perStudentAmount: base,
         };
       }
 
@@ -189,7 +193,7 @@ export function parseSettlementToForm(
 
   return {
     ...defaultSettlementState,
-    mode: 'REVENUE_SHARE_PERCENTAGE',
+    mode: 'STUDENT_TIER_BASED',
     staffSharePercentage: fallbackShare,
   };
 }
@@ -231,20 +235,13 @@ export function getSettlementBadgeDisplay(as: {
     try {
       const parsed: StaffSettlementConfig = JSON.parse(rawRule);
       if (parsed.mode === 'STUDENT_TIER_BASED') {
-        const allDesc = parsed.allSubjects
-          ? parsed.allSubjects.type === 'PERCENTAGE'
-            ? `${parsed.allSubjects.value}%`
-            : `₹${parsed.allSubjects.value}`
-          : 'N/A';
-        const singleDesc = parsed.singleSubject
-          ? parsed.singleSubject.type === 'PERCENTAGE'
-            ? `${parsed.singleSubject.value}%`
-            : `₹${parsed.singleSubject.value}`
-          : 'N/A';
+        const allVal = Number(parsed.allSubjects?.value ?? 0);
+        const twoVal = Number(parsed.twoSubjects?.value ?? 0);
+        const singleVal = Number(parsed.singleSubject?.value ?? 0);
         return {
-          text: `Tiered: All ${allDesc} • Single ${singleDesc}`,
+          text: `All ₹${allVal} • 2-Sub ₹${twoVal} • 1-Sub ₹${singleVal}`,
           badgeClass: 'bg-purple-50 text-purple-700 border-purple-200',
-          tooltip: `All-Subject Students: ${allDesc} | Single-Subject: ${singleDesc}`,
+          tooltip: `Fixed Per-Tier: All-Sub ₹${allVal} | 2-Sub ₹${twoVal} | 1-Sub ₹${singleVal}`,
           mode: 'STUDENT_TIER_BASED',
         };
       }

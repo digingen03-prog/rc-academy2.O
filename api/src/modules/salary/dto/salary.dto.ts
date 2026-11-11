@@ -130,6 +130,24 @@ export class AccrueFixedSalaryDto {
   notes?: string;
 }
 
+export class AccrueFacultyMonthlySalaryDto {
+  @IsString()
+  @IsNotEmpty()
+  payPeriod!: string; // e.g. "2026-11"
+
+  @IsString()
+  @IsOptional()
+  classId?: string;
+
+  @IsString()
+  @IsOptional()
+  subjectId?: string;
+
+  @IsString()
+  @IsOptional()
+  notes?: string;
+}
+
 export class CreateSalaryAdjustmentDto {
   @IsString()
   @IsNotEmpty()

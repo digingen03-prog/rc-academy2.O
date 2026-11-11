@@ -20,6 +20,7 @@ import {
   AllocateAdvanceDto,
   BulkValidateDto,
   BulkImportDto,
+  BulkDeleteStudentsDto,
 } from './dto/create-student.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
@@ -79,6 +80,15 @@ export class StudentsController {
     @CurrentUser('id') actorId: string,
   ) {
     return this.studentsService.bulkImport(dto, actorId);
+  }
+
+  @Post('bulk-delete')
+  @Roles(UserRoleType.SUPER_ADMIN)
+  async bulkDelete(
+    @Body() dto: BulkDeleteStudentsDto,
+    @CurrentUser('id') actorId: string,
+  ) {
+    return this.studentsService.bulkRemove(dto.studentIds, actorId);
   }
 
   @Get(':id')

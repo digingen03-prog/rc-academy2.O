@@ -59,6 +59,7 @@ model User {
   fixedSalaryAmount         Decimal?           @db.Decimal(10, 2)
   payFrequency              PayFrequency?      @default(MONTHLY)
   compensationEffectiveDate DateTime?          @default(now())
+  dateOfJoining             DateTime?          @default(now())
 
   userRoles              UserRole[]
   auditLogs              AuditLog[]
@@ -73,6 +74,7 @@ model User {
   approvedSalaryPayouts  StaffSalaryPayout[]     @relation("ApprovedSalaryPayouts")
   paidSalaryPayouts      StaffSalaryPayout[]     @relation("PaidSalaryPayouts")
   staffSalaryLedgers     StaffSalaryLedger[]
+  staffAccrualLedgers    StaffAccrualLedger[]
   classSchedules         ClassSchedule[]
   scheduleExceptions     DailyScheduleException[]
   authorizedAdjustments  FeeAdjustment[]
@@ -293,6 +295,7 @@ model Student {
   results                Result[]
   assignedAttendanceCode AttendanceCode?
   advances               StudentAdvance[]
+  staffAccrualLedgers    StaffAccrualLedger[]
 
   @@index([studentCode])
   @@index([admissionNumber])
@@ -374,27 +377,36 @@ model AttendanceCode {
 model StaffCourseAssignment {
   id                   String    @id @default(uuid())
   userId               String
+  staffId              String?
   classId              String
+  courseId             String?
   subjectId            String?
   batchId              String?
   role                 String?   @default("TEACHER")
   staffSharePercentage Decimal   @default(70.00) @db.Decimal(5, 2)
-  compensationRule     String    @default("REVENUE_SHARE_70_30")
+  compensationRule     Json      @default("{\"mode\":\"STUDENT_TIER_BASED\",\"config\":{\"allSubjects\":{\"type\":\"FIXED_AMOUNT\",\"value\":1166},\"twoSubjects\":{\"type\":\"FIXED_AMOUNT\",\"value\":1260},\"singleSubject\":{\"type\":\"FIXED_AMOUNT\",\"value\":1260}}}")
+  effectiveFrom        DateTime  @default(now())
+  effectiveTo          DateTime?
   isActive             Boolean   @default(true)
   startDate            DateTime  @default(now())
   endDate              DateTime?
   createdAt            DateTime  @default(now())
+  createdBy            String    @default("SYSTEM")
   updatedAt            DateTime  @updatedAt
+  updatedBy            String    @default("SYSTEM")
 
-  user          User                @relation(fields: [userId], references: [id], onDelete: Cascade)
-  class         Class               @relation(fields: [classId], references: [id], onDelete: Cascade)
-  subject       Subject?            @relation(fields: [subjectId], references: [id], onDelete: SetNull)
-  batch         Batch?              @relation(fields: [batchId], references: [id], onDelete: SetNull)
-  salaryLedgers StaffSalaryLedger[]
+  user           User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  class          Class                 @relation(fields: [classId], references: [id], onDelete: Cascade)
+  subject        Subject?              @relation(fields: [subjectId], references: [id], onDelete: SetNull)
+  batch          Batch?                @relation(fields: [batchId], references: [id], onDelete: SetNull)
+  salaryLedgers  StaffSalaryLedger[]
+  accrualLedgers StaffAccrualLedger[]
 
   @@unique([userId, classId, subjectId, batchId])
   @@index([userId])
   @@index([classId])
+  @@index([staffId])
+  @@index([courseId])
   @@index([subjectId])
   @@map("staff_course_assignments")
 }
@@ -546,6 +558,9 @@ model CourseFeeConfig {
   subjectId            String?
   batchId              String?
   amount               Decimal   @db.Decimal(10, 2)
+  allSubjectsFee       Decimal   @default(0) @db.Decimal(10, 2)
+  twoSubjectsFee       Decimal   @default(0) @db.Decimal(10, 2)
+  singleSubjectFee     Decimal   @default(0) @db.Decimal(10, 2)
   billingPeriod        String    @default("ANNUAL") // "ANNUAL", "TERM_1", "TERM_2", "MONTHLY", "ONE_TIME"
   installmentCount     Int       @default(1)
   installmentsSchedule Json?     // Array of { installmentNumber: number, percentage: number, dueDaysOffset: number }
@@ -628,6 +643,7 @@ model FeeInvoice {
   allocations     PaymentAllocation[]
   adjustments     FeeAdjustment[]
   advanceAllocations StudentAdvanceAllocation[]
+  staffAccrualLedgers StaffAccrualLedger[]
 
   @@index([studentId])
   @@index([enrollmentId])
@@ -822,6 +838,31 @@ model StaffSalaryLedger {
   @@index([status])
   @@index([payPeriod])
   @@map("staff_salary_ledgers")
+}
+
+model StaffAccrualLedger {
+  id             String   @id @default(uuid())
+  staffId        String
+  assignmentId   String
+  studentId      String
+  invoiceId      String?
+  payPeriod      String   // "2026-11"
+  type           String   // ACCRUAL | REVERSAL | TRUE_UP
+  tier           String   // ALL | TWO_SUBJECTS | SINGLE | CUSTOM
+  amount         Decimal  @db.Decimal(10, 2)
+  studentFeePaid Decimal  @default(0) @db.Decimal(10, 2)  // for reference only
+  occurredAt     DateTime @default(now())
+  note           String?
+
+  staff          User                  @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  assignment     StaffCourseAssignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  student        Student               @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  invoice        FeeInvoice?           @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+
+  @@unique([staffId, studentId, payPeriod, type, invoiceId])
+  @@index([staffId, payPeriod])
+  @@index([studentId])
+  @@map("staff_accrual_ledgers")
 }
 
 model AcademySalaryConfig {

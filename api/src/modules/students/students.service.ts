@@ -627,11 +627,15 @@ export class StudentsService {
       };
     });
 
-    // 7. Auto-bill all created enrollments after transaction commit
+    // 7. Auto-bill once per Course/Standard (classId) after transaction commit
     const enrollmentsToBill = (createdStudentResult.student as any)?.batchEnrollments || [];
+    const billedClassIds = new Set<string>();
     for (const en of enrollmentsToBill) {
+      const classId = en.batch?.classId || en.batch?.class?.id || en.batchId;
+      if (classId && billedClassIds.has(classId)) continue;
+      if (classId) billedClassIds.add(classId);
       try {
-        await this.feesService.createCourseInvoiceForEnrollment(en.id, 'ANNUAL', actorId);
+        await this.feesService.createCourseInvoiceForEnrollment(en.id, 'MONTHLY', actorId);
       } catch (err: any) {
         this.logger.warn(`Could not auto-bill enrollment ${en.id}: ${err.message}`);
       }
@@ -835,9 +839,9 @@ export class StudentsService {
       return enrollment;
     });
 
-    // Auto-generate course fee invoice for newly activated enrollment
+    // Auto-generate or sync course fee invoice for the student's Standard
     try {
-      await this.feesService.createCourseInvoiceForEnrollment(result.id, 'ANNUAL', actorId);
+      await this.feesService.createCourseInvoiceForEnrollment(result.id, 'MONTHLY', actorId);
     } catch (err: any) {
       this.logger.warn(`Could not auto-bill enrollment ${result.id}: ${err.message}`);
     }
@@ -1521,12 +1525,13 @@ export class StudentsService {
           return { student, attendanceCode, createdEnrollments };
         });
 
-        // 6. Auto-bill enrollments after transaction commits
-        for (const en of transactionResult.createdEnrollments) {
+        // 6. Auto-bill once per Course/Standard after transaction commits
+        if (transactionResult.createdEnrollments.length > 0) {
+          const firstEn = transactionResult.createdEnrollments[0];
           try {
-            await this.feesService.createCourseInvoiceForEnrollment(en.id, 'ANNUAL', actorId);
+            await this.feesService.createCourseInvoiceForEnrollment(firstEn.id, 'MONTHLY', actorId);
           } catch (feeErr: any) {
-            this.logger.warn(`Could not auto-bill enrollment ${en.id}: ${feeErr.message}`);
+            this.logger.warn(`Could not auto-bill enrollment ${firstEn.id}: ${feeErr.message}`);
           }
         }
 
@@ -1635,6 +1640,71 @@ export class StudentsService {
           name: `${student.firstName} ${student.lastName}`,
           attendanceCode: student.attendanceCode,
         },
+      };
+    });
+  }
+
+  async bulkRemove(studentIds: string[], actorId?: string) {
+    if (!studentIds || !Array.isArray(studentIds) || studentIds.length === 0) {
+      throw new BadRequestException('No student IDs provided for bulk deletion');
+    }
+
+    const students = await this.prisma.student.findMany({
+      where: { id: { in: studentIds } },
+      select: {
+        id: true,
+        studentCode: true,
+        admissionNumber: true,
+        firstName: true,
+        lastName: true,
+        attendanceCode: true,
+      },
+    });
+
+    if (students.length === 0) {
+      throw new NotFoundException('No matching students found to delete');
+    }
+
+    const foundIds = students.map((s) => s.id);
+
+    return this.prisma.$transaction(async (tx) => {
+      // 1. Release assigned 3-digit attendance codes
+      await tx.attendanceCode.deleteMany({
+        where: { studentId: { in: foundIds } },
+      });
+
+      // 2. Cascade delete students
+      const deleteResult = await tx.student.deleteMany({
+        where: { id: { in: foundIds } },
+      });
+
+      // 3. Create traceable audit log entry
+      if (actorId) {
+        await tx.auditLog.create({
+          data: {
+            actorId,
+            action: 'STUDENTS_BULK_DELETED',
+            entityType: 'Student',
+            entityId: actorId,
+            details: {
+              count: deleteResult.count,
+              studentIds: foundIds,
+              students: students.map((s) => ({
+                id: s.id,
+                studentCode: s.studentCode,
+                admissionNumber: s.admissionNumber,
+                name: s.lastName && s.lastName !== '-' ? `${s.firstName} ${s.lastName}` : s.firstName,
+                attendanceCode: s.attendanceCode,
+              })),
+            },
+          },
+        });
+      }
+
+      return {
+        success: true,
+        message: `Successfully deleted ${deleteResult.count} student(s)`,
+        count: deleteResult.count,
       };
     });
   }

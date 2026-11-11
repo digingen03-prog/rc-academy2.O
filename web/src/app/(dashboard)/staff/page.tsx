@@ -25,7 +25,9 @@ import {
   Percent,
   Sparkles,
   Edit2,
+  Calendar,
   Sliders,
+  Building2,
 } from 'lucide-react';
 import { ApiClient } from '@/lib/api/api-client';
 import { useAuthUser } from '@/lib/auth/use-role';
@@ -75,6 +77,7 @@ interface StaffMember {
   fixedSalaryAmount?: number;
   payFrequency?: 'MONTHLY' | 'BI_WEEKLY' | 'WEEKLY';
   compensationEffectiveDate?: string;
+  dateOfJoining?: string | null;
   attendanceCode: string | null;
   status: string;
   roles: string[];
@@ -106,11 +109,13 @@ export default function StaffPage() {
   // Modals
   const [showOnboardModal, setShowOnboardModal] = useState(false);
   const [showSuccessCodeModal, setShowSuccessCodeModal] = useState<{
+    id?: string;
     name: string;
     code: string;
     role: string;
     email?: string;
     password?: string;
+    isFaculty?: boolean;
   } | null>(null);
   const [showAssignModal, setShowAssignModal] = useState<StaffMember | null>(null);
   const [showSalaryModal, setShowSalaryModal] = useState<StaffMember | null>(null);
@@ -149,6 +154,7 @@ export default function StaffPage() {
     compensationModel: 'REVENUE_SHARING' as 'FIXED_SALARY' | 'REVENUE_SHARING',
     fixedSalaryAmount: 25000,
     payFrequency: 'MONTHLY' as 'MONTHLY' | 'BI_WEEKLY' | 'WEEKLY',
+    dateOfJoining: new Date().toISOString().split('T')[0],
     courseId: '',
     subjectId: '',
     batchId: '',
@@ -165,8 +171,35 @@ export default function StaffPage() {
   });
 
   const [editingAssignmentId, setEditingAssignmentId] = useState<string | null>(null);
+
+  // Edit Staff Modal states
+  const [editingStaff, setEditingStaff] = useState<StaffMember | null>(null);
+  const [editForm, setEditForm] = useState({
+    name: '',
+    email: '',
+    phone: '',
+    role: 'TEACHER',
+    designation: '',
+    staffCategory: 'FACULTY' as 'GENERAL' | 'FACULTY',
+    compensationModel: 'REVENUE_SHARING' as 'FIXED_SALARY' | 'REVENUE_SHARING',
+    fixedSalaryAmount: 25000,
+    payFrequency: 'MONTHLY' as 'MONTHLY' | 'BI_WEEKLY' | 'WEEKLY',
+    dateOfJoining: new Date().toISOString().split('T')[0],
+  });
+  const [editAssignments, setEditAssignments] = useState<Array<{
+    id?: string;
+    courseId: string;
+    batchId: string;
+    subjectId: string;
+    role: string;
+    staffSharePercentage: number;
+    compensationRule?: string;
+    settlementConfig?: any;
+    isActive: boolean;
+  }>>([]);
+  const [editModalSaving, setEditModalSaving] = useState(false);
+  const [editModalError, setEditModalError] = useState<string | null>(null);
   const [settlementForm, setSettlementForm] = useState<SettlementFormState>(defaultSettlementState);
-  const [onboardSettlementForm, setOnboardSettlementForm] = useState<SettlementFormState>(defaultSettlementState);
 
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -185,6 +218,8 @@ export default function StaffPage() {
     setShowAdjustmentModal(null);
     setStaffToDelete(null);
     setDeleteModalError(null);
+    setEditingStaff(null);
+    setEditModalError(null);
   }, [pathname]);
 
   // Handle Escape key & body scroll lock
@@ -196,6 +231,7 @@ export default function StaffPage() {
       !!showSalaryModal ||
       !!showAccrueModal ||
       !!showAdjustmentModal ||
+      !!editingStaff ||
       !!staffToDelete;
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -207,6 +243,8 @@ export default function StaffPage() {
         setShowAdjustmentModal(null);
         setStaffToDelete(null);
         setDeleteModalError(null);
+    setEditingStaff(null);
+    setEditModalError(null);
       }
     };
 
@@ -221,7 +259,7 @@ export default function StaffPage() {
       document.body.style.overflow = '';
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [showOnboardModal, showSuccessCodeModal, showAssignModal, showSalaryModal, showAccrueModal, showAdjustmentModal, staffToDelete]);
+  }, [showOnboardModal, showSuccessCodeModal, showAssignModal, showSalaryModal, showAccrueModal, showAdjustmentModal, staffToDelete, editingStaff]);
 
   const fetchData = async () => {
     try {
@@ -271,10 +309,6 @@ export default function StaffPage() {
       setErrorMsg('An Email Address is required for Administrator accounts so they can sign into the portal.');
       return;
     }
-    if (isFaculty && !form.courseId) {
-      setErrorMsg('Please select Initial Teaching Assignment for Faculty.');
-      return;
-    }
 
     try {
       setSubmitting(true);
@@ -301,21 +335,7 @@ export default function StaffPage() {
         compensationModel: form.compensationModel,
         fixedSalaryAmount: Number(form.fixedSalaryAmount) || 0,
         payFrequency: form.payFrequency,
-        ...(isFaculty && form.courseId
-          ? {
-              courseAssignments: [
-                {
-                  courseId: form.courseId,
-                  subjectId: form.subjectId || undefined,
-                  batchId: form.batchId || undefined,
-                  role: 'LEAD_INSTRUCTOR',
-                  staffSharePercentage: buildSettlementPayload(onboardSettlementForm).staffSharePercentage,
-                  compensationRule: buildSettlementPayload(onboardSettlementForm).compensationRule,
-                  settlementConfig: buildSettlementPayload(onboardSettlementForm).settlementConfig,
-                },
-              ],
-            }
-          : {}),
+        dateOfJoining: form.dateOfJoining || new Date().toISOString(),
       };
 
       const res: any = await ApiClient.fetch('/staff', {
@@ -335,6 +355,7 @@ export default function StaffPage() {
         compensationModel: 'REVENUE_SHARING',
         fixedSalaryAmount: 25000,
         payFrequency: 'MONTHLY',
+        dateOfJoining: new Date().toISOString().split('T')[0],
         courseId: '',
         subjectId: '',
         batchId: '',
@@ -342,11 +363,13 @@ export default function StaffPage() {
       });
 
       setShowSuccessCodeModal({
+        id: res.id,
         name: res.fullName || `${res.firstName || firstName} ${res.lastName || lastName}`,
         code: res.attendanceCode,
         role: res.role,
         email: res.email || finalEmail,
         password: plainPassword,
+        isFaculty,
       });
 
       await fetchData();
@@ -354,6 +377,168 @@ export default function StaffPage() {
       setErrorMsg(err.message || 'Failed to onboard staff member');
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleOpenEditModal = (staff: StaffMember) => {
+    setEditModalError(null);
+    setEditingStaff(staff);
+    const cleanLastName = staff.lastName && staff.lastName !== '.' && staff.lastName !== '-' ? staff.lastName : '';
+    const cleanName = staff.fullName
+      ? staff.fullName.replace(/\s+[\.\-]\s*$/, '').trim()
+      : `${staff.firstName || ''} ${cleanLastName}`.trim();
+
+    let joiningDateStr = '';
+    if (staff.dateOfJoining) {
+      try {
+        joiningDateStr = new Date(staff.dateOfJoining).toISOString().split('T')[0];
+      } catch {
+        joiningDateStr = '';
+      }
+    }
+    if (!joiningDateStr) {
+      joiningDateStr = new Date().toISOString().split('T')[0];
+    }
+
+    setEditForm({
+      name: cleanName,
+      email: staff.email.endsWith('@rcacademy.local') ? '' : staff.email,
+      phone: staff.phone || '',
+      role: staff.primaryRole || staff.roles?.[0] || 'TEACHER',
+      designation: staff.designation || '',
+      staffCategory: (staff.staffCategory || (staff.compensationModel === 'FIXED_SALARY' ? 'GENERAL' : 'FACULTY')) as any,
+      compensationModel: (staff.compensationModel || 'REVENUE_SHARING') as any,
+      fixedSalaryAmount: staff.fixedSalaryAmount || 25000,
+      payFrequency: (staff.payFrequency || 'MONTHLY') as any,
+      dateOfJoining: joiningDateStr,
+    });
+
+    const currentAssignments = (staff.assignments || []).map((as) => ({
+      id: as.id,
+      courseId: as.courseId || (as as any).classId || '',
+      batchId: as.batchId || '',
+      subjectId: as.subjectId || '',
+      role: as.role || 'INSTRUCTOR',
+      staffSharePercentage: as.staffSharePercentage ?? 70,
+      compensationRule: as.compensationRule || 'REVENUE_SHARE_70_30',
+      settlementConfig: as.settlementConfig,
+      isActive: as.isActive ?? true,
+    }));
+    setEditAssignments(currentAssignments);
+  };
+
+  const handleAddEditAssignment = () => {
+    setEditAssignments((prev) => [
+      ...prev,
+      {
+        courseId: courses[0]?.id || '',
+        batchId: '',
+        subjectId: '',
+        role: 'INSTRUCTOR',
+        staffSharePercentage: 70,
+        compensationRule: 'REVENUE_SHARE_70_30',
+        isActive: true,
+      },
+    ]);
+  };
+
+  const handleRemoveEditAssignment = (index: number) => {
+    setEditAssignments((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const handleUpdateEditAssignment = (index: number, patch: Partial<{
+    courseId: string;
+    batchId: string;
+    subjectId: string;
+    role: string;
+    staffSharePercentage: number;
+    compensationRule?: string;
+    settlementConfig?: any;
+    isActive: boolean;
+  }>) => {
+    setEditAssignments((prev) =>
+      prev.map((item, i) => {
+        if (i !== index) return item;
+        const updated = { ...item, ...patch };
+        if (patch.courseId && patch.courseId !== item.courseId) {
+          const selectedCourse = courses.find((c) => c.id === patch.courseId);
+          const hasBatch = selectedCourse?.batches?.some((b) => b.id === updated.batchId);
+          if (!hasBatch) updated.batchId = '';
+          const hasSubject = selectedCourse?.subjects?.some((s) => s.id === updated.subjectId);
+          if (!hasSubject) updated.subjectId = '';
+        }
+        return updated;
+      })
+    );
+  };
+
+  const handleSaveEditStaff = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingStaff) return;
+    setEditModalError(null);
+
+    const isAdmin = editForm.role === 'ACADEMY_ADMIN' || editForm.role === 'SUPER_ADMIN';
+    if (!editForm.name.trim() || !editForm.phone.trim() || !editForm.role) {
+      setEditModalError('Please fill mandatory fields: Name, Mobile Number, and Role.');
+      return;
+    }
+    if (isAdmin && !editForm.email.trim()) {
+      setEditModalError('An Email Address is required for Administrator accounts.');
+      return;
+    }
+
+    try {
+      setEditModalSaving(true);
+      const parts = editForm.name.trim().split(/\s+/);
+      const firstName = parts[0] || 'Staff';
+      const lastName = parts.slice(1).join(' ') || '.';
+      const cleanPhone = editForm.phone.trim();
+      const generatedEmail = `staff_${cleanPhone.replace(/\D/g, '') || Date.now()}@rcacademy.local`;
+      const finalEmail = editForm.email.trim() || generatedEmail;
+
+      const payload: any = {
+        name: editForm.name.trim(),
+        firstName,
+        lastName,
+        email: finalEmail,
+        phone: cleanPhone,
+        role: editForm.role,
+        designation: editForm.designation.trim() || undefined,
+        staffCategory: editForm.staffCategory,
+        compensationModel: editForm.compensationModel,
+        fixedSalaryAmount: Number(editForm.fixedSalaryAmount) || 0,
+        payFrequency: editForm.payFrequency,
+        dateOfJoining: editForm.dateOfJoining ? new Date(editForm.dateOfJoining).toISOString() : undefined,
+      };
+
+      if (editForm.staffCategory === 'FACULTY') {
+        payload.courseAssignments = editAssignments
+          .filter((a) => !!a.courseId)
+          .map((a) => ({
+            id: a.id,
+            courseId: a.courseId,
+            batchId: a.batchId || undefined,
+            subjectId: a.subjectId || undefined,
+            role: a.role || 'INSTRUCTOR',
+            staffSharePercentage: Number(a.staffSharePercentage) || 70,
+            compensationRule: a.compensationRule || 'REVENUE_SHARE_70_30',
+            settlementConfig: a.settlementConfig,
+            isActive: a.isActive ?? true,
+          }));
+      }
+
+      await ApiClient.fetch(`/staff/${editingStaff.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+      });
+
+      setSuccessMsg(`Staff member ${editForm.name.trim()} updated successfully!`);
+      setEditingStaff(null);
+      await fetchData();
+    } catch (err: any) {
+      setEditModalError(err.message || 'Failed to update staff member details');
+    } finally {
+      setEditModalSaving(false);
     }
   };
 
@@ -523,6 +708,8 @@ export default function StaffPage() {
     try {
       setDeletingStaff(true);
       setDeleteModalError(null);
+    setEditingStaff(null);
+    setEditModalError(null);
       setErrorMsg(null);
       await ApiClient.fetch(`/staff/${staffToDelete.id}`, {
         method: 'DELETE',
@@ -886,9 +1073,20 @@ export default function StaffPage() {
                     Salary Statement
                   </button>
                   <button
+                    type="button"
+                    onClick={() => handleOpenEditModal(staff)}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 bg-neutral-100 hover:bg-neutral-200 text-black font-semibold rounded text-xs transition cursor-pointer"
+                    title={`Edit ${staff.fullName}`}
+                  >
+                    <Edit2 className="w-3.5 h-3.5 text-[#FF8500]" />
+                    <span>Edit</span>
+                  </button>
+                  <button
                     onClick={() => {
                       setStaffToDelete(staff);
                       setDeleteModalError(null);
+    setEditingStaff(null);
+    setEditModalError(null);
                     }}
                     className="p-1.5 text-neutral-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition"
                     title={`Delete ${staff.fullName}`}
@@ -1228,12 +1426,27 @@ export default function StaffPage() {
               The staff member can use this 3-digit code on the Smart Attendance Terminal, and use their email/password for the management portal.
             </p>
 
-            <button
-              onClick={() => setShowSuccessCodeModal(null)}
-              className="w-full py-2.5 bg-[#FF8500] hover:bg-[#E67700] text-white font-semibold text-sm rounded-lg transition"
-            >
-              Done & Return to Directory
-            </button>
+            <div className="flex flex-col gap-2">
+              {showSuccessCodeModal.isFaculty && (
+                <a
+                  href={`/fees?tab=revenue_salary${showSuccessCodeModal.id ? `&assignStaffId=${showSuccessCodeModal.id}` : ''}`}
+                  className="w-full py-2.5 bg-[#FF8500] hover:bg-[#E67700] text-white font-semibold text-sm rounded-xl transition flex items-center justify-center gap-1.5 shadow-sm"
+                >
+                  <Building2 className="w-4 h-4" />
+                  <span>Configure Pay Rule in Fees &rarr;</span>
+                </a>
+              )}
+              <button
+                onClick={() => setShowSuccessCodeModal(null)}
+                className={`w-full py-2.5 font-semibold text-sm rounded-xl transition ${
+                  showSuccessCodeModal.isFaculty
+                    ? 'bg-neutral-100 hover:bg-neutral-200 text-neutral-800'
+                    : 'bg-[#FF8500] hover:bg-[#E67700] text-white'
+                }`}
+              >
+                Done & Return to Directory
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -1494,6 +1707,19 @@ export default function StaffPage() {
                     />
                   </div>
 
+                  {/* Joining Date */}
+                  <div>
+                    <label className="block text-xs font-semibold text-neutral-800 uppercase tracking-wider mb-1.5">
+                      Joining Date <span className="text-neutral-400 font-normal normal-case">(for salary/settlement cycle)</span>
+                    </label>
+                    <input
+                      type="date"
+                      value={form.dateOfJoining}
+                      onChange={(e) => setForm({ ...form, dateOfJoining: e.target.value })}
+                      className="w-full px-3.5 py-2.5 text-sm bg-neutral-50 border border-neutral-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#FF8500]/20 focus:border-[#FF8500] transition cursor-pointer"
+                    />
+                  </div>
+
                   {/* Initial Password */}
                   <div>
                     <label className="block text-xs font-semibold text-neutral-800 uppercase tracking-wider mb-1.5">
@@ -1536,7 +1762,7 @@ export default function StaffPage() {
                           type="number"
                           required
                           min={0}
-                          step={500}
+                          step="any"
                           value={form.fixedSalaryAmount}
                           onChange={(e) => setForm({ ...form, fixedSalaryAmount: Number(e.target.value) })}
                           className="w-full px-3 py-2 text-sm bg-white border border-neutral-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
@@ -1562,204 +1788,20 @@ export default function StaffPage() {
                   </div>
                 )}
 
-                {/* Course & Subject Assignment Section (MANDATORY FOR FACULTY) */}
+                {/* Faculty Setup Guidance Banner */}
                 {form.staffCategory === 'FACULTY' && (
-                  <div className="p-4 sm:p-5 bg-gradient-to-br from-amber-50/70 via-orange-50/40 to-white border border-amber-200/90 rounded-2xl space-y-4">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2.5">
-                        <div className="w-8 h-8 rounded-lg bg-orange-500/10 flex items-center justify-center text-[#FF8500]">
-                          <Layers className="w-4 h-4" />
-                        </div>
-                        <div>
-                          <h3 className="text-xs font-bold text-neutral-900 uppercase tracking-wider flex items-center gap-1.5">
-                            Initial Teaching Assignment <span className="text-rose-500">*</span>
-                          </h3>
-                          <p className="text-[11px] text-neutral-500">
-                            Class selection is mandatory. Subject and batch are optional.
-                          </p>
-                        </div>
-                      </div>
-                      <span className="text-[10px] font-bold tracking-wider uppercase px-2 py-0.5 rounded-full bg-orange-100 text-[#FF8500] border border-orange-200">
-                        Faculty Mandatory
-                      </span>
+                  <div className="p-4 bg-gradient-to-r from-orange-50/80 via-amber-50/40 to-white border border-orange-200/90 rounded-2xl flex items-start gap-3">
+                    <div className="w-8 h-8 rounded-lg bg-orange-500/10 flex items-center justify-center text-[#FF8500] shrink-0 mt-0.5">
+                      <Sparkles className="w-4 h-4" />
                     </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                      {/* Class / Course (Mandatory) */}
-                      <div>
-                        <label className="block text-[11px] font-semibold text-neutral-800 uppercase tracking-wider mb-1.5">
-                          Class / Course <span className="text-rose-500">*</span>
-                        </label>
-                        <select
-                          required
-                          value={form.courseId}
-                          onChange={(e) => setForm({ ...form, courseId: e.target.value, subjectId: '', batchId: '' })}
-                          className="w-full px-3 py-2 text-sm bg-white border border-neutral-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#FF8500]/20 focus:border-[#FF8500]"
-                        >
-                          <option value="" disabled>-- Select Class / Course * --</option>
-                          {courses.map((c) => (
-                            <option key={c.id} value={c.id}>
-                              {c.name} ({c.code})
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-
-                      {/* Subject (Optional) */}
-                      <div>
-                        <label className="block text-[11px] font-semibold text-neutral-700 uppercase tracking-wider mb-1.5">
-                          Subject <span className="text-neutral-400 font-normal normal-case">(optional)</span>
-                        </label>
-                        <select
-                          value={form.subjectId}
-                          disabled={!form.courseId}
-                          onChange={(e) => setForm({ ...form, subjectId: e.target.value })}
-                          className="w-full px-3 py-2 text-sm bg-white border border-neutral-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#FF8500]/20 focus:border-[#FF8500] disabled:bg-neutral-100 disabled:text-neutral-400"
-                        >
-                          <option value="">All Subjects (Default)</option>
-                          {selectedCourseObj?.subjects?.map((s) => (
-                            <option key={s.id} value={s.id}>
-                              {s.name} ({s.code})
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-
-                      {/* Batch (Optional) */}
-                      <div>
-                        <label className="block text-[11px] font-semibold text-neutral-700 uppercase tracking-wider mb-1.5">
-                          Batch <span className="text-neutral-400 font-normal normal-case">(optional)</span>
-                        </label>
-                        <select
-                          value={form.batchId}
-                          disabled={!form.courseId}
-                          onChange={(e) => setForm({ ...form, batchId: e.target.value })}
-                          className="w-full px-3 py-2 text-sm bg-white border border-neutral-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#FF8500]/20 focus:border-[#FF8500] disabled:bg-neutral-100 disabled:text-neutral-400"
-                        >
-                          <option value="">All Batches (Default)</option>
-                          {selectedCourseObj?.batches.map((b) => (
-                            <option key={b.id} value={b.id}>
-                              {b.name} {b.code ? `(${b.code})` : ''}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    </div>
-
-                    {/* Settlement Rule Configuration */}
-                    <div className="pt-2 border-t border-neutral-100 space-y-2">
-                      <div className="flex items-center justify-between">
-                        <label className="block text-[11px] font-semibold text-neutral-700 uppercase tracking-wider">
-                          Initial Settlement Rule
-                        </label>
-                        <span className="text-[10px] font-bold text-purple-700 bg-purple-50 px-2 py-0.5 rounded border border-purple-200">
-                          {onboardSettlementForm.mode === 'STUDENT_TIER_BASED' ? 'Tier-Based Bundle' : onboardSettlementForm.mode === 'PER_STUDENT_FIXED' ? 'Per Student' : 'Revenue Share %'}
-                        </span>
-                      </div>
-
-                      <div className="grid grid-cols-3 gap-2">
-                        <button
-                          type="button"
-                          onClick={() => setOnboardSettlementForm({ ...onboardSettlementForm, mode: 'STUDENT_TIER_BASED' })}
-                          className={`p-2 rounded-lg border text-left text-xs font-semibold transition ${
-                            onboardSettlementForm.mode === 'STUDENT_TIER_BASED'
-                              ? 'bg-purple-50 border-purple-400 text-purple-950'
-                              : 'bg-white border-neutral-200 text-neutral-600'
-                          }`}
-                        >
-                          Tier-Based
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setOnboardSettlementForm({ ...onboardSettlementForm, mode: 'PER_STUDENT_FIXED' })}
-                          className={`p-2 rounded-lg border text-left text-xs font-semibold transition ${
-                            onboardSettlementForm.mode === 'PER_STUDENT_FIXED'
-                              ? 'bg-teal-50 border-teal-400 text-teal-950'
-                              : 'bg-white border-neutral-200 text-neutral-600'
-                          }`}
-                        >
-                          ₹ / Student
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setOnboardSettlementForm({ ...onboardSettlementForm, mode: 'REVENUE_SHARE_PERCENTAGE' })}
-                          className={`p-2 rounded-lg border text-left text-xs font-semibold transition ${
-                            onboardSettlementForm.mode === 'REVENUE_SHARE_PERCENTAGE'
-                              ? 'bg-emerald-50 border-emerald-400 text-emerald-950'
-                              : 'bg-white border-neutral-200 text-neutral-600'
-                          }`}
-                        >
-                          Flat %
-                        </button>
-                      </div>
-
-                      {onboardSettlementForm.mode === 'STUDENT_TIER_BASED' && (
-                        <div className="grid grid-cols-2 gap-2 p-2 bg-neutral-50 rounded-lg border border-neutral-200 text-xs">
-                          <div>
-                            <span className="text-[10px] text-neutral-500 font-semibold block">All-Subjects Bundle:</span>
-                            <div className="relative mt-1">
-                              <input
-                                type="number"
-                                min="0"
-                                value={onboardSettlementForm.allSubjectsValue}
-                                onChange={(e) => setOnboardSettlementForm({ ...onboardSettlementForm, allSubjectsValue: Number(e.target.value) })}
-                                className="w-full px-2 py-1 bg-white border border-neutral-200 rounded text-xs font-semibold pr-6"
-                              />
-                              <span className="absolute right-2 top-1 text-[10px] text-neutral-400">
-                                {onboardSettlementForm.allSubjectsType === 'PERCENTAGE' ? '%' : '₹'}
-                              </span>
-                            </div>
-                          </div>
-                          <div>
-                            <span className="text-[10px] text-neutral-500 font-semibold block">Single Subject:</span>
-                            <div className="relative mt-1">
-                              <input
-                                type="number"
-                                min="0"
-                                value={onboardSettlementForm.singleSubjectValue}
-                                onChange={(e) => setOnboardSettlementForm({ ...onboardSettlementForm, singleSubjectValue: Number(e.target.value) })}
-                                className="w-full px-2 py-1 bg-white border border-neutral-200 rounded text-xs font-semibold pr-6"
-                              />
-                              <span className="absolute right-2 top-1 text-[10px] text-neutral-400">
-                                {onboardSettlementForm.singleSubjectType === 'PERCENTAGE' ? '%' : '₹'}
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-                      )}
-
-                      {onboardSettlementForm.mode === 'PER_STUDENT_FIXED' && (
-                        <div className="p-2 bg-neutral-50 rounded-lg border border-neutral-200 text-xs">
-                          <span className="text-[10px] text-neutral-500 font-semibold block">Fixed ₹ per Student:</span>
-                          <div className="relative mt-1 max-w-[200px]">
-                            <span className="absolute left-2.5 top-1 text-xs text-neutral-400">₹</span>
-                            <input
-                              type="number"
-                              min="0"
-                              value={onboardSettlementForm.perStudentAmount}
-                              onChange={(e) => setOnboardSettlementForm({ ...onboardSettlementForm, perStudentAmount: Number(e.target.value) })}
-                              className="w-full pl-6 pr-2 py-1 bg-white border border-neutral-200 rounded text-xs font-semibold"
-                            />
-                          </div>
-                        </div>
-                      )}
-
-                      {onboardSettlementForm.mode === 'REVENUE_SHARE_PERCENTAGE' && (
-                        <div className="p-2 bg-neutral-50 rounded-lg border border-neutral-200 text-xs">
-                          <span className="text-[10px] text-neutral-500 font-semibold block">Staff Pool Share %:</span>
-                          <div className="relative mt-1 max-w-[200px]">
-                            <input
-                              type="number"
-                              min="0"
-                              max="100"
-                              value={onboardSettlementForm.staffSharePercentage}
-                              onChange={(e) => setOnboardSettlementForm({ ...onboardSettlementForm, staffSharePercentage: Number(e.target.value) })}
-                              className="w-full px-2 py-1 bg-white border border-neutral-200 rounded text-xs font-semibold pr-6"
-                            />
-                            <span className="absolute right-2 top-1 text-[10px] text-neutral-400">%</span>
-                          </div>
-                        </div>
-                      )}
+                    <div>
+                      <h4 className="text-xs font-bold text-neutral-900 uppercase tracking-wider">
+                        Faculty Profile Created Instantly
+                      </h4>
+                      <p className="text-[11px] text-neutral-600 mt-0.5 leading-relaxed">
+                        Course assignments and fee-sharing pay rules are managed centrally under{' '}
+                        <strong className="text-[#CC6B00]">Fees &rarr; Faculty &amp; Staff Pay</strong>, ensuring full financial alignment with student fee structures.
+                      </p>
                     </div>
                   </div>
                 )}
@@ -1790,6 +1832,469 @@ export default function StaffPage() {
                       </>
                     ) : (
                       'Complete Onboarding'
+                    )}
+                  </button>
+                </div>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* EDIT STAFF MEMBER MODAL */}
+      {editingStaff && (
+        <div
+          className="fixed inset-0 z-backdrop bg-black/80 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 overflow-y-auto transition-all duration-200"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setEditingStaff(null);
+            }
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-white w-full max-w-2xl sm:rounded-2xl rounded-t-2xl shadow-2xl border border-neutral-200 overflow-hidden flex flex-col max-h-[92vh] animate-in fade-in zoom-in-95 duration-150"
+          >
+            {/* Modal Header */}
+            <div className="p-6 border-b border-neutral-100 flex items-center justify-between bg-neutral-50/70 shrink-0">
+              <div>
+                <div className="flex items-center gap-2">
+                  <h2 className="text-lg font-bold text-black">Edit Staff Member</h2>
+                  {editingStaff.attendanceCode && (
+                    <span className="px-2 py-0.5 rounded-full text-[11px] font-mono font-bold bg-[#FFF4E5] text-[#CC6B00] border border-[#FF8500]/25">
+                      Code: {editingStaff.attendanceCode}
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-neutral-500 mt-0.5">
+                  Update personal details, compensation terms, joining date, and academic assignments
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingStaff(null)}
+                className="w-8 h-8 rounded-full flex items-center justify-center text-neutral-400 hover:text-black hover:bg-neutral-200/50 transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Form */}
+            <form onSubmit={handleSaveEditStaff} className="flex flex-col flex-1 overflow-hidden">
+              <div className="p-6 space-y-5 overflow-y-auto flex-1">
+                {editModalError && (
+                  <div className="p-3.5 bg-rose-50 border border-rose-200 text-rose-700 text-xs rounded-xl flex items-center gap-2.5">
+                    <AlertCircle className="w-4 h-4 shrink-0 text-rose-500" />
+                    <span>{editModalError}</span>
+                  </div>
+                )}
+
+                {/* Staff Category & Compensation Model Selector */}
+                <div>
+                  <label className="block text-xs font-bold text-neutral-800 uppercase tracking-wider mb-2">
+                    Staff Category &amp; Compensation Model <span className="text-rose-500">*</span>
+                  </label>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditForm({
+                          ...editForm,
+                          staffCategory: 'FACULTY',
+                          compensationModel: 'REVENUE_SHARING',
+                          role: editForm.role === 'STAFF' || editForm.role === 'ACCOUNTANT' ? 'TEACHER' : editForm.role,
+                        });
+                      }}
+                      className={`p-3.5 rounded-xl border text-left transition flex flex-col justify-between cursor-pointer ${
+                        editForm.staffCategory === 'FACULTY'
+                          ? 'bg-purple-50/70 border-purple-400 ring-2 ring-purple-500/20'
+                          : 'bg-white border-neutral-200 hover:border-neutral-300'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between w-full mb-1">
+                        <span className="font-bold text-sm text-purple-950 flex items-center gap-1.5">
+                          <BookOpen className="w-4 h-4 text-purple-600" />
+                          Teaching Faculty
+                        </span>
+                        {editForm.staffCategory === 'FACULTY' && (
+                          <span className="w-2 h-2 rounded-full bg-purple-600" />
+                        )}
+                      </div>
+                      <p className="text-[11px] text-neutral-500 leading-tight">
+                        Course fee sharing or per-student allocation model for instructors.
+                      </p>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditForm({
+                          ...editForm,
+                          staffCategory: 'GENERAL',
+                          compensationModel: 'FIXED_SALARY',
+                          role: editForm.role === 'TEACHER' ? 'STAFF' : editForm.role,
+                        });
+                      }}
+                      className={`p-3.5 rounded-xl border text-left transition flex flex-col justify-between cursor-pointer ${
+                        editForm.staffCategory === 'GENERAL' && editForm.role !== 'ACADEMY_ADMIN' && editForm.role !== 'SUPER_ADMIN'
+                          ? 'bg-blue-50/70 border-blue-400 ring-2 ring-blue-500/20'
+                          : 'bg-white border-neutral-200 hover:border-neutral-300'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between w-full mb-1">
+                        <span className="font-bold text-sm text-blue-950 flex items-center gap-1.5">
+                          <Briefcase className="w-4 h-4 text-blue-600" />
+                          General Staff
+                        </span>
+                        {editForm.staffCategory === 'GENERAL' && editForm.role !== 'ACADEMY_ADMIN' && editForm.role !== 'SUPER_ADMIN' && (
+                          <span className="w-2 h-2 rounded-full bg-blue-600" />
+                        )}
+                      </div>
+                      <p className="text-[11px] text-neutral-500 leading-tight">
+                        Fixed agreed salary (Accountants, reception, administrative staff).
+                      </p>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Administrator Banner if selected */}
+                {(editForm.role === 'SUPER_ADMIN' || editForm.role === 'ACADEMY_ADMIN') && (
+                  <div className="p-3 bg-amber-50/80 border border-amber-200 rounded-xl text-xs text-amber-900 flex items-start gap-2.5">
+                    <Shield className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="font-bold">
+                        {editForm.role === 'SUPER_ADMIN' ? '👑 Super Admin Role' : '🛡️ Academy Admin Role'}
+                      </span>
+                      <p className="text-[11px] text-amber-800 mt-0.5 leading-relaxed">
+                        This user has administration access to system settings. An Email Address is required.
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Basic Details Grid */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  {/* Name */}
+                  <div>
+                    <label className="block text-xs font-semibold text-neutral-800 uppercase tracking-wider mb-1.5">
+                      Name <span className="text-rose-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="e.g. Ramesh Gupta"
+                      value={editForm.name}
+                      onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
+                      className="w-full px-3.5 py-2.5 text-sm bg-neutral-50 border border-neutral-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#FF8500]/20 focus:border-[#FF8500] transition"
+                    />
+                  </div>
+
+                  {/* Mobile Number */}
+                  <div>
+                    <label className="block text-xs font-semibold text-neutral-800 uppercase tracking-wider mb-1.5">
+                      Mobile Number <span className="text-rose-500">*</span>
+                    </label>
+                    <input
+                      type="tel"
+                      required
+                      placeholder="e.g. 9876543210"
+                      value={editForm.phone}
+                      onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })}
+                      className="w-full px-3.5 py-2.5 text-sm bg-neutral-50 border border-neutral-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#FF8500]/20 focus:border-[#FF8500] transition"
+                    />
+                  </div>
+
+                  {/* Role */}
+                  <div>
+                    <label className="block text-xs font-semibold text-neutral-800 uppercase tracking-wider mb-1.5">
+                      Role <span className="text-rose-500">*</span>
+                    </label>
+                    <select
+                      value={editForm.role}
+                      onChange={(e) => {
+                        const newRole = e.target.value;
+                        const isTeaching = newRole === 'TEACHER';
+                        setEditForm({
+                          ...editForm,
+                          role: newRole,
+                          staffCategory: isTeaching ? 'FACULTY' : 'GENERAL',
+                          compensationModel: isTeaching ? 'REVENUE_SHARING' : 'FIXED_SALARY',
+                        });
+                      }}
+                      className="w-full px-3.5 py-2.5 text-sm bg-neutral-50 border border-neutral-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#FF8500]/20 focus:border-[#FF8500] transition"
+                    >
+                      <option value="TEACHER">Teacher / Faculty</option>
+                      {isSuperAdmin && <option value="SUPER_ADMIN">👑 Super Admin (Full Academy Ownership)</option>}
+                      <option value="ACADEMY_ADMIN">🛡️ Academy Admin (Operational Management)</option>
+                      <option value="ACCOUNTANT">Accountant</option>
+                      <option value="STAFF">General Staff</option>
+                    </select>
+                  </div>
+
+                  {/* Email */}
+                  <div>
+                    <label className="block text-xs font-semibold text-neutral-800 uppercase tracking-wider mb-1.5">
+                      Email Address{' '}
+                      {editForm.role === 'SUPER_ADMIN' || editForm.role === 'ACADEMY_ADMIN' ? (
+                        <span className="text-rose-500 font-bold">* (Login ID)</span>
+                      ) : (
+                        <span className="text-neutral-400 font-normal normal-case">(optional)</span>
+                      )}
+                    </label>
+                    <input
+                      type="email"
+                      required={editForm.role === 'SUPER_ADMIN' || editForm.role === 'ACADEMY_ADMIN'}
+                      placeholder="e.g. staff@rcacademy.com"
+                      value={editForm.email}
+                      onChange={(e) => setEditForm({ ...editForm, email: e.target.value })}
+                      className="w-full px-3.5 py-2.5 text-sm bg-neutral-50 border border-neutral-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#FF8500]/20 focus:border-[#FF8500] transition"
+                    />
+                  </div>
+
+                  {/* Designation */}
+                  <div>
+                    <label className="block text-xs font-semibold text-neutral-700 uppercase tracking-wider mb-1.5">
+                      Designation <span className="text-neutral-400 font-normal normal-case">(optional)</span>
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Senior Faculty / HOD"
+                      value={editForm.designation}
+                      onChange={(e) => setEditForm({ ...editForm, designation: e.target.value })}
+                      className="w-full px-3.5 py-2.5 text-sm bg-neutral-50 border border-neutral-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#FF8500]/20 focus:border-[#FF8500] transition"
+                    />
+                  </div>
+
+                  {/* Date of Joining */}
+                  <div>
+                    <label className="block text-xs font-semibold text-neutral-800 uppercase tracking-wider mb-1.5 flex items-center gap-1">
+                      <Calendar className="w-3.5 h-3.5 text-[#FF8500]" />
+                      <span>Joining Date</span>
+                    </label>
+                    <input
+                      type="date"
+                      value={editForm.dateOfJoining}
+                      onChange={(e) => setEditForm({ ...editForm, dateOfJoining: e.target.value })}
+                      className="w-full px-3.5 py-2.5 text-sm bg-neutral-50 border border-neutral-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#FF8500]/20 focus:border-[#FF8500] transition cursor-pointer"
+                    />
+                  </div>
+                </div>
+
+                {/* Fixed Salary Settings for General Staff */}
+                {editForm.staffCategory === 'GENERAL' && (
+                  <div className="p-4 sm:p-5 bg-gradient-to-br from-blue-50/70 via-indigo-50/30 to-white border border-blue-200 rounded-2xl space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <DollarSign className="w-4 h-4 text-blue-600" />
+                        <h3 className="text-xs font-bold text-neutral-900 uppercase tracking-wider">
+                          Fixed Salary Contract Terms
+                        </h3>
+                      </div>
+                      <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 border border-blue-200">
+                        General Staff
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-[11px] font-semibold text-neutral-800 uppercase tracking-wider mb-1.5">
+                          Agreed Salary Amount (₹) <span className="text-rose-500">*</span>
+                        </label>
+                        <input
+                          type="number"
+                          required
+                          min={0}
+                          step="any"
+                          value={editForm.fixedSalaryAmount}
+                          onChange={(e) => setEditForm({ ...editForm, fixedSalaryAmount: Number(e.target.value) })}
+                          className="w-full px-3 py-2 text-sm bg-white border border-neutral-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                          placeholder="e.g. 25000"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[11px] font-semibold text-neutral-800 uppercase tracking-wider mb-1.5">
+                          Payment Frequency
+                        </label>
+                        <select
+                          value={editForm.payFrequency}
+                          onChange={(e) => setEditForm({ ...editForm, payFrequency: e.target.value as any })}
+                          className="w-full px-3 py-2 text-sm bg-white border border-neutral-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                        >
+                          <option value="MONTHLY">Monthly</option>
+                          <option value="BI_WEEKLY">Bi-Weekly</option>
+                          <option value="WEEKLY">Weekly</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Academic Course & Subject Assignments for Faculty */}
+                {editForm.staffCategory === 'FACULTY' && (
+                  <div className="p-4 sm:p-5 bg-gradient-to-br from-orange-50/50 via-amber-50/20 to-white border border-orange-200/80 rounded-2xl space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <BookOpen className="w-4 h-4 text-[#FF8500]" />
+                        <h3 className="text-xs font-bold text-neutral-900 uppercase tracking-wider">
+                          Academic Course &amp; Subject Assignments
+                        </h3>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleAddEditAssignment}
+                        className="px-2.5 py-1 text-xs font-semibold bg-white hover:bg-neutral-50 text-[#FF8500] border border-orange-300 rounded-lg shadow-2xs transition flex items-center gap-1 cursor-pointer"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>Add Course</span>
+                      </button>
+                    </div>
+
+                    {editAssignments.length === 0 ? (
+                      <div className="p-4 bg-white/80 rounded-xl border border-dashed border-orange-200 text-center">
+                        <p className="text-xs text-neutral-500">
+                          No course assignments added yet. Click &quot;Add Course&quot; to assign standard, batch, and subjects.
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        {editAssignments.map((asItem, idx) => {
+                          const matchedCourse = courses.find((c) => c.id === asItem.courseId);
+                          return (
+                            <div key={idx} className="p-3.5 bg-white border border-neutral-200 rounded-xl space-y-2.5 shadow-2xs">
+                              <div className="flex items-center justify-between">
+                                <span className="text-[11px] font-bold text-neutral-700 uppercase tracking-wider">
+                                  Course Assignment #{idx + 1}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemoveEditAssignment(idx)}
+                                  className="p-1 text-neutral-400 hover:text-rose-600 hover:bg-rose-50 rounded transition cursor-pointer"
+                                  title="Remove assignment"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+
+                              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                                <div>
+                                  <label className="block text-[10px] font-semibold text-neutral-600 uppercase mb-1">
+                                    Standard / Course <span className="text-rose-500">*</span>
+                                  </label>
+                                  <select
+                                    value={asItem.courseId}
+                                    onChange={(e) => handleUpdateEditAssignment(idx, { courseId: e.target.value })}
+                                    className="w-full px-2.5 py-1.5 text-xs bg-neutral-50 border border-neutral-200 rounded-lg focus:outline-none focus:border-[#FF8500]"
+                                  >
+                                    <option value="">Select Course</option>
+                                    {courses.map((c) => (
+                                      <option key={c.id} value={c.id}>
+                                        {c.name} {c.code ? `(${c.code})` : ''}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
+
+                                <div>
+                                  <label className="block text-[10px] font-semibold text-neutral-600 uppercase mb-1">
+                                    Batch
+                                  </label>
+                                  <select
+                                    value={asItem.batchId}
+                                    onChange={(e) => handleUpdateEditAssignment(idx, { batchId: e.target.value })}
+                                    className="w-full px-2.5 py-1.5 text-xs bg-neutral-50 border border-neutral-200 rounded-lg focus:outline-none focus:border-[#FF8500]"
+                                    disabled={!matchedCourse}
+                                  >
+                                    <option value="">All Batches</option>
+                                    {matchedCourse?.batches?.map((b) => (
+                                      <option key={b.id} value={b.id}>
+                                        {b.name}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
+
+                                <div>
+                                  <label className="block text-[10px] font-semibold text-neutral-600 uppercase mb-1">
+                                    Subject
+                                  </label>
+                                  <select
+                                    value={asItem.subjectId}
+                                    onChange={(e) => handleUpdateEditAssignment(idx, { subjectId: e.target.value })}
+                                    className="w-full px-2.5 py-1.5 text-xs bg-neutral-50 border border-neutral-200 rounded-lg focus:outline-none focus:border-[#FF8500]"
+                                    disabled={!matchedCourse}
+                                  >
+                                    <option value="">All Subjects</option>
+                                    {matchedCourse?.subjects?.map((s) => (
+                                      <option key={s.id} value={s.id}>
+                                        {s.name}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
+                              </div>
+
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-2 border-t border-neutral-100">
+                                <div>
+                                  <label className="block text-[10px] font-semibold text-neutral-600 uppercase mb-1">
+                                    Faculty Role
+                                  </label>
+                                  <input
+                                    type="text"
+                                    value={asItem.role}
+                                    onChange={(e) => handleUpdateEditAssignment(idx, { role: e.target.value })}
+                                    placeholder="e.g. INSTRUCTOR"
+                                    className="w-full px-2.5 py-1.5 text-xs bg-neutral-50 border border-neutral-200 rounded-lg focus:outline-none focus:border-[#FF8500]"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="block text-[10px] font-semibold text-neutral-600 uppercase mb-1">
+                                    Share Percentage (%)
+                                  </label>
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    max={100}
+                                    value={asItem.staffSharePercentage}
+                                    onChange={(e) => handleUpdateEditAssignment(idx, { staffSharePercentage: Number(e.target.value) })}
+                                    className="w-full px-2.5 py-1.5 text-xs bg-neutral-50 border border-neutral-200 rounded-lg focus:outline-none focus:border-[#FF8500]"
+                                  />
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Modal Footer */}
+              <div className="p-4 px-6 border-t border-neutral-100 flex items-center justify-between bg-neutral-50/70 shrink-0">
+                <p className="text-xs text-neutral-500 hidden sm:block">
+                  Unique attendance code will remain preserved.
+                </p>
+                <div className="flex items-center gap-2.5 ml-auto">
+                  <button
+                    type="button"
+                    onClick={() => setEditingStaff(null)}
+                    className="px-4 py-2.5 text-sm font-medium text-neutral-600 hover:text-black hover:bg-neutral-200/60 rounded-xl transition cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={editModalSaving}
+                    className="px-5 py-2.5 text-sm font-semibold bg-[#FF8500] hover:bg-[#E67700] text-white rounded-xl shadow-sm transition disabled:opacity-50 flex items-center gap-2 cursor-pointer"
+                  >
+                    {editModalSaving ? (
+                      <>
+                        <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                        <span>Saving Changes...</span>
+                      </>
+                    ) : (
+                      'Save Changes'
                     )}
                   </button>
                 </div>
@@ -2083,7 +2588,13 @@ export default function StaffPage() {
                         <div className="flex items-center gap-1 bg-neutral-100 p-1 rounded-lg">
                           <button
                             type="button"
-                            onClick={() => setSettlementForm({ ...settlementForm, allSubjectsType: 'PERCENTAGE' })}
+                            onClick={() =>
+                              setSettlementForm({
+                                ...settlementForm,
+                                allSubjectsType: 'PERCENTAGE',
+                                allSubjectsValue: settlementForm.allSubjectsValue > 100 ? 25 : settlementForm.allSubjectsValue,
+                              })
+                            }
                             className={`flex-1 py-1 text-xs font-semibold rounded-md transition cursor-pointer ${
                               settlementForm.allSubjectsType === 'PERCENTAGE'
                                 ? 'bg-white text-purple-950 shadow-xs'
@@ -2108,7 +2619,8 @@ export default function StaffPage() {
                           <input
                             type="number"
                             min="0"
-                            step={settlementForm.allSubjectsType === 'PERCENTAGE' ? '0.5' : '50'}
+                            max={settlementForm.allSubjectsType === 'PERCENTAGE' ? 100 : undefined}
+                            step="any"
                             value={settlementForm.allSubjectsValue}
                             onChange={(e) =>
                               setSettlementForm({
@@ -2124,6 +2636,18 @@ export default function StaffPage() {
                           </span>
                         </div>
                       </div>
+                      {settlementForm.allSubjectsType === 'PERCENTAGE' && settlementForm.allSubjectsValue > 100 && (
+                        <div className="mt-1 flex items-center justify-between p-2 bg-purple-50 border border-purple-200 rounded-lg text-xs text-purple-950">
+                          <span>Percentage cannot exceed 100%. Did you mean ₹{settlementForm.allSubjectsValue.toLocaleString('en-IN')} per student?</span>
+                          <button
+                            type="button"
+                            onClick={() => setSettlementForm({ ...settlementForm, allSubjectsType: 'FIXED_AMOUNT' })}
+                            className="ml-2 px-2 py-0.5 bg-purple-700 text-white rounded font-bold hover:bg-purple-800 text-[11px] shrink-0 cursor-pointer"
+                          >
+                            Switch to Per Student (₹)
+                          </button>
+                        </div>
+                      )}
                     </div>
 
                     {/* Tier B: Single-Subject Students */}
@@ -2146,7 +2670,13 @@ export default function StaffPage() {
                         <div className="flex items-center gap-1 bg-neutral-100 p-1 rounded-lg">
                           <button
                             type="button"
-                            onClick={() => setSettlementForm({ ...settlementForm, singleSubjectType: 'PERCENTAGE' })}
+                            onClick={() =>
+                              setSettlementForm({
+                                ...settlementForm,
+                                singleSubjectType: 'PERCENTAGE',
+                                singleSubjectValue: settlementForm.singleSubjectValue > 100 ? 70 : settlementForm.singleSubjectValue,
+                              })
+                            }
                             className={`flex-1 py-1 text-xs font-semibold rounded-md transition cursor-pointer ${
                               settlementForm.singleSubjectType === 'PERCENTAGE'
                                 ? 'bg-white text-orange-950 shadow-xs'
@@ -2171,7 +2701,8 @@ export default function StaffPage() {
                           <input
                             type="number"
                             min="0"
-                            step={settlementForm.singleSubjectType === 'PERCENTAGE' ? '0.5' : '50'}
+                            max={settlementForm.singleSubjectType === 'PERCENTAGE' ? 100 : undefined}
+                            step="any"
                             value={settlementForm.singleSubjectValue}
                             onChange={(e) =>
                               setSettlementForm({
@@ -2187,6 +2718,18 @@ export default function StaffPage() {
                           </span>
                         </div>
                       </div>
+                      {settlementForm.singleSubjectType === 'PERCENTAGE' && settlementForm.singleSubjectValue > 100 && (
+                        <div className="mt-1 flex items-center justify-between p-2 bg-orange-50 border border-orange-200 rounded-lg text-xs text-orange-950">
+                          <span>Percentage cannot exceed 100%. Did you mean ₹{settlementForm.singleSubjectValue.toLocaleString('en-IN')} per student?</span>
+                          <button
+                            type="button"
+                            onClick={() => setSettlementForm({ ...settlementForm, singleSubjectType: 'FIXED_AMOUNT' })}
+                            className="ml-2 px-2 py-0.5 bg-[#FF8500] text-white rounded font-bold hover:bg-[#e07500] text-[11px] shrink-0 cursor-pointer"
+                          >
+                            Switch to Per Student (₹)
+                          </button>
+                        </div>
+                      )}
                     </div>
 
                     {/* Optional Tier C: 2-Subjects Bundle */}
@@ -2206,7 +2749,13 @@ export default function StaffPage() {
                             <div className="flex items-center gap-1 bg-neutral-100 p-1 rounded-lg">
                               <button
                                 type="button"
-                                onClick={() => setSettlementForm({ ...settlementForm, twoSubjectsType: 'PERCENTAGE' })}
+                                onClick={() =>
+                                  setSettlementForm({
+                                    ...settlementForm,
+                                    twoSubjectsType: 'PERCENTAGE',
+                                    twoSubjectsValue: settlementForm.twoSubjectsValue > 100 ? 35 : settlementForm.twoSubjectsValue,
+                                  })
+                                }
                                 className={`flex-1 py-1 text-xs font-semibold rounded-md transition cursor-pointer ${
                                   settlementForm.twoSubjectsType === 'PERCENTAGE'
                                     ? 'bg-white text-amber-950 shadow-xs'
@@ -2231,7 +2780,8 @@ export default function StaffPage() {
                               <input
                                 type="number"
                                 min="0"
-                                step={settlementForm.twoSubjectsType === 'PERCENTAGE' ? '0.5' : '50'}
+                                max={settlementForm.twoSubjectsType === 'PERCENTAGE' ? 100 : undefined}
+                                step="any"
                                 value={settlementForm.twoSubjectsValue}
                                 onChange={(e) =>
                                   setSettlementForm({
@@ -2247,6 +2797,18 @@ export default function StaffPage() {
                               </span>
                             </div>
                           </div>
+                          {settlementForm.twoSubjectsType === 'PERCENTAGE' && settlementForm.twoSubjectsValue > 100 && (
+                            <div className="mt-1 flex items-center justify-between p-2 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-950">
+                              <span>Percentage cannot exceed 100%. Did you mean ₹{settlementForm.twoSubjectsValue.toLocaleString('en-IN')} per student?</span>
+                              <button
+                                type="button"
+                                onClick={() => setSettlementForm({ ...settlementForm, twoSubjectsType: 'FIXED_AMOUNT' })}
+                                className="ml-2 px-2 py-0.5 bg-amber-700 text-white rounded font-bold hover:bg-amber-800 text-[11px] shrink-0 cursor-pointer"
+                              >
+                                Switch to Per Student (₹)
+                              </button>
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>
@@ -2265,7 +2827,7 @@ export default function StaffPage() {
                         <input
                           type="number"
                           min="0"
-                          step="50"
+                          step="any"
                           value={settlementForm.perStudentAmount}
                           onChange={(e) =>
                             setSettlementForm({ ...settlementForm, perStudentAmount: Number(e.target.value) })
@@ -2312,7 +2874,7 @@ export default function StaffPage() {
                           type="number"
                           min="0"
                           max="100"
-                          step="0.5"
+                          step="any"
                           value={settlementForm.staffSharePercentage}
                           onChange={(e) =>
                             setSettlementForm({ ...settlementForm, staffSharePercentage: Number(e.target.value) })
@@ -2596,7 +3158,7 @@ export default function StaffPage() {
                   type="number"
                   required
                   min={1}
-                  step={100}
+                  step="any"
                   value={adjustmentForm.amount}
                   onChange={(e) => setAdjustmentForm({ ...adjustmentForm, amount: Number(e.target.value) })}
                   className="w-full px-3.5 py-2 text-sm bg-neutral-50 border border-neutral-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#FF8500]/20 focus:border-[#FF8500] font-mono font-bold"
@@ -2659,6 +3221,8 @@ export default function StaffPage() {
           onClick={() => {
             setStaffToDelete(null);
             setDeleteModalError(null);
+    setEditingStaff(null);
+    setEditModalError(null);
           }}
         >
           <div
@@ -2715,6 +3279,8 @@ export default function StaffPage() {
                 onClick={() => {
                   setStaffToDelete(null);
                   setDeleteModalError(null);
+    setEditingStaff(null);
+    setEditModalError(null);
                 }}
                 disabled={deletingStaff}
                 className="px-4 py-2 border border-neutral-200 rounded-lg text-xs font-semibold text-neutral-600 hover:bg-neutral-50 transition"

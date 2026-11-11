@@ -117,6 +117,13 @@ interface GuardianContactRow {
 export default function StudentsPage() {
   const { user: authUser, role } = useAuthUser();
   const isPrivileged = role === 'SUPER_ADMIN' || role === 'ACADEMY_ADMIN';
+  const isSuperAdmin = authUser?.roles?.includes('SUPER_ADMIN') || role === 'SUPER_ADMIN';
+
+  // Bulk Delete State (Super Admin Only)
+  const [selectedStudentIds, setSelectedStudentIds] = useState<string[]>([]);
+  const [showBulkDeleteModal, setShowBulkDeleteModal] = useState(false);
+  const [deletingBulk, setDeletingBulk] = useState(false);
+  const [bulkDeleteError, setBulkDeleteError] = useState<string | null>(null);
 
   const [students, setStudents] = useState<Student[]>([]);
   const [courses, setCourses] = useState<CourseOption[]>([]);
@@ -253,6 +260,7 @@ export default function StudentsPage() {
   const [savingStudent, setSavingStudent] = useState(false);
   const [editModalError, setEditModalError] = useState<string | null>(null);
   const [editModalSuccess, setEditModalSuccess] = useState<string | null>(null);
+  const [showEditSuccessPopup, setShowEditSuccessPopup] = useState(false);
 
   // Delete Student Modal
   const [studentToDelete, setStudentToDelete] = useState<Student | null>(null);
@@ -482,9 +490,12 @@ export default function StudentsPage() {
     setShowBulkModal(false);
     setSelectedStudentForEnrollments(null);
     setStudentToDelete(null);
+    setShowBulkDeleteModal(false);
+    setSelectedStudentIds([]);
     setManualModalError(null);
     setEditModalError(null);
     setEditModalSuccess(null);
+    setBulkDeleteError(null);
   }, [pathname]);
 
   // Handle Escape key & body scroll lock
@@ -494,7 +505,8 @@ export default function StudentsPage() {
       !!showCreatedCodeModal ||
       showBulkModal ||
       !!selectedStudentForEnrollments ||
-      !!studentToDelete;
+      !!studentToDelete ||
+      showBulkDeleteModal;
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -503,7 +515,9 @@ export default function StudentsPage() {
         setShowBulkModal(false);
         setSelectedStudentForEnrollments(null);
         setStudentToDelete(null);
+        setShowBulkDeleteModal(false);
         setManualModalError(null);
+        setBulkDeleteError(null);
       }
     };
 
@@ -518,7 +532,7 @@ export default function StudentsPage() {
       document.body.style.overflow = '';
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [showManualModal, showCreatedCodeModal, showBulkModal, selectedStudentForEnrollments, studentToDelete]);
+  }, [showManualModal, showCreatedCodeModal, showBulkModal, selectedStudentForEnrollments, studentToDelete, showBulkDeleteModal]);
 
   // Manual Form State with Multi-Course Enrollments & Multiple Guardian Contacts
   const [manualForm, setManualForm] = useState<{
@@ -965,6 +979,7 @@ export default function StudentsPage() {
       }));
 
       setEditModalSuccess('Student profile updated successfully!');
+      setShowEditSuccessPopup(true);
       await loadData();
     } catch (err: any) {
       setEditModalError(err.message || 'Failed to update student profile');
@@ -1042,6 +1057,54 @@ export default function StudentsPage() {
       setErrorMsg(err.message || 'Failed to delete student');
     } finally {
       setDeletingStudent(false);
+    }
+  };
+
+  // Bulk Selection & Deletion Handlers (Super Admin Only)
+  const handleToggleSelectAll = () => {
+    if (!isSuperAdmin) return;
+    const currentFilteredIds = filteredStudents.map((s) => s.id);
+    const allSelected = currentFilteredIds.length > 0 && currentFilteredIds.every((id) => selectedStudentIds.includes(id));
+    if (allSelected) {
+      setSelectedStudentIds((prev) => prev.filter((id) => !currentFilteredIds.includes(id)));
+    } else {
+      setSelectedStudentIds((prev) => Array.from(new Set([...prev, ...currentFilteredIds])));
+    }
+  };
+
+  const handleToggleSelectStudent = (id: string) => {
+    if (!isSuperAdmin) return;
+    setSelectedStudentIds((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    );
+  };
+
+  const handleSelectAllFiltered = () => {
+    if (!isSuperAdmin) return;
+    const currentFilteredIds = filteredStudents.map((s) => s.id);
+    setSelectedStudentIds(currentFilteredIds);
+  };
+
+  const handleBulkDeleteStudents = async () => {
+    if (!isSuperAdmin || selectedStudentIds.length === 0) return;
+    try {
+      setDeletingBulk(true);
+      setBulkDeleteError(null);
+      const res = await ApiClient.fetch<{ success: boolean; message: string; count: number }>(
+        '/students/bulk-delete',
+        {
+          method: 'POST',
+          body: JSON.stringify({ studentIds: selectedStudentIds }),
+        }
+      );
+      setSuccessMsg(res.message || `Successfully deleted ${selectedStudentIds.length} students`);
+      setSelectedStudentIds([]);
+      setShowBulkDeleteModal(false);
+      await loadData();
+    } catch (err: any) {
+      setBulkDeleteError(err.message || 'Failed to bulk delete students');
+    } finally {
+      setDeletingBulk(false);
     }
   };
 
@@ -1833,28 +1896,44 @@ export default function StudentsPage() {
           </div>
         </div>
 
-        {/* Active Filters Summary & Reset Button */}
-        {(courseFilter || batchFilter || statusFilter !== 'ALL' || selectedSubjectFilter || search) && (
-          <div className="flex items-center gap-2 shrink-0">
-            <span className="text-[11px] font-medium text-neutral-500">
-              Showing <strong className="text-neutral-900">{filteredStudents.length}</strong> matching students
-            </span>
-            <button
-              type="button"
-              onClick={() => {
-                setCourseFilter('');
-                setBatchFilter('');
-                setStatusFilter('ALL');
-                setSelectedSubjectFilter('');
-                setSearch('');
-              }}
-              className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-bold text-rose-600 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-lg transition cursor-pointer"
-            >
-              <X className="w-3.5 h-3.5" />
-              <span>Reset Filters</span>
-            </button>
-          </div>
-        )}
+        {/* Active Filters Summary & Reset / Bulk Action Buttons */}
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          {(courseFilter || batchFilter || statusFilter !== 'ALL' || selectedSubjectFilter || search) && (
+            <div className="flex items-center gap-2 shrink-0">
+              <span className="text-[11px] font-medium text-neutral-500">
+                Showing <strong className="text-neutral-900">{filteredStudents.length}</strong> matching students
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setCourseFilter('');
+                  setBatchFilter('');
+                  setStatusFilter('ALL');
+                  setSelectedSubjectFilter('');
+                  setSearch('');
+                }}
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-bold text-rose-600 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-lg transition cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+                <span>Reset Filters</span>
+              </button>
+            </div>
+          )}
+
+          {isSuperAdmin && filteredStudents.length > 0 && (
+            <div className="flex items-center gap-2 shrink-0 ml-auto">
+              <button
+                type="button"
+                onClick={handleSelectAllFiltered}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg border border-neutral-200 bg-white hover:bg-[#FFF4E5] hover:border-[#FF8500]/50 text-neutral-700 hover:text-[#CC6B00] shadow-2xs transition cursor-pointer"
+                title="Select all students currently matching active filters"
+              >
+                <Check className="w-3.5 h-3.5 text-[#FF8500]" />
+                <span>Select All Filtered ({filteredStudents.length})</span>
+              </button>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* STUDENT ANALYSIS & COHORT OVERVIEW PANEL */}
@@ -2036,6 +2115,46 @@ export default function StudentsPage() {
 
       {/* Students Table & Native Mobile Cards */}
       <div className="bg-white border border-neutral-200 rounded-xl overflow-hidden shadow-xs">
+        {/* Super Admin Bulk Action Banner */}
+        {isSuperAdmin && selectedStudentIds.length > 0 && (
+          <div className="bg-neutral-900 text-white px-4 py-3 flex flex-wrap items-center justify-between gap-3 border-b border-neutral-800 animate-in fade-in duration-150">
+            <div className="flex items-center gap-3">
+              <span className="inline-flex items-center justify-center min-w-6 h-6 px-1.5 rounded-full bg-[#FF8500] text-black font-extrabold text-xs font-mono">
+                {selectedStudentIds.length}
+              </span>
+              <span className="text-xs font-semibold">
+                {selectedStudentIds.length} of {filteredStudents.length} student(s) selected
+              </span>
+              {selectedStudentIds.length < filteredStudents.length && (
+                <button
+                  type="button"
+                  onClick={handleSelectAllFiltered}
+                  className="text-xs text-[#FF8500] hover:underline font-semibold cursor-pointer"
+                >
+                  Select all {filteredStudents.length} matching students
+                </button>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setSelectedStudentIds([])}
+                className="px-3 py-1.5 text-xs font-semibold text-neutral-300 hover:text-white rounded-lg hover:bg-neutral-800 transition cursor-pointer"
+              >
+                Clear Selection
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowBulkDeleteModal(true)}
+                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white rounded-lg shadow-subtle transition cursor-pointer"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Delete Selected ({selectedStudentIds.length})</span>
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Top Table Control Bar with Instant 100 Listing */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 bg-neutral-50/90 border-b border-neutral-200">
           <div className="flex items-center gap-2">
@@ -2111,9 +2230,17 @@ export default function StudentsPage() {
             </div>
           ) : (
             filteredStudents.map((s, idx) => (
-              <div key={s.id} className="p-4 space-y-2.5 hover:bg-neutral-50/50 transition">
+              <div key={s.id} className={`p-4 space-y-2.5 hover:bg-neutral-50/50 transition ${selectedStudentIds.includes(s.id) ? 'bg-orange-50/40' : ''}`}>
                 <div className="flex items-start justify-between gap-2">
                   <div className="flex items-start gap-2.5">
+                    {isSuperAdmin && (
+                      <input
+                        type="checkbox"
+                        checked={selectedStudentIds.includes(s.id)}
+                        onChange={() => handleToggleSelectStudent(s.id)}
+                        className="w-4 h-4 rounded border-neutral-300 text-[#FF8500] focus:ring-[#FF8500] cursor-pointer mt-1 shrink-0"
+                      />
+                    )}
                     <span className="w-6 h-6 rounded-full bg-neutral-100 border border-neutral-200 text-neutral-600 font-mono text-xs font-bold flex items-center justify-center shrink-0 mt-0.5">
                       #{(currentPage - 1) * pageSize + idx + 1}
                     </span>
@@ -2228,6 +2355,20 @@ export default function StudentsPage() {
           <table className="w-full text-left border-collapse text-sm">
             <thead>
               <tr className="bg-neutral-50/80 border-b border-neutral-200 text-[11px] font-semibold text-neutral-500 uppercase tracking-wider">
+                {isSuperAdmin && (
+                  <th className="py-3.5 px-3 text-center w-10">
+                    <input
+                      type="checkbox"
+                      checked={
+                        filteredStudents.length > 0 &&
+                        filteredStudents.every((s) => selectedStudentIds.includes(s.id))
+                      }
+                      onChange={handleToggleSelectAll}
+                      className="w-4 h-4 rounded border-neutral-300 text-[#FF8500] focus:ring-[#FF8500] cursor-pointer"
+                      title="Select / Deselect all filtered students"
+                    />
+                  </th>
+                )}
                 <th className="py-3.5 px-3 text-center w-12 font-mono">#</th>
                 <th className="py-3.5 px-4 font-bold text-neutral-800">Name</th>
                 <th className="py-3.5 px-4 text-center font-bold text-neutral-800">3-Digit Code</th>
@@ -2239,14 +2380,14 @@ export default function StudentsPage() {
             <tbody className="divide-y divide-neutral-100">
               {loading ? (
                 <tr>
-                  <td colSpan={6} className="py-12 text-center text-neutral-400">
+                  <td colSpan={isSuperAdmin ? 7 : 6} className="py-12 text-center text-neutral-400">
                     <RefreshCw className="w-5 h-5 animate-spin mx-auto mb-2 text-[#FF8500]" />
                     Loading student directory...
                   </td>
                 </tr>
               ) : filteredStudents.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="py-12 text-center text-neutral-400">
+                  <td colSpan={isSuperAdmin ? 7 : 6} className="py-12 text-center text-neutral-400">
                     <Users className="w-8 h-8 mx-auto mb-2 text-neutral-300" />
                     <p className="text-xs font-medium text-neutral-600">
                       {isPrivileged
@@ -2257,7 +2398,17 @@ export default function StudentsPage() {
                 </tr>
               ) : (
                 filteredStudents.map((s, idx) => (
-                  <tr key={s.id} className="hover:bg-neutral-50/70 transition">
+                  <tr key={s.id} className={`hover:bg-neutral-50/70 transition ${selectedStudentIds.includes(s.id) ? 'bg-orange-50/40' : ''}`}>
+                    {isSuperAdmin && (
+                      <td className="py-3 px-3 text-center">
+                        <input
+                          type="checkbox"
+                          checked={selectedStudentIds.includes(s.id)}
+                          onChange={() => handleToggleSelectStudent(s.id)}
+                          className="w-4 h-4 rounded border-neutral-300 text-[#FF8500] focus:ring-[#FF8500] cursor-pointer"
+                        />
+                      </td>
+                    )}
                     {/* Index */}
                     <td className="py-3 px-3 text-center font-mono text-xs text-neutral-400 font-semibold">
                       {(currentPage - 1) * pageSize + idx + 1}
@@ -5185,33 +5336,112 @@ export default function StudentsPage() {
                   </div>
 
                   {/* Form Submit / Cancel Bar */}
-                  <div className="flex items-center justify-end gap-3 pt-2">
-                    <button
-                      type="button"
-                      onClick={() => setSingleViewTab('details')}
-                      className="px-4 py-2 text-xs font-semibold text-neutral-600 hover:bg-neutral-100 rounded-lg transition cursor-pointer"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="submit"
-                      disabled={savingStudent}
-                      className="px-5 py-2 text-xs font-semibold bg-[#FF8500] hover:bg-[#E67700] text-white rounded-lg transition shadow-subtle flex items-center gap-2 cursor-pointer disabled:opacity-50"
-                    >
-                      {savingStudent ? (
-                        <>
-                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                          <span>Saving Changes...</span>
-                        </>
-                      ) : (
-                        <>
-                          <Save className="w-3.5 h-3.5" />
-                          <span>Save Changes</span>
-                        </>
+                  <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-neutral-100">
+                    <div className="flex items-center gap-2">
+                      {editModalSuccess && (
+                        <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-semibold animate-in fade-in">
+                          <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                          <span>{editModalSuccess}</span>
+                        </div>
                       )}
-                    </button>
+                      {editModalError && (
+                        <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 text-xs font-semibold animate-in fade-in">
+                          <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                          <span>{editModalError}</span>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-3 ml-auto">
+                      <button
+                        type="button"
+                        onClick={() => setSingleViewTab('details')}
+                        className="px-4 py-2 text-xs font-semibold text-neutral-600 hover:bg-neutral-100 rounded-lg transition cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={savingStudent}
+                        className="px-5 py-2 text-xs font-semibold bg-[#FF8500] hover:bg-[#E67700] text-white rounded-lg transition shadow-subtle flex items-center gap-2 cursor-pointer disabled:opacity-50"
+                      >
+                        {savingStudent ? (
+                          <>
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                            <span>Saving Changes...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Save className="w-3.5 h-3.5" />
+                            <span>Save Changes</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
                   </div>
                 </form>
+              )}
+
+              {/* Success Popup Dialog after Saving Student Profile */}
+              {showEditSuccessPopup && (
+                <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs animate-in fade-in duration-200">
+                  <div className="bg-white rounded-2xl shadow-2xl border border-neutral-100 max-w-sm w-full p-6 text-center space-y-4 animate-in zoom-in-95 duration-150">
+                    <div className="w-16 h-16 rounded-full bg-emerald-50 border-4 border-emerald-100 text-emerald-600 flex items-center justify-center mx-auto shadow-xs">
+                      <CheckCircle2 className="w-8 h-8" />
+                    </div>
+
+                    <div className="space-y-1">
+                      <h3 className="text-base font-extrabold text-neutral-900">
+                        Student Details Updated!
+                      </h3>
+                      <p className="text-xs text-neutral-500">
+                        All profile, contact, and guardian details for <strong className="text-neutral-800">{editForm.name}</strong> have been saved successfully.
+                      </p>
+                    </div>
+
+                    <div className="p-3 bg-neutral-50 rounded-xl border border-neutral-200 text-xs text-neutral-700 space-y-1.5 font-mono text-left">
+                      <div className="flex justify-between">
+                        <span className="text-neutral-400 font-sans">Student:</span>
+                        <strong className="text-neutral-900 font-sans truncate max-w-[180px]">{editForm.name}</strong>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-neutral-400 font-sans">Code:</span>
+                        <strong className="text-neutral-800">{selectedStudentForEnrollments?.studentCode || '-'}</strong>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-neutral-400 font-sans">Admission No:</span>
+                        <strong className="text-neutral-800">{selectedStudentForEnrollments?.admissionNumber || '-'}</strong>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-neutral-400 font-sans">Status:</span>
+                        <span className="px-2 py-0.2 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800 font-sans">
+                          {editForm.status}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 pt-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowEditSuccessPopup(false);
+                          setSingleViewTab('details');
+                        }}
+                        className="flex-1 py-2.5 px-4 bg-[#FF8500] hover:bg-[#E67700] text-white font-bold text-xs rounded-xl shadow-subtle transition cursor-pointer flex items-center justify-center gap-1.5"
+                      >
+                        <Eye className="w-3.5 h-3.5" />
+                        <span>View Details</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowEditSuccessPopup(false)}
+                        className="py-2.5 px-4 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 font-bold text-xs rounded-xl transition cursor-pointer"
+                      >
+                        Close
+                      </button>
+                    </div>
+                  </div>
+                </div>
               )}
 
               {/* TAB 3: COURSES & ENROLLMENTS */}
@@ -5583,6 +5813,166 @@ export default function StudentsPage() {
             </div>
           </div>
         )}
+      </Modal>
+
+      {/* Super Admin Bulk Delete Students Confirmation Modal */}
+      <Modal
+        isOpen={showBulkDeleteModal && isSuperAdmin}
+        onClose={() => {
+          if (!deletingBulk) {
+            setShowBulkDeleteModal(false);
+            setBulkDeleteError(null);
+          }
+        }}
+        title="Bulk Delete Students"
+        description="Permanently remove selected students and release 3-digit attendance codes"
+        maxWidth="lg"
+      >
+        <div className="space-y-4">
+          {/* Super Admin Privileged Banner */}
+          <div className="flex items-center justify-between px-3.5 py-2 rounded-xl bg-neutral-900 text-white text-xs">
+            <div className="flex items-center gap-2">
+              <span className="px-2 py-0.5 rounded bg-rose-600 text-white text-[10px] font-bold font-mono tracking-wider">
+                SUPER ADMIN ONLY
+              </span>
+              <span className="font-semibold text-neutral-300">Elevated Mass Deletion Action</span>
+            </div>
+            <span className="font-mono text-xs text-[#FF8500] font-bold">
+              {selectedStudentIds.length} Student(s) Selected
+            </span>
+          </div>
+
+          {/* Danger Warning Banner */}
+          <div className="p-4 bg-rose-50 border border-rose-200 rounded-xl flex items-start gap-3">
+            <div className="w-8 h-8 rounded-full bg-rose-100 flex items-center justify-center shrink-0 text-rose-600 mt-0.5">
+              <AlertTriangle className="w-4 h-4" />
+            </div>
+            <div className="text-xs text-rose-950 space-y-1.5 flex-1">
+              <div className="font-bold text-sm text-rose-900">
+                Are you sure you want to permanently delete {selectedStudentIds.length} student(s)?
+              </div>
+              <p>
+                You are about to permanently delete <strong className="font-mono text-rose-950 font-bold">{selectedStudentIds.length}</strong> student record(s).
+              </p>
+              <p className="text-[11px] text-rose-700 font-medium">
+                This action cannot be undone. All active enrollments, attendance records, exam submissions, invoices, and assigned 3-digit attendance codes will be permanently removed (attendance codes will be released for re-allocation).
+              </p>
+            </div>
+          </div>
+
+          {/* Active Filter Scope Context */}
+          {(courseFilter || batchFilter || statusFilter !== 'ALL' || selectedSubjectFilter || search) && (
+            <div className="p-3 bg-neutral-50 border border-neutral-200 rounded-xl text-xs space-y-1.5">
+              <span className="font-bold text-neutral-700 text-[11px] uppercase tracking-wider block">
+                Applied Filter Scope:
+              </span>
+              <div className="flex flex-wrap gap-1.5">
+                {courseFilter && (
+                  <span className="px-2.5 py-0.5 rounded-full bg-blue-50 border border-blue-200 text-blue-800 text-[11px] font-medium">
+                    Class: {courses.find((c) => c.id === courseFilter)?.name || courseFilter}
+                  </span>
+                )}
+                {batchFilter && (
+                  <span className="px-2.5 py-0.5 rounded-full bg-purple-50 border border-purple-200 text-purple-800 text-[11px] font-medium">
+                    Batch: {availableBatches.find((b) => b.id === batchFilter)?.name || batchFilter}
+                  </span>
+                )}
+                {statusFilter !== 'ALL' && (
+                  <span className="px-2.5 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] font-medium">
+                    Status: {statusFilter}
+                  </span>
+                )}
+                {selectedSubjectFilter && (
+                  <span className="px-2.5 py-0.5 rounded-full bg-orange-50 border border-orange-200 text-orange-800 text-[11px] font-medium">
+                    Subject: {selectedSubjectFilter}
+                  </span>
+                )}
+                {search && (
+                  <span className="px-2.5 py-0.5 rounded-full bg-neutral-200 text-neutral-800 text-[11px] font-medium">
+                    Search: &quot;{search}&quot;
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Students Preview List */}
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between text-xs text-neutral-500 font-semibold px-1">
+              <span>Preview of students to be deleted:</span>
+              <span>Showing {Math.min(selectedStudentIds.length, 8)} of {selectedStudentIds.length}</span>
+            </div>
+            <div className="max-h-52 overflow-y-auto divide-y divide-neutral-100 border border-neutral-200 rounded-xl bg-white shadow-2xs">
+              {students
+                .filter((s) => selectedStudentIds.includes(s.id))
+                .slice(0, 8)
+                .map((s) => (
+                  <div key={s.id} className="p-2.5 flex items-center justify-between gap-3 text-xs hover:bg-neutral-50/60">
+                    <div className="min-w-0">
+                      <div className="font-bold text-neutral-900 truncate">{s.fullName}</div>
+                      <div className="text-[11px] text-neutral-500 font-mono flex items-center gap-2">
+                        <span>{s.studentCode}</span>
+                        <span>•</span>
+                        <span>Adm: {s.admissionNumber}</span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {s.attendanceCode && (
+                        <span className="px-2 py-0.5 bg-[#FFF4E5] border border-[#FF8500]/40 text-[#CC6B00] font-mono text-[11px] font-bold rounded">
+                          #{s.attendanceCode}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              {selectedStudentIds.length > 8 && (
+                <div className="p-2.5 text-center text-xs text-neutral-500 font-medium italic bg-neutral-50">
+                  ...and {selectedStudentIds.length - 8} more selected student(s)
+                </div>
+              )}
+            </div>
+          </div>
+
+          {bulkDeleteError && (
+            <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-800 flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+              <span>{bulkDeleteError}</span>
+            </div>
+          )}
+
+          {/* Footer Action Buttons */}
+          <div className="flex items-center justify-end gap-2 pt-3 border-t border-neutral-100">
+            <button
+              type="button"
+              disabled={deletingBulk}
+              onClick={() => {
+                setShowBulkDeleteModal(false);
+                setBulkDeleteError(null);
+              }}
+              className="px-4 py-2 text-xs font-semibold text-neutral-600 hover:bg-neutral-100 rounded-lg transition cursor-pointer"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={deletingBulk || selectedStudentIds.length === 0}
+              onClick={handleBulkDeleteStudents}
+              className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white rounded-lg shadow-subtle transition disabled:opacity-50 cursor-pointer"
+            >
+              {deletingBulk ? (
+                <>
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  <span>Deleting {selectedStudentIds.length} Students...</span>
+                </>
+              ) : (
+                <>
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Permanently Delete ({selectedStudentIds.length})</span>
+                </>
+              )}
+            </button>
+          </div>
+        </div>
       </Modal>
 
       {/* Allocate Advance to Fee Invoice Modal */}

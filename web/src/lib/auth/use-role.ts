@@ -71,7 +71,18 @@ export function useAuthUser(): {
 
   const isAuthorized = (route: string): boolean => {
     if (!user || !user.roles || user.roles.length === 0) return false;
-    if (user.roles.includes('SUPER_ADMIN') || user.roles.includes('ACADEMY_ADMIN')) {
+
+    // Super Admin has full operational access across all routes
+    if (user.roles.includes('SUPER_ADMIN')) {
+      return true;
+    }
+
+    // Finance Analytics & Settlements is strictly confidential and Super Admin only
+    if (route === '/finance-analytics' || route.startsWith('/finance-analytics/')) {
+      return false;
+    }
+
+    if (user.roles.includes('ACADEMY_ADMIN')) {
       return true;
     }
 

@@ -32,6 +32,7 @@ import {
 import { ApiClient } from '@/lib/api/api-client';
 import { Header } from '@/components/layout/header';
 import { ResponsivePageContainer } from '@/components/layout/responsive-container';
+import { formatTime12h } from '@/lib/utils/time-format';
 
 interface DailyClass {
   id: string;
@@ -153,27 +154,6 @@ const DAYS_OF_WEEK = [
 // Default Fallback Class Timings
 const DEFAULT_CLASS_START_TIME = '09:00'; // 09:00 AM
 const DEFAULT_CLASS_END_TIME = '10:30';   // 10:30 AM
-
-// ----------------------------------------------------------------
-// Time Formatter: Convert 24h ("14:00") to 12h AM/PM ("02:00 PM")
-// Supports default fallback time when time is missing or null
-// ----------------------------------------------------------------
-function formatTime12h(timeStr?: string | null, fallbackTime = ''): string {
-  const effective = (timeStr && timeStr.trim()) ? timeStr.trim() : fallbackTime;
-  if (!effective) return '';
-  const parts = effective.split(':');
-  if (parts.length < 2) return effective;
-  let hours = parseInt(parts[0], 10);
-  const minutes = parts[1].padStart(2, '0');
-  if (isNaN(hours)) return effective;
-
-  const ampm = hours >= 12 ? 'PM' : 'AM';
-  hours = hours % 12;
-  if (hours === 0) hours = 12;
-
-  const hh = hours < 10 ? `0${hours}` : `${hours}`;
-  return `${hh}:${minutes} ${ampm}`;
-}
 
 // ----------------------------------------------------------------
 // WhatsApp Message Builder Helper
@@ -457,7 +437,8 @@ export default function SchedulePage() {
   const fetchMasterSchedule = useCallback(async (day: string) => {
     try {
       setMasterLoading(true);
-      const data = await ApiClient.fetch<MasterScheduleEntry[]>(`/schedule?dayOfWeek=${day}`);
+      const url = day === 'ALL' ? '/schedule' : `/schedule?dayOfWeek=${day}`;
+      const data = await ApiClient.fetch<MasterScheduleEntry[]>(url);
       setMasterSchedules(data || []);
     } catch (err: any) {
       setErrorMsg(err.message || 'Failed to fetch weekly timetable');
@@ -814,7 +795,11 @@ export default function SchedulePage() {
           isActive: true,
         }),
       });
-      setSuccessMsg(`Timetable slot created for ${recurringForm.dayOfWeek}!`);
+      if (recurringForm.dayOfWeek === 'ALL_DAYS' || recurringForm.dayOfWeek === 'ALL') {
+        setSuccessMsg('Timetable slots created for all days (Monday - Sunday)!');
+      } else {
+        setSuccessMsg(`Timetable slot created for ${recurringForm.dayOfWeek}!`);
+      }
       setShowAddRecurringModal(false);
       setRecurringForm({
         classId: '',
@@ -1640,10 +1625,13 @@ export default function SchedulePage() {
 
             <button
               onClick={() => {
-                setRecurringForm((prev) => ({ ...prev, dayOfWeek: selectedDayOfWeek }));
+                setRecurringForm((prev) => ({
+                  ...prev,
+                  dayOfWeek: selectedDayOfWeek === 'ALL' ? 'ALL_DAYS' : selectedDayOfWeek,
+                }));
                 setShowAddRecurringModal(true);
               }}
-              className="inline-flex items-center gap-2 px-4 py-2 bg-[#FF8500] hover:bg-[#E67700] text-white text-xs font-bold rounded-lg transition-colors shadow-subtle"
+              className="inline-flex items-center gap-2 px-4 py-2 bg-[#FF8500] hover:bg-[#E67700] text-white text-xs font-bold rounded-lg transition-colors shadow-subtle cursor-pointer"
             >
               <Plus className="w-4 h-4" />
               Add Timetable Slot
@@ -1652,11 +1640,21 @@ export default function SchedulePage() {
 
           {/* Days of Week Filter Pills */}
           <div className="flex items-center gap-2 overflow-x-auto pb-2">
+            <button
+              onClick={() => setSelectedDayOfWeek('ALL')}
+              className={`px-4 py-2 rounded-lg text-xs font-bold transition-colors whitespace-nowrap cursor-pointer ${
+                selectedDayOfWeek === 'ALL'
+                  ? 'bg-black text-white'
+                  : 'bg-white border border-neutral-200 text-neutral-600 hover:border-black'
+              }`}
+            >
+              All Days
+            </button>
             {DAYS_OF_WEEK.map((day) => (
               <button
                 key={day}
                 onClick={() => setSelectedDayOfWeek(day)}
-                className={`px-4 py-2 rounded-lg text-xs font-bold transition-colors whitespace-nowrap ${
+                className={`px-4 py-2 rounded-lg text-xs font-bold transition-colors whitespace-nowrap cursor-pointer ${
                   selectedDayOfWeek === day
                     ? 'bg-black text-white'
                     : 'bg-white border border-neutral-200 text-neutral-600 hover:border-black'
@@ -1671,7 +1669,7 @@ export default function SchedulePage() {
           <div className="bg-white border border-neutral-200 rounded-xl p-6">
             <div className="flex items-center justify-between mb-4 border-b border-neutral-100 pb-3">
               <h4 className="font-bold text-sm text-black flex items-center gap-2">
-                <span>{selectedDayOfWeek} Regular Schedule</span>
+                <span>{selectedDayOfWeek === 'ALL' ? 'All Days' : selectedDayOfWeek} Regular Schedule</span>
                 <span className="text-xs font-normal text-neutral-400">
                   ({masterSchedules.length} slots configured)
                 </span>
@@ -1686,7 +1684,9 @@ export default function SchedulePage() {
             ) : masterSchedules.length === 0 ? (
               <div className="p-12 text-center text-neutral-400">
                 <Clock className="w-8 h-8 mx-auto mb-2 text-neutral-300" />
-                <p className="text-sm font-semibold text-black">No regular classes on {selectedDayOfWeek}</p>
+                <p className="text-sm font-semibold text-black">
+                  No regular classes on {selectedDayOfWeek === 'ALL' ? 'any day' : selectedDayOfWeek}
+                </p>
                 <p className="text-xs text-neutral-500 mt-1">
                   Click &apos;Add Timetable Slot&apos; to configure recurring classes for this day.
                 </p>
@@ -1705,6 +1705,11 @@ export default function SchedulePage() {
                         <div className="flex items-center gap-2">
                           <span className="font-bold text-sm text-black">{slot.class.name}</span>
                           <span className="text-xs text-[#FF8500] font-semibold">• {slot.subject.name}</span>
+                          {selectedDayOfWeek === 'ALL' && (
+                            <span className="text-[10px] font-bold uppercase bg-amber-100 text-amber-900 border border-amber-300 px-2 py-0.5 rounded">
+                              {slot.dayOfWeek}
+                            </span>
+                          )}
                           {slot.batch && (
                             <span className="text-[11px] bg-neutral-100 text-neutral-700 px-2 py-0.5 rounded">
                               Batch: {slot.batch.name}
@@ -2023,6 +2028,7 @@ export default function SchedulePage() {
                     onChange={(e) => setRecurringForm({ ...recurringForm, dayOfWeek: e.target.value })}
                     className="w-full px-3 py-2 text-xs bg-neutral-50 border border-neutral-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#FF8500]"
                   >
+                    <option value="ALL_DAYS">🌟 All Days (Monday - Sunday)</option>
                     {DAYS_OF_WEEK.map((day) => (
                       <option key={day} value={day}>
                         {day}
@@ -2032,7 +2038,14 @@ export default function SchedulePage() {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-semibold text-neutral-700 mb-1">Start Time *</label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-xs font-semibold text-neutral-700">Start Time *</label>
+                    {recurringForm.startTime && (
+                      <span className="text-[11px] font-bold text-[#CC6B00] bg-[#FFF4E5] px-1.5 py-0.5 rounded border border-[#FF8500]/25">
+                        {formatTime12h(recurringForm.startTime)}
+                      </span>
+                    )}
+                  </div>
                   <input
                     type="time"
                     value={recurringForm.startTime}
@@ -2043,7 +2056,14 @@ export default function SchedulePage() {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-semibold text-neutral-700 mb-1">End Time *</label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-xs font-semibold text-neutral-700">End Time *</label>
+                    {recurringForm.endTime && (
+                      <span className="text-[11px] font-bold text-[#CC6B00] bg-[#FFF4E5] px-1.5 py-0.5 rounded border border-[#FF8500]/25">
+                        {formatTime12h(recurringForm.endTime)}
+                      </span>
+                    )}
+                  </div>
                   <input
                     type="time"
                     value={recurringForm.endTime}
@@ -2053,6 +2073,18 @@ export default function SchedulePage() {
                   />
                 </div>
               </div>
+
+              {recurringForm.dayOfWeek === 'ALL_DAYS' && (
+                <div className="p-3 bg-gradient-to-r from-orange-50/90 to-amber-50/70 border border-orange-200 rounded-xl text-xs text-orange-950 flex items-start gap-2.5">
+                  <span className="text-base leading-none">🗓️</span>
+                  <div>
+                    <span className="font-bold">All Days Timetable Slot</span>
+                    <p className="text-[11px] text-neutral-600 mt-0.5">
+                      This master slot will be scheduled for all 7 days of the week (Monday through Sunday) at the specified time range.
+                    </p>
+                  </div>
+                </div>
+              )}
 
               <div>
                 <label className="block text-xs font-semibold text-neutral-700 mb-1">Room / Hall (Optional)</label>
@@ -2344,7 +2376,14 @@ export default function SchedulePage() {
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-semibold text-neutral-700 mb-1">Start Time *</label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-xs font-semibold text-neutral-700">Start Time *</label>
+                    {specialForm.startTime && (
+                      <span className="text-[11px] font-bold text-[#CC6B00] bg-[#FFF4E5] px-1.5 py-0.5 rounded border border-[#FF8500]/25">
+                        {formatTime12h(specialForm.startTime)}
+                      </span>
+                    )}
+                  </div>
                   <input
                     type="time"
                     value={specialForm.startTime}
@@ -2355,7 +2394,14 @@ export default function SchedulePage() {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-semibold text-neutral-700 mb-1">End Time *</label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-xs font-semibold text-neutral-700">End Time *</label>
+                    {specialForm.endTime && (
+                      <span className="text-[11px] font-bold text-[#CC6B00] bg-[#FFF4E5] px-1.5 py-0.5 rounded border border-[#FF8500]/25">
+                        {formatTime12h(specialForm.endTime)}
+                      </span>
+                    )}
+                  </div>
                   <input
                     type="time"
                     value={specialForm.endTime}

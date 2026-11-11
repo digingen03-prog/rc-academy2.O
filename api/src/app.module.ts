@@ -13,12 +13,13 @@ import { EvaluationsModule } from './modules/evaluations/evaluations.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { SalaryModule } from './modules/salary/salary.module';
 import { ScheduleModule } from './modules/schedule/schedule.module';
+import { FinanceAnalyticsModule } from './modules/finance-analytics/finance-analytics.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      envFilePath: ['.env', '.env.local'],
+      envFilePath: ['.env', '.env.local', 'api/.env', 'api/.env.local'],
     }),
     DatabaseModule,
     HealthModule,
@@ -33,6 +34,7 @@ import { ScheduleModule } from './modules/schedule/schedule.module';
     EvaluationsModule,
     DashboardModule,
     ScheduleModule,
+    FinanceAnalyticsModule,
   ],
 })
 export class AppModule {}

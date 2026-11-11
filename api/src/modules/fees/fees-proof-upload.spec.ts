@@ -1,3 +1,4 @@
+/// <reference types="jest" />
 import { BadRequestException, ForbiddenException, NotFoundException, InternalServerErrorException } from '@nestjs/common';
 import { S3StorageService } from '../../common/services/s3-storage.service';
 import { FeesService } from './fees.service';
@@ -8,8 +9,9 @@ jest.mock('@aws-sdk/client-s3', () => {
     S3Client: jest.fn().mockImplementation(() => ({
       send: jest.fn().mockResolvedValue({ $metadata: { httpStatusCode: 200 } }),
     })),
-    PutObjectCommand: jest.fn().mockImplementation((args) => args),
-    GetObjectCommand: jest.fn().mockImplementation((args) => args),
+    PutObjectCommand: jest.fn().mockImplementation((args: any) => args),
+    GetObjectCommand: jest.fn().mockImplementation((args: any) => args),
+    DeleteObjectCommand: jest.fn().mockImplementation((args: any) => args),
   };
 });
 

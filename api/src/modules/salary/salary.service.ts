@@ -3,6 +3,7 @@ import {
   NotFoundException,
   BadRequestException,
   ConflictException,
+  Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
 import { Prisma } from '@prisma/client';
@@ -14,12 +15,19 @@ import {
   ResolveExceptionDto,
   SalaryLedgerQueryDto,
   AccrueFixedSalaryDto,
+  AccrueFacultyMonthlySalaryDto,
   CreateSalaryAdjustmentDto,
 } from './dto/salary.dto';
-import { calculateStaffSettlement } from '../staff/staff-settlement.helper';
+import {
+  calculateStaffSettlement,
+  calculateMonthlySalaryProration,
+  StudentTier,
+} from '../staff/staff-settlement.helper';
 
 @Injectable()
 export class SalaryService {
+  private readonly logger = new Logger(SalaryService.name);
+
   constructor(private readonly prisma: PrismaService) {}
 
   // ==========================================
@@ -97,6 +105,444 @@ export class SalaryService {
       isApprovalRequired: updated.isApprovalRequired,
       updatedAt: updated.updatedAt,
     };
+  }
+
+  // ==========================================
+  // AMOUNT-BASED ENROLLMENT ACCRUAL & PAYMENT REALIZATION
+  // ==========================================
+
+  /**
+   * Accrues fixed staff compensation per student enrollment.
+   * Entitlement is fixed amount owed per enrolled student based on compensationRule.config[tier].value.
+   * Wraps in a Serializable transaction to avoid races, catching P2002 for idempotency.
+   */
+  async accrueForEnrollment(
+    params: {
+      studentId: string;
+      classId: string;
+      batchId?: string;
+      studentTier?: StudentTier;
+      enrollmentDate?: Date;
+      payPeriod?: string;
+    },
+    existingTx?: Prisma.TransactionClient,
+  ) {
+    const runWork = async (tx: Prisma.TransactionClient) => {
+      const {
+        studentId,
+        classId,
+        batchId,
+        enrollmentDate = new Date(),
+      } = params;
+
+      const payPeriod =
+        params.payPeriod ||
+        `${enrollmentDate.getFullYear()}-${String(enrollmentDate.getMonth() + 1).padStart(2, '0')}`;
+
+      // 0. Verify student eligibility: student must be active
+      if ((tx as any).student?.findUnique) {
+        const student = await (tx as any).student.findUnique({
+          where: { id: studentId },
+          select: { id: true, status: true },
+        });
+        if (student && ['WITHDRAWN', 'INACTIVE', 'DROPPED'].includes(student.status)) {
+          this.logger.debug(
+            `Student ${studentId} is not active (status: ${student.status}). Skipping faculty entitlement accrual.`,
+          );
+          return [];
+        }
+      }
+
+      // 1. Determine student tier if not provided
+      let studentTier: StudentTier = params.studentTier || 'ALL';
+      let studentEnrolledSubjectIds = new Set<string>();
+      let hasAllSubjectsBatchEnrollment = false;
+
+      if ((tx as any).studentBatchEnrollment?.findMany) {
+        const classEnrollments = await (tx as any).studentBatchEnrollment.findMany({
+          where: {
+            studentId,
+            isActive: true,
+            batch: { classId },
+          },
+          select: { subjectId: true },
+        });
+
+        if (Array.isArray(classEnrollments)) {
+          hasAllSubjectsBatchEnrollment = classEnrollments.some((e: any) => !e.subjectId);
+          classEnrollments.forEach((e: any) => {
+            if (e.subjectId) studentEnrolledSubjectIds.add(e.subjectId);
+          });
+        }
+      }
+
+      if (!params.studentTier) {
+        // Priority A: Inspect explicit student FeeInvoice and CourseFeeConfig
+        let explicitTierFound = false;
+        if ((tx as any).feeInvoice?.findFirst) {
+          const studentInvoice = await (tx as any).feeInvoice.findFirst({
+            where: { studentId, classId },
+            include: { courseFeeConfig: true },
+            orderBy: { createdAt: 'desc' },
+          });
+
+          if (studentInvoice?.courseFeeConfig) {
+            const cfg = studentInvoice.courseFeeConfig;
+            const allowedDiscounts = Array.isArray(cfg.allowedDiscounts)
+              ? (cfg.allowedDiscounts as any[])
+              : [];
+            const tierDiscount = allowedDiscounts.find(
+              (d: any) =>
+                d &&
+                (d.tier ||
+                  d.type === 'TWO_SUBJECTS_BUNDLE' ||
+                  d.type === 'SINGLE_SUBJECT' ||
+                  d.type === 'ALL_SUBJECTS_BUNDLE'),
+            );
+
+            if (
+              tierDiscount?.tier === 'TWO_SUBJECTS' ||
+              tierDiscount?.type === 'TWO_SUBJECTS_BUNDLE' ||
+              cfg.name?.toLowerCase().includes('2 subject') ||
+              cfg.name?.toLowerCase().includes('2 course')
+            ) {
+              studentTier = 'TWO_SUBJECTS';
+              explicitTierFound = true;
+            } else if (
+              tierDiscount?.tier === 'SINGLE_SUBJECT' ||
+              tierDiscount?.type === 'SINGLE_SUBJECT' ||
+              cfg.subjectId ||
+              cfg.name?.toLowerCase().includes('1 subject') ||
+              cfg.name?.toLowerCase().includes('1 course')
+            ) {
+              studentTier = 'SINGLE';
+              explicitTierFound = true;
+            } else if (
+              tierDiscount?.tier === 'ALL' ||
+              tierDiscount?.type === 'ALL_SUBJECTS_BUNDLE'
+            ) {
+              studentTier = 'ALL';
+              explicitTierFound = true;
+            }
+          }
+
+          if (!explicitTierFound && studentInvoice?.configurationSnapshot) {
+            const snapshot = studentInvoice.configurationSnapshot as any;
+            if (snapshot.tier) {
+              studentTier =
+                snapshot.tier === 'TWO_SUBJECTS'
+                  ? 'TWO_SUBJECTS'
+                  : snapshot.tier === 'SINGLE_SUBJECT' || snapshot.tier === 'SINGLE'
+                  ? 'SINGLE'
+                  : 'ALL';
+              explicitTierFound = true;
+            }
+          }
+        }
+
+        // Priority B: If no explicit invoice fee tier, determine from active enrolled subjects
+        if (!explicitTierFound) {
+          if (hasAllSubjectsBatchEnrollment || studentEnrolledSubjectIds.size >= 3 || studentEnrolledSubjectIds.size === 0) {
+            studentTier = 'ALL';
+          } else if (studentEnrolledSubjectIds.size === 2) {
+            studentTier = 'TWO_SUBJECTS';
+          } else if (studentEnrolledSubjectIds.size === 1) {
+            studentTier = 'SINGLE';
+          }
+        }
+      }
+
+      // 2. Find active teaching assignments for this class (effective at enroll date)
+      const assignments = await tx.staffCourseAssignment.findMany({
+        where: {
+          classId,
+          isActive: true,
+          effectiveFrom: { lte: enrollmentDate },
+          OR: [
+            { effectiveTo: null },
+            { effectiveTo: { gte: enrollmentDate } },
+          ],
+        },
+      });
+
+      const createdLedgers: any[] = [];
+
+      for (const assign of assignments) {
+        try {
+          // If the assignment is subject-specific:
+          // A student only generates allocations for faculty assigned to subjects they are enrolled in.
+          if (assign.subjectId) {
+            if (
+              !hasAllSubjectsBatchEnrollment &&
+              studentTier !== 'ALL' &&
+              studentEnrolledSubjectIds.size > 0 &&
+              !studentEnrolledSubjectIds.has(assign.subjectId)
+            ) {
+              this.logger.debug(
+                `Student ${studentId} is not enrolled in subject ${assign.subjectId} for staff ${assign.userId}. Skipping accrual.`,
+              );
+              continue;
+            }
+          }
+          // Pre-check idempotency guard (PostgreSQL null-uniqueness resilient)
+          if ((tx as any).staffAccrualLedger?.findFirst) {
+            const existingAccrual = await (tx as any).staffAccrualLedger.findFirst({
+              where: {
+                staffId: assign.userId,
+                assignmentId: assign.id,
+                studentId,
+                payPeriod,
+                type: 'ACCRUAL',
+              },
+              select: { id: true, amount: true },
+            });
+
+            if (existingAccrual) {
+              this.logger.debug(
+                `StaffAccrualLedger already exists for staff ${assign.userId}, student ${studentId}, period ${payPeriod}. Skipping duplicate accrual.`,
+              );
+              continue;
+            }
+          }
+
+          const calc = calculateStaffSettlement({
+            compensationRule: assign.compensationRule,
+            studentTier,
+            collectedAmount: new Decimal(0),
+          });
+
+          const ledger = await tx.staffAccrualLedger.create({
+            data: {
+              staffId: assign.userId,
+              assignmentId: assign.id,
+              studentId,
+              invoiceId: null,
+              payPeriod,
+              type: 'ACCRUAL',
+              tier: calc.tierUsed,
+              amount: calc.staffPoolAmount,
+              studentFeePaid: new Decimal(0),
+              occurredAt: enrollmentDate,
+              note: `Accrual for ${assign.role || 'TEACHER'} in course ${classId} (${payPeriod})`,
+            },
+          });
+          createdLedgers.push(ledger);
+        } catch (err: any) {
+          // Idempotency: catch P2002 unique constraint violation and skip
+          if (err.code === 'P2002') {
+            this.logger.debug(
+              `StaffAccrualLedger already exists for staff ${assign.userId}, student ${studentId}, period ${payPeriod}. Skipping.`,
+            );
+            continue;
+          }
+          throw err;
+        }
+      }
+
+      return createdLedgers;
+    };
+
+    if (existingTx) {
+      return runWork(existingTx);
+    } else {
+      return this.prisma.$transaction(runWork, {
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      });
+    }
+  }
+
+  /**
+   * Updates StaffAccrualLedger with studentFeePaid when payment is allocated.
+   * If payment is bounced / reversed, creates a REVERSAL ledger entry with amount = 0 (entitlement unchanged).
+   * Emits audit log events PAYMENT_RECEIVED_FOR_STAFF_ACCRUAL and REVERSAL_LOGGED.
+   */
+  async accrueForPayment(
+    params: {
+      paymentId: string;
+      studentId: string;
+      allocatedAmount: Decimal | number;
+      invoiceId?: string;
+      isReversal?: boolean;
+      reversalReason?: string;
+      payPeriod?: string;
+    },
+    existingTx?: Prisma.TransactionClient,
+  ) {
+    const runWork = async (tx: Prisma.TransactionClient) => {
+      const {
+        paymentId,
+        studentId,
+        allocatedAmount,
+        invoiceId,
+        isReversal = false,
+        reversalReason,
+      } = params;
+
+      const allocDecimal = new Decimal(allocatedAmount);
+
+      const where: Prisma.StaffAccrualLedgerWhereInput = {
+        studentId,
+        type: 'ACCRUAL',
+      };
+      if (params.payPeriod) {
+        where.payPeriod = params.payPeriod;
+      }
+
+      let existingAccruals = await tx.staffAccrualLedger.findMany({
+        where,
+        orderBy: { occurredAt: 'desc' },
+      });
+
+      // If no accruals exist yet for this student/payPeriod when payment arrives, auto-accrue from active enrollments
+      if (existingAccruals.length === 0 && !isReversal && (tx as any).studentBatchEnrollment?.findMany) {
+        const activeEnrollments = await (tx as any).studentBatchEnrollment.findMany({
+          where: { studentId, isActive: true },
+          include: { batch: true },
+        });
+        if (Array.isArray(activeEnrollments) && activeEnrollments.length > 0) {
+          const targetPayPeriod =
+            params.payPeriod ||
+            `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
+          const distinctClassIds = Array.from(
+            new Set(activeEnrollments.map((e: any) => e.batch?.classId).filter(Boolean)),
+          ) as string[];
+          for (const classId of distinctClassIds) {
+            await this.accrueForEnrollment(
+              {
+                studentId,
+                classId,
+                payPeriod: targetPayPeriod,
+              },
+              tx,
+            );
+          }
+          existingAccruals = await tx.staffAccrualLedger.findMany({
+            where: {
+              ...where,
+              payPeriod: targetPayPeriod,
+            },
+            orderBy: { occurredAt: 'desc' },
+          });
+        }
+      }
+
+      if (isReversal) {
+        // Create REVERSAL ledger entry with amount = 0 (entitlement unchanged)
+        const createdReversals: any[] = [];
+        for (const ledger of existingAccruals) {
+          try {
+            // Check for duplicate reversal request on same payment
+            if ((tx as any).staffAccrualLedger?.findFirst) {
+              const alreadyReversed = await (tx as any).staffAccrualLedger.findFirst({
+                where: {
+                  staffId: ledger.staffId,
+                  studentId: ledger.studentId,
+                  type: 'REVERSAL',
+                  note: { contains: paymentId },
+                },
+              });
+              if (alreadyReversed) {
+                this.logger.debug(
+                  `Payment ${paymentId} already reversed for staff ${ledger.staffId}. Skipping duplicate reversal.`,
+                );
+                continue;
+              }
+            }
+
+            const currentPaid = new Decimal(ledger.studentFeePaid || 0);
+            const decrementedPaid = Decimal.max(0, currentPaid.sub(allocDecimal));
+
+            // Decrement realized collection reference on accrual ledger
+            await tx.staffAccrualLedger.update({
+              where: { id: ledger.id },
+              data: { studentFeePaid: decrementedPaid },
+            });
+
+            const reversal = await tx.staffAccrualLedger.create({
+              data: {
+                staffId: ledger.staffId,
+                assignmentId: ledger.assignmentId,
+                studentId: ledger.studentId,
+                invoiceId: invoiceId || ledger.invoiceId,
+                payPeriod: ledger.payPeriod,
+                type: 'REVERSAL',
+                tier: ledger.tier,
+                amount: new Decimal(0), // Business Rule 4: Entitlement remains unchanged
+                studentFeePaid: new Decimal(0),
+                occurredAt: new Date(),
+                note: reversalReason
+                  ? `${reversalReason} (Payment: ${paymentId})`
+                  : `Payment bounced / reversed (Payment: ${paymentId})`,
+              },
+            });
+            createdReversals.push(reversal);
+
+            await tx.auditLog.create({
+              data: {
+                action: 'REVERSAL_LOGGED',
+                entityType: 'StaffAccrualLedger',
+                entityId: ledger.id,
+                details: {
+                  paymentId,
+                  studentId: ledger.studentId,
+                  staffId: ledger.staffId,
+                  reversalReason,
+                  amount: 0,
+                  entitlementPreserved: ledger.amount.toNumber(),
+                  previousFeePaid: currentPaid.toNumber(),
+                  newFeePaid: decrementedPaid.toNumber(),
+                },
+              },
+            });
+          } catch (err: any) {
+            if (err.code === 'P2002') continue;
+            throw err;
+          }
+        }
+        return { reversals: createdReversals };
+      } else {
+        // Payment allocation: Update studentFeePaid on existing ACCRUAL ledgers
+        const updatedLedgers: any[] = [];
+        for (const ledger of existingAccruals) {
+          const currentPaid = new Decimal(ledger.studentFeePaid || 0);
+          const newPaid = currentPaid.add(allocDecimal);
+
+          const updated = await tx.staffAccrualLedger.update({
+            where: { id: ledger.id },
+            data: {
+              studentFeePaid: newPaid,
+              invoiceId: invoiceId || ledger.invoiceId,
+            },
+          });
+          updatedLedgers.push(updated);
+
+          await tx.auditLog.create({
+            data: {
+              action: 'PAYMENT_RECEIVED_FOR_STAFF_ACCRUAL',
+              entityType: 'StaffAccrualLedger',
+              entityId: ledger.id,
+              details: {
+                paymentId,
+                studentId: ledger.studentId,
+                staffId: ledger.staffId,
+                allocatedAmount: allocDecimal.toNumber(),
+                previousFeePaid: currentPaid.toNumber(),
+                newFeePaid: newPaid.toNumber(),
+              },
+            },
+          });
+        }
+        return { updated: updatedLedgers };
+      }
+    };
+
+    if (existingTx) {
+      return runWork(existingTx);
+    } else {
+      return this.prisma.$transaction(runWork, {
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      });
+    }
   }
 
   // ==========================================
@@ -708,6 +1154,466 @@ export class SalaryService {
   }
 
   // ==========================================
+  // EXECUTIVE FINANCE ANALYTICS (SUPER ADMIN)
+  // ==========================================
+
+  async getFinanceExecutiveAnalytics() {
+    const now = new Date();
+
+    // 1. Fee Invoices Aggregates
+    const invoiceAgg = await this.prisma.feeInvoice.aggregate({
+      where: { status: { not: 'CANCELLED' } },
+      _sum: {
+        totalAmount: true,
+        paidAmount: true,
+        balanceAmount: true,
+        discountAmount: true,
+      },
+      _count: { id: true },
+    });
+
+    const overdueAgg = await this.prisma.feeInvoice.aggregate({
+      where: {
+        status: { in: ['UNPAID', 'PARTIAL'] },
+        dueDate: { lt: now },
+      },
+      _sum: { balanceAmount: true },
+      _count: { id: true },
+    });
+
+    // 2. Payments & Collections
+    const payments = await this.prisma.payment.findMany({
+      orderBy: { paidAt: 'desc' },
+    });
+
+    let totalCollected = new Decimal(0);
+    let totalReversed = new Decimal(0);
+    let cashCollected = new Decimal(0);
+    let upiCollected = new Decimal(0);
+    let otherCollected = new Decimal(0);
+    let cashCount = 0;
+    let upiCount = 0;
+    let otherCount = 0;
+
+    for (const p of payments) {
+      if (p.status === 'COMPLETED') {
+        totalCollected = totalCollected.add(p.amount);
+        if (p.paymentMethod === 'CASH') {
+          cashCollected = cashCollected.add(p.amount);
+          cashCount++;
+        } else if (p.paymentMethod === 'UPI') {
+          upiCollected = upiCollected.add(p.amount);
+          upiCount++;
+        } else {
+          otherCollected = otherCollected.add(p.amount);
+          otherCount++;
+        }
+      } else if (p.status === 'REVERSED') {
+        totalReversed = totalReversed.add(p.amount);
+      }
+    }
+
+    // 3. Staff Salary Ledgers & Liabilities
+    const activeLedgers = await this.prisma.staffSalaryLedger.findMany({
+      where: { isReversed: false },
+    });
+
+    const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const activeAccruals = await this.prisma.staffAccrualLedger.findMany({
+      where: {
+        type: 'ACCRUAL',
+        payPeriod: currentMonth,
+      },
+    });
+
+    let facultyAccrued = new Decimal(0);
+    let facultyPaid = new Decimal(0);
+    let fixedAccrued = new Decimal(0);
+    let fixedPaid = new Decimal(0);
+    let academyShareAccrued = new Decimal(0);
+
+    const ledgerStaffIds = new Set<string>();
+
+    for (const l of activeLedgers) {
+      ledgerStaffIds.add(l.userId);
+      if (l.compensationModel === 'FIXED_SALARY') {
+        fixedAccrued = fixedAccrued.add(l.earnedAmount);
+        if (l.status === 'PAID') {
+          fixedPaid = fixedPaid.add(l.earnedAmount);
+        }
+      } else {
+        facultyAccrued = facultyAccrued.add(l.earnedAmount);
+        academyShareAccrued = academyShareAccrued.add(l.academyShareAmount);
+        if (l.status === 'PAID') {
+          facultyPaid = facultyPaid.add(l.earnedAmount);
+        }
+      }
+    }
+
+    // Include any faculty/staff from activeAccruals who don't have activeLedgers yet
+    for (const a of activeAccruals) {
+      if (!ledgerStaffIds.has(a.staffId)) {
+        facultyAccrued = facultyAccrued.add(a.amount);
+      }
+    }
+
+    const totalStaffAccrued = facultyAccrued.add(fixedAccrued);
+    const totalStaffPaid = facultyPaid.add(fixedPaid);
+    const pendingStaffSettlement = totalStaffAccrued.sub(totalStaffPaid);
+
+    // 4. Expenses & Net Profitability
+    const totalExpensesPaid = totalStaffPaid.add(totalReversed);
+    const netAcademyProfit = totalCollected.sub(totalStaffAccrued).sub(totalReversed);
+    const grossInvoiced = invoiceAgg._sum.totalAmount || new Decimal(0);
+    const grossBalance = invoiceAgg._sum.balanceAmount || new Decimal(0);
+    const totalDiscounts = invoiceAgg._sum.discountAmount || new Decimal(0);
+
+    const profitMargin = totalCollected.gt(0)
+      ? Math.round((netAcademyProfit.toNumber() / totalCollected.toNumber()) * 100)
+      : 0;
+
+    const collectionEfficiency = grossInvoiced.gt(0)
+      ? Math.round((totalCollected.toNumber() / grossInvoiced.toNumber()) * 100)
+      : 0;
+
+    // 5. Monthly trend calculation (last 6 months)
+    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const monthlyMap = new Map<string, { month: string; collected: number; payouts: number }>();
+
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const key = `${monthNames[d.getMonth()]} ${d.getFullYear()}`;
+      monthlyMap.set(key, { month: key, collected: 0, payouts: 0 });
+    }
+
+    for (const p of payments) {
+      if (p.status === 'COMPLETED' && p.paidAt) {
+        const d = new Date(p.paidAt);
+        const key = `${monthNames[d.getMonth()]} ${d.getFullYear()}`;
+        if (monthlyMap.has(key)) {
+          monthlyMap.get(key)!.collected += Number(p.amount);
+        }
+      }
+    }
+
+    for (const l of activeLedgers) {
+      if (l.status === 'PAID' && l.payoutDate) {
+        const d = new Date(l.payoutDate);
+        const key = `${monthNames[d.getMonth()]} ${d.getFullYear()}`;
+        if (monthlyMap.has(key)) {
+          monthlyMap.get(key)!.payouts += Number(l.earnedAmount);
+        }
+      }
+    }
+
+    // 6. Course Revenue Breakdown
+    const classes = await this.prisma.class.findMany({
+      include: {
+        feeInvoices: {
+          where: { status: { not: 'CANCELLED' } },
+        },
+      },
+    });
+
+    const courseBreakdown = classes.map((c) => {
+      let invoiced = 0;
+      let paid = 0;
+      let balance = 0;
+      for (const inv of c.feeInvoices) {
+        invoiced += Number(inv.totalAmount);
+        paid += Number(inv.paidAmount);
+        balance += Number(inv.balanceAmount);
+      }
+      return {
+        classId: c.id,
+        className: c.name,
+        code: c.code,
+        invoiced,
+        paid,
+        balance,
+        collectionRate: invoiced > 0 ? Math.round((paid / invoiced) * 100) : 0,
+      };
+    });
+
+    // 7. Recent Payouts
+    const recentPayouts = await this.prisma.staffSalaryPayout.findMany({
+      take: 6,
+      orderBy: { approvedAt: 'desc' },
+      include: {
+        user: { select: { firstName: true, lastName: true } },
+      },
+    });
+
+    return {
+      kpis: {
+        totalCollected: totalCollected.toNumber(),
+        netCollections: totalCollected.sub(totalReversed).toNumber(),
+        totalInvoiced: grossInvoiced.toNumber(),
+        totalOutstanding: grossBalance.toNumber(),
+        overdueAmount: (overdueAgg._sum.balanceAmount || new Decimal(0)).toNumber(),
+        totalDiscounts: totalDiscounts.toNumber(),
+        totalReversals: totalReversed.toNumber(),
+
+        // Staff Settlements
+        facultyAccrued: facultyAccrued.toNumber(),
+        facultyPaid: facultyPaid.toNumber(),
+        fixedAccrued: fixedAccrued.toNumber(),
+        fixedPaid: fixedPaid.toNumber(),
+        totalStaffAccrued: totalStaffAccrued.toNumber(),
+        totalStaffPaid: totalStaffPaid.toNumber(),
+        pendingStaffSettlement: pendingStaffSettlement.toNumber(),
+        academyShareAccrued: academyShareAccrued.toNumber(),
+
+        // Expenses & Profit
+        totalExpensesPaid: totalExpensesPaid.toNumber(),
+        netAcademyProfit: netAcademyProfit.toNumber(),
+        profitMargin,
+        collectionEfficiency,
+
+        invoicesCount: invoiceAgg._count.id || 0,
+        paymentsCount: payments.filter((p) => p.status === 'COMPLETED').length,
+        overdueCount: overdueAgg._count.id || 0,
+      },
+      paymentMethods: {
+        cash: { amount: cashCollected.toNumber(), count: cashCount },
+        upi: { amount: upiCollected.toNumber(), count: upiCount },
+        other: { amount: otherCollected.toNumber(), count: otherCount },
+      },
+      monthlyTrends: Array.from(monthlyMap.values()),
+      courseBreakdown,
+      recentPayouts: recentPayouts.map((p) => {
+        const cleanLast = p.user.lastName && p.user.lastName !== '.' && p.user.lastName !== '-' ? p.user.lastName : '';
+        return {
+          id: p.id,
+          payoutNumber: p.payoutNumber,
+          staffName: [p.user.firstName, cleanLast].filter(Boolean).join(' ').trim(),
+          amount: Number(p.totalAmount),
+          status: p.status,
+          method: p.paymentMethod,
+          date: p.paidAt || p.approvedAt,
+        };
+      }),
+    };
+  }
+
+  // ==========================================
+  // STAFF SETTLEMENTS OVERVIEW
+  // ==========================================
+
+  async getStaffSettlementsOverview() {
+    const now = new Date();
+    const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+
+    const staffUsers = await this.prisma.user.findMany({
+      where: {
+        status: 'ACTIVE',
+        OR: [
+          { userRoles: { some: { role: { name: { in: ['TEACHER', 'STAFF', 'ACADEMY_ADMIN', 'ACCOUNTANT'] } } } } },
+          { staffSalaryLedgers: { some: {} } },
+          { staffAssignments: { some: {} } },
+          { fixedSalaryAmount: { gt: 0 } },
+        ],
+      },
+      include: {
+        userRoles: { include: { role: true } },
+        staffAssignments: {
+          include: { class: true, subject: true },
+        },
+      },
+      orderBy: { firstName: 'asc' },
+    });
+
+    const activeLedgers = await this.prisma.staffSalaryLedger.findMany({
+      where: { isReversed: false },
+    });
+
+    const activeAccruals = await this.prisma.staffAccrualLedger.findMany({
+      where: {
+        type: 'ACCRUAL',
+        payPeriod: currentMonth,
+      },
+    });
+
+    const userLedgerMap = new Map<
+      string,
+      { accrued: Decimal; paid: Decimal; pending: Decimal; count: number; models: Set<string> }
+    >();
+
+    for (const l of activeLedgers) {
+      if (!userLedgerMap.has(l.userId)) {
+        userLedgerMap.set(l.userId, {
+          accrued: new Decimal(0),
+          paid: new Decimal(0),
+          pending: new Decimal(0),
+          count: 0,
+          models: new Set(),
+        });
+      }
+      const agg = userLedgerMap.get(l.userId)!;
+      agg.accrued = agg.accrued.add(l.earnedAmount);
+      agg.count += 1;
+      agg.models.add(l.compensationModel);
+      if (l.status === 'PAID') {
+        agg.paid = agg.paid.add(l.earnedAmount);
+      } else {
+        agg.pending = agg.pending.add(l.earnedAmount);
+      }
+    }
+
+    return staffUsers.map((u) => {
+      const agg = userLedgerMap.get(u.id) || {
+        accrued: new Decimal(0),
+        paid: new Decimal(0),
+        pending: new Decimal(0),
+        count: 0,
+        models: new Set<string>(),
+      };
+
+      const userJoinDate = u.dateOfJoining || u.compensationEffectiveDate || u.createdAt;
+      let isProrated = false;
+      let daysWorked = 30;
+      let daysInMonth = 30;
+      let fullSalaryAmount = u.fixedSalaryAmount ? Number(u.fixedSalaryAmount) : 0;
+
+      // Check accrual ledgers and joining date proration
+      const userAccruals = activeAccruals.filter((a) => a.staffId === u.id);
+      if (userAccruals.length > 0) {
+        const accruedSum = userAccruals.reduce((sum, a) => sum + Number(a.amount || 0), 0);
+        if (accruedSum > agg.accrued.toNumber()) {
+          const diff = new Decimal(accruedSum).sub(agg.accrued);
+          agg.accrued = new Decimal(accruedSum);
+          agg.pending = agg.pending.add(diff);
+        }
+      } else if (agg.accrued.toNumber() === 0 && u.fixedSalaryAmount && Number(u.fixedSalaryAmount) > 0) {
+        const proration = calculateMonthlySalaryProration(
+          Number(u.fixedSalaryAmount),
+          userJoinDate,
+          currentMonth,
+        );
+        agg.accrued = new Decimal(proration.proratedSalary);
+        agg.pending = new Decimal(proration.proratedSalary);
+        isProrated = proration.isProrated;
+        daysWorked = proration.daysWorked;
+        daysInMonth = proration.daysInMonth;
+        fullSalaryAmount = proration.fullMonthlySalary;
+      }
+
+      const model =
+        agg.models.size > 0
+          ? Array.from(agg.models).join(', ')
+          : u.compensationModel || 'REVENUE_SHARING';
+
+      const roles = u.userRoles.map((r) => r.role.name);
+      const cleanLast = u.lastName && u.lastName !== '.' && u.lastName !== '-' ? u.lastName : '';
+      const displayName = [u.firstName, cleanLast].filter(Boolean).join(' ').trim() || u.email;
+
+      return {
+        staffId: u.id,
+        name: displayName,
+        email: u.email,
+        roles,
+        designation: u.designation || (roles.includes('TEACHER') ? 'Faculty Member' : 'Academy Staff'),
+        compensationModel: model,
+        fixedSalaryAmount: u.fixedSalaryAmount ? Number(u.fixedSalaryAmount) : null,
+        assignedCoursesCount: u.staffAssignments.length,
+        totalEarned: agg.accrued.toNumber(),
+        totalPaid: agg.paid.toNumber(),
+        pendingSettlement: agg.pending.toNumber(),
+        unsettledEntriesCount: activeLedgers.filter((l) => l.userId === u.id && l.status !== 'PAID').length,
+        hasPendingSettlement: agg.pending.gt(0),
+        dateOfJoining: userJoinDate,
+        isProrated,
+        daysWorked,
+        daysInMonth,
+        fullSalaryAmount,
+      };
+    });
+  }
+
+  // ==========================================
+  // ALL PAYOUTS LIST
+  // ==========================================
+
+  async getAllPayouts(query?: { status?: string; staffId?: string }) {
+    const where: any = {};
+    if (query?.status) where.status = query.status;
+    if (query?.staffId) where.userId = query.staffId;
+
+    const payouts = await this.prisma.staffSalaryPayout.findMany({
+      where,
+      orderBy: { approvedAt: 'desc' },
+      include: {
+        user: { select: { id: true, firstName: true, lastName: true, email: true } },
+        approvedBy: { select: { firstName: true, lastName: true, email: true } },
+        paidBy: { select: { firstName: true, lastName: true, email: true } },
+        ledgerEntries: {
+          select: {
+            id: true,
+            receiptNumber: true,
+            payPeriod: true,
+            compensationModel: true,
+            earnedAmount: true,
+          },
+        },
+      },
+    });
+
+    return payouts.map((p) => ({
+      id: p.id,
+      payoutNumber: p.payoutNumber,
+      staffId: p.userId,
+      staffName: `${p.user.firstName} ${p.user.lastName}`,
+      staffEmail: p.user.email,
+      totalAmount: Number(p.totalAmount),
+      status: p.status,
+      paymentMethod: p.paymentMethod,
+      reference: p.reference,
+      notes: p.notes,
+      approvedAt: p.approvedAt,
+      approvedBy: `${p.approvedBy.firstName} ${p.approvedBy.lastName}`,
+      paidAt: p.paidAt,
+      paidBy: p.paidBy ? `${p.paidBy.firstName} ${p.paidBy.lastName}` : null,
+      entriesCount: p.ledgerEntries.length,
+    }));
+  }
+
+  // ==========================================
+  // DIRECT SETTLE STAFF (ONE-CLICK)
+  // ==========================================
+
+  async directSettleStaff(
+    dto: {
+      staffId: string;
+      paymentMethod?: string;
+      reference?: string;
+      notes?: string;
+      ledgerIds?: string[];
+    },
+    actorId: string,
+  ) {
+    const payout = await this.createPayout(
+      {
+        staffId: dto.staffId,
+        paymentMethod: dto.paymentMethod,
+        reference: dto.reference,
+        notes: dto.notes,
+        ledgerIds: dto.ledgerIds,
+      },
+      actorId,
+    );
+
+    return this.processPayout(
+      payout.id,
+      {
+        action: 'PAY',
+        transactionRef: dto.reference,
+        notes: dto.notes,
+      },
+      actorId,
+    );
+  }
+
+  // ==========================================
   // LEDGER AUDIT LIST WITH FILTERS
   // ==========================================
 
@@ -1075,6 +1981,88 @@ export class SalaryService {
         status: e.status,
       })),
       skipped: skippedStaff,
+    };
+  }
+
+  /**
+   * Recurrent monthly/term billing period accrual for teaching faculty.
+   * Scans active enrolled students and creates idempotent StaffAccrualLedger rows.
+   */
+  async accrueMonthlyFacultyEntitlements(
+    dto: AccrueFacultyMonthlySalaryDto,
+    actorId?: string,
+  ) {
+    const { payPeriod, classId, subjectId } = dto;
+
+    const whereEnrollment: any = {
+      isActive: true,
+      student: {
+        status: { in: ['ACTIVE', 'ENROLLED'] },
+      },
+    };
+    if (classId) {
+      whereEnrollment.batch = { classId };
+    }
+    if (subjectId) {
+      whereEnrollment.subjectId = subjectId;
+    }
+
+    const activeEnrollments = await this.prisma.studentBatchEnrollment.findMany({
+      where: whereEnrollment,
+      include: {
+        student: true,
+        batch: { include: { class: true } },
+      },
+    });
+
+    const accrued: any[] = [];
+    const skipped: any[] = [];
+
+    for (const enroll of activeEnrollments) {
+      const clsId = enroll.batch?.classId;
+      if (!clsId) continue;
+
+      const results = await this.accrueForEnrollment({
+        studentId: enroll.studentId,
+        classId: clsId,
+        batchId: enroll.batchId,
+        payPeriod,
+      });
+
+      if (results.length > 0) {
+        accrued.push(...results);
+      } else {
+        skipped.push({ studentId: enroll.studentId, classId: clsId });
+      }
+    }
+
+    if (actorId && accrued.length > 0) {
+      await this.prisma.auditLog.create({
+        data: {
+          actorId,
+          action: 'FACULTY_MONTHLY_ENTITLEMENTS_ACCRUED',
+          entityType: 'StaffAccrualLedger',
+          entityId: payPeriod,
+          details: {
+            payPeriod,
+            classId,
+            subjectId,
+            accruedCount: accrued.length,
+            totalAccruedAmount: accrued.reduce(
+              (sum, e) => sum + Number(e.amount),
+              0,
+            ),
+          },
+        },
+      });
+    }
+
+    return {
+      message: `Monthly faculty accrual processed for period ${payPeriod}`,
+      payPeriod,
+      accruedCount: accrued.length,
+      skippedCount: skipped.length,
+      accrued,
     };
   }
 

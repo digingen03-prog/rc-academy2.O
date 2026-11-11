@@ -23,6 +23,7 @@ import {
 import { InvoiceStatus, PaymentStatus, FeeAdjustmentType, Prisma } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { SalaryService } from '../salary/salary.service';
+import { FeesProofService } from './fees-proof.service';
 
 @Injectable()
 export class FeesService {
@@ -32,6 +33,10 @@ export class FeesService {
     private readonly prisma: PrismaService,
     private readonly salaryService: SalaryService,
     private readonly s3StorageService: S3StorageService,
+    private readonly feesProofService: FeesProofService = new FeesProofService(
+      prisma,
+      s3StorageService,
+    ),
   ) {}
 
   // ==========================================
@@ -559,25 +564,46 @@ export class FeesService {
     let skippedExisting = 0;
 
     for (const q of qualifyingStudents) {
-      const existing = await this.prisma.feeInvoice.findFirst({
+      const existingInvoices = await this.prisma.feeInvoice.findMany({
         where: {
           studentId: q.studentId,
-          billingPeriod: config.billingPeriod,
-          OR: [
-            { courseFeeConfigId: config.id },
-            { enrollmentId: q.primaryEnrollment.id },
-            {
-              classId: q.primaryEnrollment.batch.classId,
-              ...(tier === 'SINGLE_SUBJECT' && config.subjectId ? { subjectId: config.subjectId } : {}),
-            },
-          ],
+          classId: q.primaryEnrollment.batch.classId,
           status: { not: InvoiceStatus.CANCELLED },
         },
+        include: { allocations: true },
+        orderBy: { createdAt: 'asc' },
       });
 
-      if (existing) {
+      const hasPaidInvoice = existingInvoices.some(
+        (inv) => inv.paidAmount.gt(0) || inv.allocations.length > 0,
+      );
+      if (hasPaidInvoice) {
         skippedExisting++;
         continue;
+      }
+
+      // If student already has unpaid invoices for this class (e.g. duplicate per-subject invoices or outdated amount),
+      // remove extra unpaid invoices and update or replace so there is strictly 1 invoice matching the Fee Rule!
+      if (existingInvoices.length > 0) {
+        const netPayable = Decimal.max(0, config.amount.sub(discountAmount));
+        const primaryExisting = existingInvoices[0];
+
+        if (
+          existingInvoices.length === 1 &&
+          primaryExisting.courseFeeConfigId === config.id &&
+          primaryExisting.totalAmount.eq(config.amount) &&
+          primaryExisting.balanceAmount.eq(netPayable)
+        ) {
+          skippedExisting++;
+          continue;
+        }
+
+        // Delete all unpaid existing invoices for this class so we can create a clean single Fee Rule invoice
+        for (const oldInv of existingInvoices) {
+          await this.prisma.feeAdjustment.deleteMany({ where: { invoiceId: oldInv.id } });
+          await this.prisma.feeInvoiceLine.deleteMany({ where: { invoiceId: oldInv.id } });
+          await this.prisma.feeInvoice.delete({ where: { id: oldInv.id } });
+        }
       }
 
       const dueDate = new Date();
@@ -690,9 +716,9 @@ export class FeesService {
       if (singleSubMatch) return singleSubMatch;
     }
 
-    // If student has all subjects (or subCount not specified), match ALL tier rule
-    if (subCount >= 3 || subCount === 0) {
-      const allMatch = configs.find((c) => {
+    // Helper to find the Standard's general/all-subjects Fee Rule
+    const findStandardGeneralRule = () =>
+      configs.find((c) => {
         if (c.subjectId) return false;
         if (
           c.name.toLowerCase().includes('2 subject') ||
@@ -714,13 +740,19 @@ export class FeesService {
           );
           if (t) return false;
         }
-        return true;
-      });
+        return !c.batchId || !params.batchId || c.batchId === params.batchId;
+      }) ||
+      configs.find((c) => !c.subjectId);
+
+    // If student has all subjects (or subCount not specified), match ALL tier rule
+    if (subCount >= 3 || subCount === 0) {
+      const allMatch = findStandardGeneralRule();
       if (allMatch) return allMatch;
     }
 
-    // Do NOT mix tiers: if a 1-subject or 2-subject student has no tier rule configured, do not bill standard full fee
-    return null;
+    // Fallback to the Standard's general Fee Rule (or primary configured rule for this Standard)
+    // so students always follow the configured Standard Fee Rule amount without auto-calculating per subject
+    return findStandardGeneralRule() || configs[0] || null;
   }
 
   // ==========================================
@@ -982,24 +1014,44 @@ export class FeesService {
       throw new NotFoundException(`Enrollment ${enrollmentId} not found`);
     }
 
-    // Check duplicate billing
-    const existing = await this.prisma.feeInvoice.findFirst({
-      where: {
-        enrollmentId,
-        billingPeriod,
-        status: { not: InvoiceStatus.CANCELLED },
-      },
-    });
-    if (existing) {
-      return existing;
-    }
+    const studentId = enrollment.studentId;
+    const classId = enrollment.batch.classId;
 
-    // Resolve fee config
+    // Fetch ALL active enrollments for this student in this Standard (classId)
+    // so we bill ONE invoice per Standard following the Fee Rule — never once per subject!
+    const allClassEnrollments = await this.prisma.studentBatchEnrollment.findMany({
+      where: {
+        studentId,
+        isActive: true,
+        batch: { classId },
+      },
+      include: {
+        batch: {
+          include: {
+            class: { include: { academicYear: true } },
+          },
+        },
+        subject: true,
+      },
+      orderBy: { startDate: 'asc' },
+    });
+
+    const activeEnrollments = allClassEnrollments.length > 0 ? allClassEnrollments : [enrollment];
+    const primaryEn = activeEnrollments[0];
+    const subjectIds = Array.from(
+      new Set(activeEnrollments.map((e) => e.subjectId).filter(Boolean) as string[]),
+    );
+    const enrolledSubjectNames = Array.from(
+      new Set(activeEnrollments.map((e) => e.subject?.name).filter(Boolean) as string[]),
+    );
+
+    // Resolve the configured Fee Rule for this Standard and student's enrolled subject count
     const config = await this.resolveFeeForEnrollment({
-      classId: enrollment.batch.classId,
-      batchId: enrollment.batchId,
-      subjectId: enrollment.subjectId || undefined,
-      academicYearId: enrollment.batch.class.academicYearId,
+      classId,
+      batchId: primaryEn.batchId,
+      subjectId: subjectIds.length === 1 ? subjectIds[0] : undefined,
+      academicYearId: primaryEn.batch.class.academicYearId,
+      enrolledSubjectCount: subjectIds.length,
     });
 
     if (!config) {
@@ -1009,23 +1061,86 @@ export class FeesService {
       return null;
     }
 
+    const effectiveBillingPeriod = config.billingPeriod || billingPeriod || 'MONTHLY';
+
+    // Extract any configured package discount on the Fee Rule
+    let discountAmount = 0;
+    if (Array.isArray(config.allowedDiscounts)) {
+      const bundleDisc = (config.allowedDiscounts as any[]).find(
+        (d: any) =>
+          d &&
+          (d.type === 'ALL_SUBJECTS_BUNDLE' ||
+            d.type === 'TWO_SUBJECTS_BUNDLE' ||
+            d.type === 'SELECTED_SUBJECTS_BUNDLE' ||
+            d.type === 'SINGLE_SUBJECT' ||
+            d.type === 'BUNDLE_OFFER' ||
+            d.name?.includes('Discount') ||
+            d.name?.includes('Offer') ||
+            Number(d.amount) > 0),
+      );
+      if (bundleDisc?.amount) {
+        discountAmount = Number(bundleDisc.amount) || 0;
+      }
+    }
+
+    // Check existing active invoices for this student + Standard (classId)
+    const existingClassInvoices = await this.prisma.feeInvoice.findMany({
+      where: {
+        studentId,
+        classId,
+        status: { not: InvoiceStatus.CANCELLED },
+      },
+      include: { allocations: true },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    if (existingClassInvoices.length > 0) {
+      const hasPaid = existingClassInvoices.some(
+        (inv) => inv.paidAmount.gt(0) || inv.allocations.length > 0,
+      );
+      if (hasPaid) {
+        return existingClassInvoices[0];
+      }
+
+      const netPayable = Decimal.max(0, config.amount.sub(discountAmount));
+      const firstInv = existingClassInvoices[0];
+      if (
+        existingClassInvoices.length === 1 &&
+        firstInv.courseFeeConfigId === config.id &&
+        firstInv.totalAmount.eq(config.amount) &&
+        firstInv.balanceAmount.eq(netPayable)
+      ) {
+        return firstInv;
+      }
+
+      // Remove duplicate or outdated unpaid invoices for this Standard before creating the single consolidated Standard invoice
+      for (const oldInv of existingClassInvoices) {
+        await this.prisma.feeAdjustment.deleteMany({ where: { invoiceId: oldInv.id } });
+        await this.prisma.feeInvoiceLine.deleteMany({ where: { invoiceId: oldInv.id } });
+        await this.prisma.feeInvoice.delete({ where: { id: oldInv.id } });
+      }
+    }
+
     const dueDate = new Date();
     dueDate.setDate(dueDate.getDate() + 30); // 30 days due date default
 
-    const description = `${enrollment.batch.class.name} - ${enrollment.batch.name}${
-      enrollment.subject ? ` (${enrollment.subject.name})` : ''
-    } [${billingPeriod}]`;
+    const scopeSuffix =
+      enrolledSubjectNames.length > 0
+        ? ` (${enrolledSubjectNames.join(', ')})`
+        : ' (All Subjects)';
+    const description = `${primaryEn.batch.class.name} - ${primaryEn.batch.name}${scopeSuffix} [${effectiveBillingPeriod}]`;
 
     return this.createCourseInvoice(
       {
-        studentId: enrollment.studentId,
-        enrollmentId: enrollment.id,
-        classId: enrollment.batch.classId,
-        batchId: enrollment.batchId,
-        subjectId: enrollment.subjectId || undefined,
+        studentId,
+        enrollmentId: primaryEn.id,
+        classId,
+        batchId: primaryEn.batchId,
+        subjectId: subjectIds.length === 1 ? subjectIds[0] : undefined,
         courseFeeConfigId: config.id,
-        billingPeriod,
+        billingPeriod: effectiveBillingPeriod,
         totalAmount: config.amount.toNumber(),
+        discountAmount,
         dueDate: dueDate.toISOString().split('T')[0],
         description,
       },
@@ -1475,24 +1590,96 @@ export class FeesService {
 
         let queue = targetInvoice ? [targetInvoice, ...openInvoices] : openInvoices;
 
+        // Deduplicate unpaid invoices by Standard (classId) and ensure unpaid invoice amounts match the Standard Fee Rule
+        const activeEnrollments = await tx.studentBatchEnrollment.findMany({
+          where: { studentId: dto.studentId, isActive: true },
+          include: {
+            batch: { include: { class: true } },
+            subject: true,
+          },
+        });
+
+        const enrolledClassesMap = new Map<string, typeof activeEnrollments>();
+        for (const en of activeEnrollments) {
+          const list = enrolledClassesMap.get(en.batch.class.id) || [];
+          list.push(en);
+          enrolledClassesMap.set(en.batch.class.id, list);
+        }
+
+        const syncedQueue: typeof queue = [];
+        const seenClassesInQueue = new Set<string>();
+        for (const inv of queue) {
+          if (inv.paidAmount.gt(0) || !inv.classId) {
+            syncedQueue.push(inv);
+            if (inv.classId) seenClassesInQueue.add(inv.classId);
+            continue;
+          }
+          if (seenClassesInQueue.has(inv.classId)) {
+            // Remove duplicate unpaid per-subject invoice for the same Standard
+            await tx.feeAdjustment.deleteMany({ where: { invoiceId: inv.id } });
+            await tx.feeInvoiceLine.deleteMany({ where: { invoiceId: inv.id } });
+            await tx.feeInvoice.delete({ where: { id: inv.id } });
+            continue;
+          }
+          seenClassesInQueue.add(inv.classId);
+
+          // Sync unpaid invoice amount with the configured Standard Fee Rule if needed
+          const classEnrollments = enrolledClassesMap.get(inv.classId) || [];
+          const primaryEn = classEnrollments[0];
+          const subjectIds = Array.from(
+            new Set(classEnrollments.map((e) => e.subjectId).filter(Boolean) as string[]),
+          );
+          const ruleConfig = await this.resolveFeeForEnrollment({
+            classId: inv.classId,
+            batchId: inv.batchId || primaryEn?.batchId,
+            subjectId: subjectIds.length === 1 ? subjectIds[0] : undefined,
+            academicYearId: primaryEn?.batch?.class?.academicYearId,
+            enrolledSubjectCount: subjectIds.length,
+          });
+          if (ruleConfig) {
+            let ruleDisc = 0;
+            if (Array.isArray(ruleConfig.allowedDiscounts)) {
+              const bundleDisc = (ruleConfig.allowedDiscounts as any[]).find(
+                (d: any) =>
+                  d &&
+                  (d.type === 'ALL_SUBJECTS_BUNDLE' ||
+                    d.type === 'TWO_SUBJECTS_BUNDLE' ||
+                    d.type === 'SELECTED_SUBJECTS_BUNDLE' ||
+                    d.type === 'SINGLE_SUBJECT' ||
+                    d.type === 'BUNDLE_OFFER' ||
+                    d.name?.includes('Discount') ||
+                    d.name?.includes('Offer') ||
+                    Number(d.amount) > 0),
+              );
+              if (bundleDisc?.amount) {
+                ruleDisc = Number(bundleDisc.amount) || 0;
+              }
+            }
+            const expectedTotal = ruleConfig.amount;
+            const expectedDiscount = new Decimal(ruleDisc);
+            const expectedBalance = Decimal.max(0, expectedTotal.sub(expectedDiscount));
+            if (!inv.totalAmount.eq(expectedTotal) || !inv.balanceAmount.eq(expectedBalance)) {
+              const updatedInv = await tx.feeInvoice.update({
+                where: { id: inv.id },
+                data: {
+                  courseFeeConfigId: ruleConfig.id,
+                  billingPeriod: ruleConfig.billingPeriod || inv.billingPeriod,
+                  totalAmount: expectedTotal,
+                  discountAmount: expectedDiscount,
+                  balanceAmount: expectedBalance,
+                  subjectId: subjectIds.length === 1 ? subjectIds[0] : null,
+                },
+              });
+              syncedQueue.push(updatedInv);
+              continue;
+            }
+          }
+          syncedQueue.push(inv);
+        }
+        queue = syncedQueue;
+
         // If no pre-created invoice exists or a rule placeholder was targeted, resolve fee rules on the payment!
         if (queue.length === 0 || (dto.invoiceId && dto.invoiceId.startsWith('rule-'))) {
-          const activeEnrollments = await tx.studentBatchEnrollment.findMany({
-            where: { studentId: dto.studentId, isActive: true },
-            include: {
-              batch: { include: { class: true } },
-              subject: true,
-            },
-          });
-
-          // Group by class to bundle all/selected subjects into single course invoice as per rules
-          const enrolledClassesMap = new Map<string, typeof activeEnrollments>();
-          for (const en of activeEnrollments) {
-            const list = enrolledClassesMap.get(en.batch.class.id) || [];
-            list.push(en);
-            enrolledClassesMap.set(en.batch.class.id, list);
-          }
-
           for (const [classId, enrollments] of enrolledClassesMap.entries()) {
             if (remainingToAllocate.lte(0)) break;
 
@@ -1673,6 +1860,17 @@ export class FeesService {
 
       // 5. Calculate faculty revenue pool & auditable salary ledger
       await this.salaryService.calculatePaymentSalaryRevenue(payment.id, tx);
+      for (const alloc of allocatedRecords) {
+        await this.salaryService.accrueForPayment(
+          {
+            paymentId: payment.id,
+            studentId: student.id,
+            allocatedAmount: alloc.allocatedAmount,
+            invoiceId: alloc.invoiceId,
+          },
+          tx,
+        );
+      }
 
       return {
         payment,
@@ -1755,6 +1953,19 @@ export class FeesService {
 
       // 4. Traceable salary adjustments and cancellations
       await this.salaryService.reversePaymentSalaryRevenue(paymentId, dto.reason, actorId, tx);
+      for (const alloc of payment.allocations) {
+        await this.salaryService.accrueForPayment(
+          {
+            paymentId,
+            studentId: payment.studentId,
+            allocatedAmount: alloc.allocatedAmount,
+            invoiceId: alloc.invoiceId,
+            isReversal: true,
+            reversalReason: dto.reason,
+          },
+          tx,
+        );
+      }
 
       return {
         payment: updatedPayment,
@@ -1822,81 +2033,153 @@ export class FeesService {
     let hasOverdue = false;
     const now = new Date();
 
-    const courseAccounts = student.feeInvoices.map((inv) => {
-      consolidatedBilled = consolidatedBilled.add(inv.totalAmount);
-      consolidatedPaid = consolidatedPaid.add(inv.paidAmount);
-      consolidatedBalance = consolidatedBalance.add(inv.balanceAmount);
-      consolidatedDiscounts = consolidatedDiscounts.add(inv.discountAmount);
-
-      const isOverdue =
-        inv.dueDate < now &&
-        ([InvoiceStatus.UNPAID, InvoiceStatus.PARTIAL] as InvoiceStatus[]).includes(inv.status);
-      if (isOverdue) hasOverdue = true;
-
-      // Extract next installment due date from configuration snapshot if available
-      let nextInstallmentDueDate = null;
-      if (inv.configurationSnapshot && typeof inv.configurationSnapshot === 'object') {
-        const snap: any = inv.configurationSnapshot;
-        if (snap.installmentsSchedule && Array.isArray(snap.installmentsSchedule)) {
-          const nextInst = snap.installmentsSchedule[0];
-          if (nextInst) {
-            nextInstallmentDueDate = inv.dueDate;
-          }
-        }
-      }
-
-      return {
-        invoiceId: inv.id,
-        invoiceNumber: inv.invoiceNumber,
-        courseId: inv.classId,
-        courseName: inv.class?.name || 'Standard Course',
-        courseCode: inv.class?.code || '',
-        subjectId: inv.subjectId,
-        subjectName: inv.subject?.name || null,
-        batchId: inv.batchId,
-        batchName: inv.batch?.name || null,
-        enrollmentId: inv.enrollmentId,
-        billingPeriod: inv.billingPeriod || 'ANNUAL',
-        totalAmount: inv.totalAmount.toNumber(),
-        discountAmount: inv.discountAmount.toNumber(),
-        paidAmount: inv.paidAmount.toNumber(),
-        balanceAmount: inv.balanceAmount.toNumber(),
-        status: inv.status,
-        dueDate: inv.dueDate.toISOString().split('T')[0],
-        nextInstallmentDueDate,
-        isOverdue,
-        lines: inv.lines.map((l) => ({
-          id: l.id,
-          description: l.description,
-          amount: l.amount.toNumber(),
-        })),
-        adjustments: inv.adjustments.map((a) => ({
-          id: a.id,
-          type: a.type,
-          amount: a.amount.toNumber(),
-          reason: a.reason,
-          createdAt: a.createdAt,
-        })),
-        allocations: inv.allocations.map((a) => ({
-          allocationId: a.id,
-          paymentId: a.payment.id,
-          receiptNumber: a.payment.receiptNumber,
-          paymentDate: a.payment.paidAt,
-          paymentMethod: a.payment.paymentMethod,
-          allocatedAmount: a.allocatedAmount.toNumber(),
-          recordedBy: a.payment.recordedBy
-            ? `${a.payment.recordedBy.firstName} ${a.payment.recordedBy.lastName}`
-            : 'System',
-        })),
-      };
-    });
-    // For enrolled courses without invoices, resolve the configured fee rules so the payment modal displays them
+    // Group active enrollments by class so we can determine the configured Fee Rule per Standard
     const enrolledClassesMap = new Map<string, typeof student.batchEnrollments>();
     for (const en of student.batchEnrollments.filter((e) => e.isActive)) {
       const list = enrolledClassesMap.get(en.batch.class.id) || [];
       list.push(en);
       enrolledClassesMap.set(en.batch.class.id, list);
     }
+
+    // Deduplicate unpaid invoices by Standard (classId) so students never get billed multiple times per subject,
+    // and ensure any unpaid invoice follows the configured Standard Fee Rule amount
+    const effectiveStudentInvoices: typeof student.feeInvoices = [];
+    const seenUnpaidClassIds = new Set<string>();
+    for (const inv of student.feeInvoices) {
+      if (inv.paidAmount.gt(0) || inv.allocations.length > 0 || !inv.classId) {
+        effectiveStudentInvoices.push(inv);
+        if (inv.classId) seenUnpaidClassIds.add(inv.classId);
+      } else if (!seenUnpaidClassIds.has(inv.classId)) {
+        seenUnpaidClassIds.add(inv.classId);
+        effectiveStudentInvoices.push(inv);
+      }
+    }
+
+    const courseAccounts = await Promise.all(
+      effectiveStudentInvoices.map(async (inv) => {
+        let effectiveTotal = inv.totalAmount;
+        let effectiveDiscount = inv.discountAmount;
+        let effectiveBalance = inv.balanceAmount;
+        let effectivePeriod = inv.billingPeriod || 'MONTHLY';
+        let effectiveSubjectName = inv.subject?.name || null;
+
+        // If invoice is completely unpaid and belongs to an enrolled Standard, sync with the Standard's Fee Rule
+        // so that old per-subject auto-billed invoices follow the exact Fee Rules amount
+        if (inv.paidAmount.lte(0) && inv.allocations.length === 0 && inv.classId) {
+          const classEnrollments = enrolledClassesMap.get(inv.classId) || [];
+          const primaryEn = classEnrollments[0];
+          const subjectIds = Array.from(
+            new Set(classEnrollments.map((e) => e.subjectId).filter(Boolean) as string[]),
+          );
+          const subNames = Array.from(
+            new Set(classEnrollments.map((e) => e.subject?.name).filter(Boolean) as string[]),
+          ).join(', ');
+          if (subNames) {
+            effectiveSubjectName = subNames;
+          }
+
+          const ruleConfig = await this.resolveFeeForEnrollment({
+            classId: inv.classId,
+            batchId: inv.batchId || primaryEn?.batchId,
+            subjectId: subjectIds.length === 1 ? subjectIds[0] : undefined,
+            academicYearId: primaryEn?.batch?.class?.academicYearId,
+            enrolledSubjectCount: subjectIds.length,
+          });
+
+          if (ruleConfig) {
+            let ruleDisc = 0;
+            if (Array.isArray(ruleConfig.allowedDiscounts)) {
+              const bundleDisc = (ruleConfig.allowedDiscounts as any[]).find(
+                (d: any) =>
+                  d &&
+                  (d.type === 'ALL_SUBJECTS_BUNDLE' ||
+                    d.type === 'TWO_SUBJECTS_BUNDLE' ||
+                    d.type === 'SELECTED_SUBJECTS_BUNDLE' ||
+                    d.type === 'SINGLE_SUBJECT' ||
+                    d.type === 'BUNDLE_OFFER' ||
+                    d.name?.includes('Discount') ||
+                    d.name?.includes('Offer') ||
+                    Number(d.amount) > 0),
+              );
+              if (bundleDisc?.amount) {
+                ruleDisc = Number(bundleDisc.amount) || 0;
+              }
+            }
+            effectiveTotal = ruleConfig.amount;
+            effectiveDiscount = new Decimal(ruleDisc);
+            effectiveBalance = Decimal.max(0, effectiveTotal.sub(effectiveDiscount));
+            effectivePeriod = ruleConfig.billingPeriod || effectivePeriod;
+          }
+        }
+
+        consolidatedBilled = consolidatedBilled.add(effectiveTotal);
+        consolidatedPaid = consolidatedPaid.add(inv.paidAmount);
+        consolidatedBalance = consolidatedBalance.add(effectiveBalance);
+        consolidatedDiscounts = consolidatedDiscounts.add(effectiveDiscount);
+
+        const isOverdue =
+          inv.dueDate < now &&
+          ([InvoiceStatus.UNPAID, InvoiceStatus.PARTIAL] as InvoiceStatus[]).includes(inv.status);
+        if (isOverdue) hasOverdue = true;
+
+        // Extract next installment due date from configuration snapshot if available
+        let nextInstallmentDueDate = null;
+        if (inv.configurationSnapshot && typeof inv.configurationSnapshot === 'object') {
+          const snap: any = inv.configurationSnapshot;
+          if (snap.installmentsSchedule && Array.isArray(snap.installmentsSchedule)) {
+            const nextInst = snap.installmentsSchedule[0];
+            if (nextInst) {
+              nextInstallmentDueDate = inv.dueDate;
+            }
+          }
+        }
+
+        return {
+          invoiceId: inv.id,
+          invoiceNumber: inv.invoiceNumber,
+          courseId: inv.classId,
+          courseName: inv.class?.name || 'Standard Course',
+          courseCode: inv.class?.code || '',
+          subjectId: inv.subjectId,
+          subjectName: effectiveSubjectName,
+          batchId: inv.batchId,
+          batchName: inv.batch?.name || null,
+          enrollmentId: inv.enrollmentId,
+          billingPeriod: effectivePeriod,
+          totalAmount: effectiveTotal.toNumber(),
+          discountAmount: effectiveDiscount.toNumber(),
+          paidAmount: inv.paidAmount.toNumber(),
+          balanceAmount: effectiveBalance.toNumber(),
+          status: inv.status,
+          dueDate: inv.dueDate.toISOString().split('T')[0],
+          nextInstallmentDueDate,
+          isOverdue,
+          lines: inv.lines.map((l) => ({
+            id: l.id,
+            description: l.description,
+            amount: effectiveTotal.toNumber(),
+          })),
+          adjustments: inv.adjustments.map((a) => ({
+            id: a.id,
+            type: a.type,
+            amount: a.amount.toNumber(),
+            reason: a.reason,
+            createdAt: a.createdAt,
+          })),
+          allocations: inv.allocations.map((a) => ({
+            allocationId: a.id,
+            paymentId: a.payment.id,
+            receiptNumber: a.payment.receiptNumber,
+            paymentDate: a.payment.paidAt,
+            paymentMethod: a.payment.paymentMethod,
+            allocatedAmount: a.allocatedAmount.toNumber(),
+            recordedBy: a.payment.recordedBy
+              ? `${a.payment.recordedBy.firstName} ${a.payment.recordedBy.lastName}`
+              : 'System',
+          })),
+        };
+      }),
+    );
 
     for (const [classId, enrollments] of enrolledClassesMap.entries()) {
       const hasInvoiceForClass = student.feeInvoices.some((inv) => inv.classId === classId);
@@ -2238,20 +2521,7 @@ export class FeesService {
         });
       }
 
-      for (const inv of targetInvoices) {
-        billed = billed.add(inv.totalAmount);
-        paid = paid.add(inv.paidAmount);
-        balance = balance.add(inv.balanceAmount);
-        discounts = discounts.add(inv.discountAmount);
-        if (
-          inv.dueDate < now &&
-          ([InvoiceStatus.UNPAID, InvoiceStatus.PARTIAL] as InvoiceStatus[]).includes(inv.status)
-        ) {
-          hasOverdue = true;
-        }
-      }
-
-      // Group active enrollments by class to resolve pricing rules for courses without pre-created invoices
+      // Group active enrollments by class to resolve pricing rules for each Standard
       const enrolledClassesMap = new Map<string, typeof s.batchEnrollments>();
       for (const en of s.batchEnrollments) {
         const list = enrolledClassesMap.get(en.batch.class.id) || [];
@@ -2259,55 +2529,55 @@ export class FeesService {
         enrolledClassesMap.set(en.batch.class.id, list);
       }
 
-      for (const [classId, enrollments] of enrolledClassesMap.entries()) {
-        const hasInvoice = targetInvoices.some((inv) => inv.classId === classId);
-        if (!hasInvoice) {
-          const primaryEn = enrollments[0];
-          const subjectIds = enrollments.map((e) => e.subjectId).filter(Boolean) as string[];
-          const subCount = subjectIds.length;
+      // Helper to resolve the matching Fee Rule for a given classId and enrollments
+      const resolveClassFeeConfig = (classId: string, enrollments: typeof s.batchEnrollments) => {
+        const primaryEn = enrollments[0];
+        const subjectIds = Array.from(
+          new Set(enrollments.map((e) => e.subjectId).filter(Boolean) as string[]),
+        );
+        const subCount = subjectIds.length;
+        const classConfigs = configs.filter((c) => c.classId === classId);
+        if (classConfigs.length === 0) return null;
 
-          let config = null;
+        let config = null;
 
-          // Tier 1: 2-subject package matching
-          if (subCount === 2) {
-            config = configs.find((c) => {
-              if (c.classId !== classId) return false;
+        // Tier 1: 2-subject package matching
+        if (subCount === 2) {
+          config = classConfigs.find((c) => {
+            if (Array.isArray(c.allowedDiscounts)) {
+              const t = (c.allowedDiscounts as any[]).find(
+                (d) => d && (d.tier === 'TWO_SUBJECTS' || d.targetSubjectCount === 2 || d.type === 'TWO_SUBJECTS_BUNDLE'),
+              );
+              if (t) return true;
+            }
+            return c.name.toLowerCase().includes('2 subject') || c.name.toLowerCase().includes('2 course');
+          });
+        }
+
+        // Tier 2: 1-subject package matching
+        if (!config && subCount === 1) {
+          config = classConfigs.find(
+            (c) =>
+              c.subjectId === subjectIds[0] &&
+              (!c.batchId || !primaryEn || c.batchId === primaryEn.batchId),
+          );
+          if (!config) {
+            config = classConfigs.find((c) => {
               if (Array.isArray(c.allowedDiscounts)) {
                 const t = (c.allowedDiscounts as any[]).find(
-                  (d) => d && (d.tier === 'TWO_SUBJECTS' || d.targetSubjectCount === 2 || d.type === 'TWO_SUBJECTS_BUNDLE'),
+                  (d) => d && (d.tier === 'SINGLE_SUBJECT' || d.targetSubjectCount === 1),
                 );
                 if (t) return true;
               }
-              return c.name.toLowerCase().includes('2 subject') || c.name.toLowerCase().includes('2 course');
+              return c.subjectId !== null || c.name.toLowerCase().includes('1 subject');
             });
           }
+        }
 
-          // Tier 2: 1-subject package matching
-          if (!config && subCount === 1) {
-            config = configs.find(
-              (c) =>
-                c.classId === classId &&
-                c.subjectId === subjectIds[0] &&
-                (!c.batchId || c.batchId === primaryEn.batchId),
-            );
-            if (!config) {
-              config = configs.find((c) => {
-                if (c.classId !== classId) return false;
-                if (Array.isArray(c.allowedDiscounts)) {
-                  const t = (c.allowedDiscounts as any[]).find(
-                    (d) => d && (d.tier === 'SINGLE_SUBJECT' || d.targetSubjectCount === 1),
-                  );
-                  if (t) return true;
-                }
-                return c.subjectId !== null || c.name.toLowerCase().includes('1 subject');
-              });
-            }
-          }
-
-          // Tier 3: All-subjects standard fixed matching
-          if (!config && (subCount >= 3 || subCount === 0)) {
-            config = configs.find((c) => {
-              if (c.classId !== classId) return false;
+        // Tier 3 / Standard General Fee Rule fallback (never multiply by subjects)
+        if (!config) {
+          config =
+            classConfigs.find((c) => {
               if (c.subjectId) return false;
               if (
                 c.name.toLowerCase().includes('2 subject') ||
@@ -2329,21 +2599,94 @@ export class FeesService {
                 );
                 if (t) return false;
               }
-              return !c.batchId || c.batchId === primaryEn.batchId;
-            });
+              return !c.batchId || !primaryEn || c.batchId === primaryEn.batchId;
+            }) ||
+            classConfigs.find((c) => !c.subjectId) ||
+            classConfigs[0];
+        }
+
+        return config;
+      };
+
+      // Deduplicate unpaid invoices by Standard (classId) so duplicate per-subject invoices are never summed
+      const deduplicatedInvoices: typeof targetInvoices = [];
+      const seenUnpaidClasses = new Set<string>();
+      for (const inv of targetInvoices) {
+        if (inv.paidAmount.gt(0) || !inv.classId) {
+          deduplicatedInvoices.push(inv);
+          if (inv.classId) seenUnpaidClasses.add(inv.classId);
+        } else if (!seenUnpaidClasses.has(inv.classId)) {
+          seenUnpaidClasses.add(inv.classId);
+          deduplicatedInvoices.push(inv);
+        }
+      }
+
+      for (const inv of deduplicatedInvoices) {
+        let invTotal = inv.totalAmount;
+        let invDiscount = inv.discountAmount;
+        let invBalance = inv.balanceAmount;
+
+        // If invoice is completely unpaid and belongs to a Standard with an active Fee Rule,
+        // ensure its amount follows the configured Fee Rule amount
+        if (inv.paidAmount.lte(0) && inv.classId) {
+          const enrollments = enrolledClassesMap.get(inv.classId) || [];
+          const config = resolveClassFeeConfig(inv.classId, enrollments);
+          if (config) {
+            let discountAmount = 0;
+            if (Array.isArray(config.allowedDiscounts)) {
+              const bundleDisc = (config.allowedDiscounts as any[]).find(
+                (d: any) =>
+                  d &&
+                  (d.type === 'ALL_SUBJECTS_BUNDLE' ||
+                    d.type === 'TWO_SUBJECTS_BUNDLE' ||
+                    d.type === 'SELECTED_SUBJECTS_BUNDLE' ||
+                    d.type === 'SINGLE_SUBJECT' ||
+                    d.type === 'BUNDLE_OFFER' ||
+                    d.name?.includes('Discount') ||
+                    d.name?.includes('Offer') ||
+                    Number(d.amount) > 0),
+              );
+              if (bundleDisc?.amount) {
+                discountAmount = Number(bundleDisc.amount) || 0;
+              }
+            }
+            invTotal = config.amount;
+            invDiscount = new Decimal(discountAmount);
+            invBalance = Decimal.max(0, invTotal.sub(invDiscount));
           }
+        }
+
+        billed = billed.add(invTotal);
+        paid = paid.add(inv.paidAmount);
+        balance = balance.add(invBalance);
+        discounts = discounts.add(invDiscount);
+        if (
+          inv.dueDate < now &&
+          ([InvoiceStatus.UNPAID, InvoiceStatus.PARTIAL] as InvoiceStatus[]).includes(inv.status)
+        ) {
+          hasOverdue = true;
+        }
+      }
+
+      for (const [classId, enrollments] of enrolledClassesMap.entries()) {
+        const hasInvoice = deduplicatedInvoices.some((inv) => inv.classId === classId);
+        if (!hasInvoice) {
+          const config = resolveClassFeeConfig(classId, enrollments);
 
           if (config) {
             let discountAmount = 0;
             if (Array.isArray(config.allowedDiscounts)) {
               const bundleDisc = (config.allowedDiscounts as any[]).find(
                 (d: any) =>
-                  d.type === 'ALL_SUBJECTS_BUNDLE' ||
-                  d.type === 'SELECTED_SUBJECTS_BUNDLE' ||
-                  d.type === 'BUNDLE_OFFER' ||
-                  d.name?.includes('Discount') ||
-                  d.name?.includes('Offer') ||
-                  Number(d.amount) > 0,
+                  d &&
+                  (d.type === 'ALL_SUBJECTS_BUNDLE' ||
+                    d.type === 'TWO_SUBJECTS_BUNDLE' ||
+                    d.type === 'SELECTED_SUBJECTS_BUNDLE' ||
+                    d.type === 'SINGLE_SUBJECT' ||
+                    d.type === 'BUNDLE_OFFER' ||
+                    d.name?.includes('Discount') ||
+                    d.name?.includes('Offer') ||
+                    Number(d.amount) > 0),
               );
               if (bundleDisc?.amount) {
                 discountAmount = Number(bundleDisc.amount) || 0;
@@ -2474,7 +2817,22 @@ export class FeesService {
             _count: {
               select: { enrollments: { where: { isActive: true } } },
             },
+            enrollments: {
+              where: { isActive: true },
+              include: {
+                student: {
+                  select: { id: true, studentCode: true, firstName: true, lastName: true },
+                },
+                subject: {
+                  select: { id: true, name: true, code: true },
+                },
+              },
+            },
           },
+        },
+        courseFeeConfigs: {
+          where: { isActive: true },
+          orderBy: [{ subjectId: 'desc' }, { batchId: 'desc' }, { createdAt: 'desc' }],
         },
         feeInvoices: {
           where: { status: { not: InvoiceStatus.CANCELLED } },
@@ -2492,30 +2850,208 @@ export class FeesService {
       let collected = new Decimal(0);
       let outstanding = new Decimal(0);
 
-      for (const inv of c.feeInvoices) {
-        invoiced = invoiced.add(inv.totalAmount);
-        outstanding = outstanding.add(inv.balanceAmount);
-        for (const alloc of inv.allocations) {
-          collected = collected.add(alloc.allocatedAmount);
+      // Collect unique active student enrollments for fee rule computation
+      const studentEnrollmentsMap = new Map<string, Array<{ batchId: string; subjectId: string | null }>>();
+      for (const b of c.batches) {
+        if (b.enrollments) {
+          for (const en of b.enrollments) {
+            if (en.student?.id) {
+              const list = studentEnrollmentsMap.get(en.student.id) || [];
+              list.push({ batchId: en.batchId, subjectId: en.subjectId });
+              studentEnrollmentsMap.set(en.student.id, list);
+            }
+          }
         }
       }
 
-      const totalEnrolled = c.batches.reduce(
-        (acc, b) => acc + (b._count?.enrollments || 0),
-        0,
-      );
+      const enrolledCount = studentEnrollmentsMap.size;
+
+      // Active fee rules for this class
+      const feeConfigs = c.courseFeeConfigs || [];
+      const hasFeeRule = feeConfigs.length > 0;
+      const primaryRule =
+        feeConfigs.find((cfg) => {
+          if (cfg.subjectId) return false;
+          if (
+            cfg.name.toLowerCase().includes('2 subject') ||
+            cfg.name.toLowerCase().includes('2 course') ||
+            cfg.name.toLowerCase().includes('1 subject')
+          ) {
+            return false;
+          }
+          return true;
+        }) ||
+        feeConfigs[0] ||
+        null;
+      const baseFeeAmount = primaryRule ? Number(primaryRule.amount) : 0;
+      const feeRuleName = primaryRule ? primaryRule.name : null;
+
+      // Helper to resolve a student's configured Fee Rule in this class
+      const resolveStudentRuleInClass = (studentId: string) => {
+        const enrollments = studentEnrollmentsMap.get(studentId) || [];
+        const primaryEn = enrollments[0];
+        const subjectIds = Array.from(
+          new Set(enrollments.map((e) => e.subjectId).filter(Boolean) as string[]),
+        );
+        const subCount = subjectIds.length;
+        let config: any = null;
+
+        if (subCount === 2) {
+          config = feeConfigs.find((cfg) => {
+            if (Array.isArray(cfg.allowedDiscounts)) {
+              const t = (cfg.allowedDiscounts as any[]).find(
+                (d) =>
+                  d &&
+                  (d.tier === 'TWO_SUBJECTS' ||
+                    d.targetSubjectCount === 2 ||
+                    d.type === 'TWO_SUBJECTS_BUNDLE'),
+              );
+              if (t) return true;
+            }
+            return (
+              cfg.name.toLowerCase().includes('2 subject') ||
+              cfg.name.toLowerCase().includes('2 course')
+            );
+          });
+        }
+
+        if (!config && subCount === 1) {
+          config = feeConfigs.find(
+            (cfg) =>
+              cfg.subjectId === subjectIds[0] &&
+              (!cfg.batchId || !primaryEn || cfg.batchId === primaryEn.batchId),
+          );
+          if (!config) {
+            config = feeConfigs.find((cfg) => {
+              if (Array.isArray(cfg.allowedDiscounts)) {
+                const t = (cfg.allowedDiscounts as any[]).find(
+                  (d) => d && (d.tier === 'SINGLE_SUBJECT' || d.targetSubjectCount === 1),
+                );
+                if (t) return true;
+              }
+              return cfg.subjectId !== null || cfg.name.toLowerCase().includes('1 subject');
+            });
+          }
+        }
+
+        if (!config) {
+          config =
+            feeConfigs.find((cfg) => {
+              if (cfg.subjectId) return false;
+              if (
+                cfg.name.toLowerCase().includes('2 subject') ||
+                cfg.name.toLowerCase().includes('2 course') ||
+                cfg.name.toLowerCase().includes('1 subject')
+              ) {
+                return false;
+              }
+              if (Array.isArray(cfg.allowedDiscounts)) {
+                const t = (cfg.allowedDiscounts as any[]).find(
+                  (d) =>
+                    d &&
+                    (d.tier === 'TWO_SUBJECTS' ||
+                      d.targetSubjectCount === 2 ||
+                      d.type === 'TWO_SUBJECTS_BUNDLE' ||
+                      d.tier === 'SINGLE_SUBJECT' ||
+                      d.targetSubjectCount === 1 ||
+                      d.type === 'SINGLE_SUBJECT'),
+                );
+                if (t) return false;
+              }
+              return !cfg.batchId || !primaryEn || cfg.batchId === primaryEn.batchId;
+            }) || primaryRule;
+        }
+        return config;
+      };
+
+      // Deduplicate unpaid invoices per student in this class and follow the configured Fee Rule amount
+      const seenUnpaidStudentIds = new Set<string>();
+      for (const inv of c.feeInvoices) {
+        if (inv.paidAmount.gt(0) || inv.allocations.length > 0) {
+          invoiced = invoiced.add(inv.totalAmount);
+          outstanding = outstanding.add(inv.balanceAmount);
+          for (const alloc of inv.allocations) {
+            collected = collected.add(alloc.allocatedAmount);
+          }
+          seenUnpaidStudentIds.add(inv.studentId);
+        } else if (!seenUnpaidStudentIds.has(inv.studentId)) {
+          seenUnpaidStudentIds.add(inv.studentId);
+          const matchedRule = resolveStudentRuleInClass(inv.studentId);
+          if (matchedRule) {
+            let discAmt = 0;
+            if (Array.isArray(matchedRule.allowedDiscounts)) {
+              const bundleDisc = (matchedRule.allowedDiscounts as any[]).find(
+                (d: any) => d && Number(d.amount) > 0,
+              );
+              if (bundleDisc?.amount) discAmt = Number(bundleDisc.amount) || 0;
+            }
+            const netAmt = Decimal.max(0, new Decimal(matchedRule.amount).sub(discAmt));
+            invoiced = invoiced.add(matchedRule.amount);
+            outstanding = outstanding.add(netAmt);
+          } else {
+            invoiced = invoiced.add(inv.totalAmount);
+            outstanding = outstanding.add(inv.balanceAmount);
+          }
+        }
+      }
+
+      // Calculate auto current month base amount across all enrolled students
+      let autoCurrentMonthBaseAmount = new Decimal(0);
+      if (hasFeeRule) {
+        if (studentEnrollmentsMap.size > 0) {
+          for (const [studentId] of studentEnrollmentsMap.entries()) {
+            const config = resolveStudentRuleInClass(studentId);
+            if (config) {
+              let discountAmount = 0;
+              if (Array.isArray(config.allowedDiscounts)) {
+                const bundleDisc = (config.allowedDiscounts as any[]).find(
+                  (d: any) =>
+                    d &&
+                    (d.type === 'ALL_SUBJECTS_BUNDLE' ||
+                      d.type === 'SELECTED_SUBJECTS_BUNDLE' ||
+                      d.type === 'BUNDLE_OFFER' ||
+                      d.name?.includes('Discount') ||
+                      d.name?.includes('Offer') ||
+                      Number(d.amount) > 0),
+                );
+                if (bundleDisc?.amount) {
+                  discountAmount = Number(bundleDisc.amount) || 0;
+                }
+              }
+              const netBase = Decimal.max(0, new Decimal(config.amount).sub(discountAmount));
+              autoCurrentMonthBaseAmount = autoCurrentMonthBaseAmount.add(netBase);
+            }
+          }
+        } else if (enrolledCount > 0 && primaryRule) {
+          autoCurrentMonthBaseAmount = new Decimal(primaryRule.amount).mul(enrolledCount);
+        }
+      }
+
+      const isAutoBase = invoiced.lte(0) && autoCurrentMonthBaseAmount.gt(0);
+      const effectiveInvoiced = invoiced.gt(0) ? invoiced : autoCurrentMonthBaseAmount;
+      const effectiveOutstanding = invoiced.gt(0)
+        ? outstanding
+        : Decimal.max(0, autoCurrentMonthBaseAmount.sub(collected));
 
       return {
         courseId: c.id,
         courseName: c.name,
         courseCode: c.code,
         invoiced: invoiced.toNumber(),
+        effectiveInvoiced: effectiveInvoiced.toNumber(),
         collected: collected.toNumber(),
         outstanding: outstanding.toNumber(),
-        collectionRate: invoiced.gt(0)
-          ? Math.round((collected.toNumber() / invoiced.toNumber()) * 100)
+        effectiveOutstanding: effectiveOutstanding.toNumber(),
+        collectionRate: effectiveInvoiced.gt(0)
+          ? Math.round((collected.toNumber() / effectiveInvoiced.toNumber()) * 100)
           : 0,
-        enrolledStudentsCount: totalEnrolled,
+        enrolledStudentsCount: enrolledCount,
+        hasFeeRule,
+        feeRuleName,
+        baseFeeAmount,
+        autoCurrentMonthBaseAmount: autoCurrentMonthBaseAmount.toNumber(),
+        isAutoBase,
+        activeFeeRulesCount: feeConfigs.length,
       };
     });
 
@@ -2524,11 +3060,22 @@ export class FeesService {
       take: 10,
     });
 
+    const totalAutoBase = courseBreakdown.reduce((acc, c) => acc + c.autoCurrentMonthBaseAmount, 0);
+    const totalCourseInvoiced = courseBreakdown.reduce((acc, c) => acc + c.invoiced, 0);
+    const totalCourseOutstanding = courseBreakdown.reduce((acc, c) => acc + c.outstanding, 0);
+    const totalEffectiveInvoiced = courseBreakdown.reduce((acc, c) => acc + c.effectiveInvoiced, 0);
+    const totalEffectiveOutstanding = courseBreakdown.reduce((acc, c) => acc + c.effectiveOutstanding, 0);
+    const hasAnyInvoices = totalCourseInvoiced > 0;
+    const isAutoBaseActive = !hasAnyInvoices && totalAutoBase > 0;
+    const totalActiveFeeRules = classes.reduce((acc, c) => acc + (c.courseFeeConfigs?.length || 0), 0);
+
     return {
       kpis: {
-        totalInvoiced: (invoiceAgg._sum.totalAmount || new Decimal(0)).toNumber(),
+        totalInvoiced: totalCourseInvoiced,
+        effectiveTotalInvoiced: totalEffectiveInvoiced,
         totalCollected: totalCollected.toNumber(),
-        outstandingReceivables: (invoiceAgg._sum.balanceAmount || new Decimal(0)).toNumber(),
+        outstandingReceivables: totalCourseOutstanding,
+        effectiveOutstandingReceivables: totalEffectiveOutstanding,
         overdueAmount: (overdueAgg._sum.balanceAmount || new Decimal(0)).toNumber(),
         totalReversals: totalReversed.toNumber(),
         totalDiscounts: (invoiceAgg._sum.discountAmount || new Decimal(0)).toNumber(),
@@ -2536,6 +3083,9 @@ export class FeesService {
         overdueInvoicesCount: overdueAgg._count.id || 0,
         totalPaymentsCount: payments.length,
         pendingExceptionsCount: exceptions.length,
+        autoCurrentMonthBaseAmount: totalAutoBase,
+        isAutoBaseActive,
+        activeFeeRulesCount: totalActiveFeeRules,
       },
       courseBreakdown,
       reconciliationExceptions: exceptions,
@@ -2661,51 +3211,146 @@ export class FeesService {
     );
   }
 
-  async clearAllInvoices() {
-    return this.prisma.$transaction(async (tx) => {
-      const deletedAllocations = await tx.paymentAllocation.deleteMany({});
+  async clearAllInvoices(actorId?: string) {
+    // 1. Gather all payment proofs to delete
+    const paymentsWithProofs = await this.prisma.payment.findMany({
+      where: { proofObjectKey: { not: null } },
+      select: { proofObjectKey: true },
+    });
+    const proofKeysToDelete = paymentsWithProofs
+      .map((p) => p.proofObjectKey)
+      .filter((k): k is string => Boolean(k));
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      await tx.staffSalaryLedger.deleteMany({ where: { paymentId: { not: null } } });
+      await tx.paymentRevenueException.deleteMany({});
+      await tx.paymentAllocation.deleteMany({});
+      const deletedPayments = await tx.payment.deleteMany({});
       const deletedAdjustments = await tx.feeAdjustment.deleteMany({});
       const deletedLines = await tx.feeInvoiceLine.deleteMany({});
       const deletedInvoices = await tx.feeInvoice.deleteMany({});
 
       this.logger.log(
-        `Cleared all invoices: ${deletedInvoices.count} invoices, ${deletedLines.count} lines, ${deletedAdjustments.count} adjustments, ${deletedAllocations.count} allocations`,
+        `Cleared all invoices by Super Admin ${actorId || ''}: ${deletedInvoices.count} invoices, ${deletedPayments.count} payments, ${deletedAdjustments.count} adjustments, ${proofKeysToDelete.length} proofs`,
       );
 
       return {
         success: true,
         count: deletedInvoices.count,
-        message: `Successfully cleared ${deletedInvoices.count} fee invoice(s).`,
+        message: `Successfully cleared ${deletedInvoices.count} fee invoice(s), ${deletedPayments.count} payment(s), and ${proofKeysToDelete.length} payment proof(s).`,
       };
     });
+
+    for (const key of proofKeysToDelete) {
+      try {
+        await this.s3StorageService.deleteFile(key);
+      } catch (err: any) {
+        this.logger.warn(`Failed to delete proof file ${key}: ${err.message}`);
+      }
+    }
+
+    return result;
   }
 
-  async deleteInvoiceById(id: string) {
+  async deleteInvoiceById(id: string, actorId?: string) {
     const invoice = await this.prisma.feeInvoice.findUnique({
       where: { id },
+      include: {
+        allocations: {
+          include: {
+            payment: {
+              include: {
+                allocations: true,
+              },
+            },
+          },
+        },
+      },
     });
 
     if (!invoice) {
       throw new NotFoundException(`Invoice with ID ${id} not found`);
     }
 
-    if (invoice.paidAmount.gt(0)) {
-      throw new BadRequestException(
-        `Cannot delete invoice ${invoice.invoiceNumber} with existing payments of ₹${invoice.paidAmount}. Reverse payment(s) first.`,
-      );
+    const proofKeysToDelete: string[] = [];
+    const paymentIdsToDelete: string[] = [];
+    const partialPaymentsToAdjust: { paymentId: string; newAmount: Decimal }[] = [];
+
+    // Analyze allocations and payment proofs linked to this invoice
+    for (const alloc of invoice.allocations) {
+      const payment = alloc.payment;
+      if (!payment) continue;
+
+      const otherAllocations = payment.allocations.filter((a) => a.invoiceId !== id);
+      if (otherAllocations.length === 0) {
+        // Payment was solely for this invoice; mark payment and proof for complete removal
+        if (payment.proofObjectKey) {
+          proofKeysToDelete.push(payment.proofObjectKey);
+        }
+        if (!paymentIdsToDelete.includes(payment.id)) {
+          paymentIdsToDelete.push(payment.id);
+        }
+      } else {
+        // Payment was split across multiple invoices; reduce payment amount
+        const newAmount = Decimal.max(0, payment.amount.sub(alloc.allocatedAmount));
+        partialPaymentsToAdjust.push({ paymentId: payment.id, newAmount });
+      }
     }
 
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
+      // 1. Clean up salary ledgers & exceptions for payments being completely deleted
+      if (paymentIdsToDelete.length > 0) {
+        await tx.staffSalaryLedger.deleteMany({
+          where: { paymentId: { in: paymentIdsToDelete } },
+        });
+        await tx.paymentRevenueException.deleteMany({
+          where: { paymentId: { in: paymentIdsToDelete } },
+        });
+      }
+
+      // 2. Adjust partial payments if any
+      for (const adj of partialPaymentsToAdjust) {
+        await tx.payment.update({
+          where: { id: adj.paymentId },
+          data: { amount: adj.newAmount },
+        });
+      }
+
+      // 3. Delete payment allocations for this invoice
       await tx.paymentAllocation.deleteMany({ where: { invoiceId: id } });
+
+      // 4. Delete payments that were solely for this invoice
+      if (paymentIdsToDelete.length > 0) {
+        await tx.payment.deleteMany({
+          where: { id: { in: paymentIdsToDelete } },
+        });
+      }
+
+      // 5. Delete adjustments, invoice lines, and the invoice itself
       await tx.feeAdjustment.deleteMany({ where: { invoiceId: id } });
       await tx.feeInvoiceLine.deleteMany({ where: { invoiceId: id } });
       await tx.feeInvoice.delete({ where: { id } });
 
+      this.logger.log(
+        `Invoice ${invoice.invoiceNumber} (${id}) deleted by Super Admin ${actorId || ''}. Cleared ${paymentIdsToDelete.length} payment(s), ${invoice.allocations.length} allocation(s), ${proofKeysToDelete.length} proof document(s).`,
+      );
+
       return {
         success: true,
-        message: `Invoice ${invoice.invoiceNumber} successfully deleted.`,
+        message: `Invoice ${invoice.invoiceNumber} successfully deleted${paymentIdsToDelete.length > 0 ? ` along with ${paymentIdsToDelete.length} payment record(s) and proof document(s)` : ''}.`,
       };
     });
+
+    // 6. Delete proof files from S3/local storage after the database transaction commits
+    for (const proofKey of proofKeysToDelete) {
+      try {
+        await this.s3StorageService.deleteFile(proofKey);
+      } catch (err: any) {
+        this.logger.warn(`Could not delete storage file ${proofKey}: ${err.message}`);
+      }
+    }
+
+    return result;
   }
 
   async getReceipt(paymentId: string) {
@@ -2935,7 +3580,7 @@ export class FeesService {
   }
 
   // ==========================================
-  // 8. PAYMENT PROOF S3 STORAGE & RETRIEVAL
+  // 8. PAYMENT PROOF S3 STORAGE & RETRIEVAL (Delegated to FeesProofService)
   // ==========================================
 
   /**
@@ -2946,142 +3591,18 @@ export class FeesService {
     file: { buffer: Buffer; originalname: string; mimetype: string; size: number },
     actorId: string,
   ) {
-    if (!file || !file.buffer) {
-      throw new BadRequestException('Payment proof file is required');
-    }
-
-    const payment = await this.prisma.payment.findUnique({
-      where: { id: paymentId },
-      include: { student: true },
-    });
-
-    if (!payment) {
-      throw new NotFoundException(`Payment with ID ${paymentId} not found`);
-    }
-
-    // 1. Upload binary to private S3 using AWS SDK v3 & default credential provider chain
-    const uploadResult = await this.s3StorageService.uploadPaymentProof({
-      buffer: file.buffer,
-      originalFileName: file.originalname,
-      declaredMimeType: file.mimetype,
-      sizeBytes: file.size,
-      paymentId: payment.id,
-      studentId: payment.studentId,
-      actorId,
-    });
-
-    // 2. Persist S3 object key and metadata into PostgreSQL
-    const updatedPayment = await this.prisma.payment.update({
-      where: { id: paymentId },
-      data: {
-        proofObjectKey: uploadResult.objectKey,
-        proofFileName: uploadResult.fileName,
-        proofFileSize: uploadResult.fileSize,
-        proofMimeType: uploadResult.mimeType,
-        proofUploadedAt: new Date(),
-      },
-    });
-
-    // 3. Write immutable audit log
-    await this.prisma.auditLog.create({
-      data: {
-        actorId,
-        action: 'PAYMENT_PROOF_UPLOADED',
-        entityType: 'Payment',
-        entityId: payment.id,
-        details: {
-          receiptNumber: payment.receiptNumber,
-          studentId: payment.studentId,
-          objectKey: uploadResult.objectKey,
-          fileName: uploadResult.fileName,
-          fileSize: uploadResult.fileSize,
-          mimeType: uploadResult.mimeType,
-          storageDriver: uploadResult.storageDriver,
-        },
-      },
-    });
-
-    this.logger.log(
-      `Payment proof successfully attached to payment ${payment.receiptNumber} (Key: ${uploadResult.objectKey})`,
-    );
-
-    return {
-      success: true,
-      paymentId: updatedPayment.id,
-      receiptNumber: updatedPayment.receiptNumber,
-      proofObjectKey: updatedPayment.proofObjectKey,
-      proofFileName: updatedPayment.proofFileName,
-      proofFileSize: updatedPayment.proofFileSize,
-      proofMimeType: updatedPayment.proofMimeType,
-      proofUploadedAt: updatedPayment.proofUploadedAt,
-    };
+    return this.feesProofService.uploadPaymentProof(paymentId, file, actorId);
   }
 
   /**
    * Generates a short-lived presigned download URL after verifying user authorization
    */
   async getPaymentProofUrl(paymentId: string, user: any) {
-    const payment = await this.prisma.payment.findUnique({
-      where: { id: paymentId },
-      include: {
-        student: {
-          include: {
-            guardians: {
-              include: {
-                guardian: true,
-              },
-            },
-          },
-        },
-      },
-    });
-
-    if (!payment) {
-      throw new NotFoundException(`Payment with ID ${paymentId} not found`);
-    }
-
-    // Role-based access validation
-    const userRoles: string[] = Array.isArray(user?.roles)
-      ? user.roles
-      : [user?.role].filter(Boolean);
-    const isStaffOrAdmin = userRoles.some((r) =>
-      ['SUPER_ADMIN', 'ACADEMY_ADMIN', 'ACCOUNTANT', 'TEACHER', 'STAFF'].includes(r),
-    );
-
-    if (!isStaffOrAdmin) {
-      const isOwnerStudent =
-        user?.studentId === payment.studentId ||
-        user?.id === payment.studentId ||
-        (user?.email && user.email === payment.student.email);
-      const isGuardian = payment.student.guardians.some(
-        (g) => (user?.email && g.guardian.email === user.email) || (user?.phone && g.guardian.phone === user.phone),
-      );
-      if (!isOwnerStudent && !isGuardian) {
-        throw new ForbiddenException('You do not have authorization to access this payment proof document');
-      }
-    }
-
-    if (!payment.proofObjectKey) {
-      throw new NotFoundException('No proof document attached to this payment record');
-    }
-
-    const { downloadUrl, expiresIn } = await this.s3StorageService.getPresignedDownloadUrl(
-      payment.proofObjectKey,
-      payment.proofFileName || undefined,
-    );
-
-    return {
-      downloadUrl,
-      expiresIn,
-      fileName: payment.proofFileName,
-      fileSize: payment.proofFileSize,
-      mimeType: payment.proofMimeType,
-      uploadedAt: payment.proofUploadedAt,
-    };
+    return this.feesProofService.getPaymentProofUrl(paymentId, user);
   }
 
   getS3StorageService(): S3StorageService {
-    return this.s3StorageService;
+    return this.feesProofService.getS3StorageService();
   }
 }
 

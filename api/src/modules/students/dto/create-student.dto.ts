@@ -454,3 +454,10 @@ export class BulkImportDto {
   @IsString()
   defaultBatchId?: string;
 }
+
+export class BulkDeleteStudentsDto {
+  @IsArray()
+  @IsString({ each: true })
+  studentIds!: string[];
+}
+

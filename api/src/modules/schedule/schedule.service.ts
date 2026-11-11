@@ -124,56 +124,87 @@ export class ScheduleService {
       throw new NotFoundException(`Staff ${dto.staffId} not found`);
     }
 
-    // 5. Conflict Detection
-    await this.checkRecurringConflicts({
-      dayOfWeek: dto.dayOfWeek,
-      startTime: dto.startTime,
-      endTime: dto.endTime,
-      staffId: dto.staffId,
-      batchId: dto.batchId,
-      room: dto.room,
-    });
+    // 5. Day Resolution & Conflict Detection
+    const allDays = [
+      ScheduleDayOfWeek.MONDAY,
+      ScheduleDayOfWeek.TUESDAY,
+      ScheduleDayOfWeek.WEDNESDAY,
+      ScheduleDayOfWeek.THURSDAY,
+      ScheduleDayOfWeek.FRIDAY,
+      ScheduleDayOfWeek.SATURDAY,
+      ScheduleDayOfWeek.SUNDAY,
+    ];
 
-    const schedule = await this.prisma.classSchedule.create({
-      data: {
-        classId: dto.classId,
-        subjectId: dto.subjectId,
-        batchId: dto.batchId || null,
-        staffId: dto.staffId,
-        dayOfWeek: dto.dayOfWeek,
-        startTime: dto.startTime,
-        endTime: dto.endTime,
-        room: dto.room?.trim() || null,
-        effectiveStartDate: dto.effectiveStartDate ? new Date(dto.effectiveStartDate) : null,
-        effectiveEndDate: dto.effectiveEndDate ? new Date(dto.effectiveEndDate) : null,
-        isActive: dto.isActive !== undefined ? dto.isActive : true,
-      },
-      include: {
-        class: true,
-        subject: true,
-        batch: true,
-        staff: { select: { id: true, firstName: true, lastName: true, email: true } },
-      },
-    });
+    const isAllDays = dto.dayOfWeek === 'ALL_DAYS' || dto.dayOfWeek === 'ALL' || dto.dayOfWeek === 'ALL_DAY';
+    const daysToCreate: ScheduleDayOfWeek[] = isAllDays
+      ? allDays
+      : [dto.dayOfWeek as ScheduleDayOfWeek];
 
-    if (actorId) {
+    if (!isAllDays && !allDays.includes(dto.dayOfWeek as ScheduleDayOfWeek)) {
+      throw new BadRequestException(`Invalid dayOfWeek: ${dto.dayOfWeek}`);
+    }
+
+    for (const day of daysToCreate) {
+      try {
+        await this.checkRecurringConflicts({
+          dayOfWeek: day,
+          startTime: dto.startTime,
+          endTime: dto.endTime,
+          staffId: dto.staffId,
+          batchId: dto.batchId,
+          room: dto.room,
+        });
+      } catch (err: any) {
+        if (!isAllDays) throw err;
+        throw new BadRequestException(`Schedule conflict on ${day}: ${err.message}`);
+      }
+    }
+
+    const createdSchedules: any[] = [];
+    for (const day of daysToCreate) {
+      const schedule = await this.prisma.classSchedule.create({
+        data: {
+          classId: dto.classId,
+          subjectId: dto.subjectId,
+          batchId: dto.batchId || null,
+          staffId: dto.staffId,
+          dayOfWeek: day,
+          startTime: dto.startTime,
+          endTime: dto.endTime,
+          room: dto.room?.trim() || null,
+          effectiveStartDate: dto.effectiveStartDate ? new Date(dto.effectiveStartDate) : null,
+          effectiveEndDate: dto.effectiveEndDate ? new Date(dto.effectiveEndDate) : null,
+          isActive: dto.isActive !== undefined ? dto.isActive : true,
+        },
+        include: {
+          class: true,
+          subject: true,
+          batch: true,
+          staff: { select: { id: true, firstName: true, lastName: true, email: true } },
+        },
+      });
+      createdSchedules.push(schedule);
+    }
+
+    if (actorId && createdSchedules.length > 0) {
       await this.prisma.auditLog.create({
         data: {
           actorId,
           action: 'SCHEDULE_ENTRY_CREATED',
           entityType: 'ClassSchedule',
-          entityId: schedule.id,
+          entityId: createdSchedules[0].id,
           details: {
-            day: schedule.dayOfWeek,
-            time: `${schedule.startTime}-${schedule.endTime}`,
+            day: dto.dayOfWeek,
+            time: `${dto.startTime}-${dto.endTime}`,
             class: classRecord.name,
             subject: subjectRecord.name,
+            slotsCount: createdSchedules.length,
           },
         },
       });
     }
 
-    return schedule;
+    return createdSchedules.length === 1 ? createdSchedules[0] : createdSchedules;
   }
 
   async getSchedules(query: {

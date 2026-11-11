@@ -5,6 +5,7 @@
   "description": "RC Academy 2.0 Backend API Service (NestJS + Prisma)",
   "scripts": {
     "build": "nest build",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "nest start",
     "dev": "nest start --watch",
@@ -15,6 +16,7 @@
     "prisma:seed": "ts-node src/database/prisma/seed.ts",
     "db:clear-students": "ts-node scripts/clear-students.ts",
     "db:clear-invoices": "ts-node scripts/clear-invoices.ts",
+    "db:wipe-reset-admin": "ts-node scripts/wipe-and-reset-admin.ts",
     "test": "jest --passWithNoTests",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
@@ -39,12 +41,15 @@
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
     "reflect-metadata": "^0.2.2",
-    "rxjs": "^7.8.1"
+    "rxjs": "^7.8.1",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@nestjs/cli": "^10.4.9",
     "@nestjs/schematics": "^10.2.3",
     "@nestjs/testing": "^10.4.15",
+    "@swc/cli": "^0.5.2",
+    "@swc/core": "^1.16.21",
     "@types/bcrypt": "^5.0.2",
     "@types/express": "^5.0.0",
     "@types/jest": "^29.5.14",

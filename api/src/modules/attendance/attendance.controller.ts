@@ -117,8 +117,13 @@ export class AttendanceController {
     UserRoleType.TEACHER,
     UserRoleType.STAFF,
   )
-  async getSessionById(@Param('id') id: string) {
-    return this.attendanceService.getSessionById(id);
+  async getSessionById(
+    @Param('id') id: string,
+    @Query('batchId') batchId?: string,
+    @Query('classId') classId?: string,
+    @Query('subjectId') subjectId?: string,
+  ) {
+    return this.attendanceService.getSessionById(id, { batchId, classId, subjectId });
   }
 
   @Patch('sessions/:id/close')

@@ -38,7 +38,9 @@ import {
   ArrowRight as LuArrowRight,
   User as LuUser,
   Activity as LuActivity,
-  UserPlus as LuUserPlus
+  UserPlus as LuUserPlus,
+  TrendingUp as LuTrendingUp,
+  PieChart as LuPieChart
 } from 'lucide-react';
 
 export {
@@ -81,5 +83,7 @@ export {
   LuArrowRight,
   LuUser,
   LuActivity,
-  LuUserPlus
+  LuUserPlus,
+  LuTrendingUp,
+  LuPieChart
 };

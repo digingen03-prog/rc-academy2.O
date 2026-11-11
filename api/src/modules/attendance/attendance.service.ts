@@ -519,18 +519,64 @@ export class AttendanceService {
     const { dateStr, dateObj } = await this.getAcademyTodayDateString(dto.date);
 
     let batch = null;
+    let targetClassId = dto.classId;
+
     if (dto.batchId) {
       batch = await this.prisma.batch.findUnique({
         where: { id: dto.batchId },
         include: { class: true },
       });
+      if (batch?.classId && !targetClassId) {
+        targetClassId = batch.classId;
+      }
     }
 
-    if (!batch && dto.classId) {
-      batch = await this.prisma.batch.findFirst({
-        where: { classId: dto.classId, isActive: true },
+    if (!batch && dto.subjectId) {
+      const subject = await this.prisma.subject.findUnique({
+        where: { id: dto.subjectId },
         include: { class: true },
       });
+      if (subject?.classId) {
+        if (!targetClassId) {
+          targetClassId = subject.classId;
+        }
+        batch = await this.prisma.batch.findFirst({
+          where: { classId: subject.classId, isActive: true },
+          include: { class: true },
+        });
+        if (!batch) {
+          batch = await this.prisma.batch.findFirst({
+            where: { classId: subject.classId },
+            include: { class: true },
+          });
+        }
+      }
+    }
+
+    if (!batch && targetClassId) {
+      batch = await this.prisma.batch.findFirst({
+        where: { classId: targetClassId, isActive: true },
+        include: { class: true },
+      });
+      if (!batch) {
+        batch = await this.prisma.batch.findFirst({
+          where: { classId: targetClassId },
+          include: { class: true },
+        });
+      }
+      if (!batch) {
+        const cls = await this.prisma.class.findUnique({ where: { id: targetClassId } });
+        if (cls) {
+          batch = await this.prisma.batch.create({
+            data: {
+              name: 'General',
+              classId: cls.id,
+              isActive: true,
+            },
+            include: { class: true },
+          });
+        }
+      }
     }
 
     if (!batch && dto.scheduleId) {
@@ -540,7 +586,13 @@ export class AttendanceService {
       });
       if (schedule?.batch) {
         batch = schedule.batch;
+        if (batch.classId && !targetClassId) {
+          targetClassId = batch.classId;
+        }
       } else if (schedule?.classId) {
+        if (!targetClassId) {
+          targetClassId = schedule.classId;
+        }
         batch = await this.prisma.batch.findFirst({
           where: { classId: schedule.classId, isActive: true },
           include: { class: true },
@@ -549,7 +601,14 @@ export class AttendanceService {
     }
 
     if (!batch) {
-      throw new NotFoundException(`No active batch found for class session`);
+      batch = await this.prisma.batch.findFirst({
+        where: { isActive: true },
+        include: { class: true },
+      });
+    }
+
+    if (!batch) {
+      throw new NotFoundException(`No active batch or class found for class session`);
     }
 
     if (isTeacher && dto.scheduleId) {
@@ -573,21 +632,45 @@ export class AttendanceService {
         },
         include: {
           batch: { include: { class: true } },
+          class: true,
+          subject: true,
           records: true,
         },
       });
     }
 
-    // Fallback: check by batch, date, and startTime
+    // Fallback: check by batch, date, subjectId, and startTime
     if (!existingSession) {
       existingSession = await this.prisma.attendanceSession.findFirst({
         where: {
           batchId: batch.id,
           date: dateObj,
           startTime: dto.startTime || null,
+          subjectId: dto.subjectId ? dto.subjectId : null,
+          ...(targetClassId ? { classId: targetClassId } : {}),
         },
         include: {
           batch: { include: { class: true } },
+          class: true,
+          subject: true,
+          records: true,
+        },
+      });
+    }
+
+    // Secondary fallback: if no subject specified, check if an open session exists for this batch today
+    if (!existingSession && !dto.subjectId) {
+      existingSession = await this.prisma.attendanceSession.findFirst({
+        where: {
+          batchId: batch.id,
+          date: dateObj,
+          classScheduleId: null,
+          status: SessionStatus.OPEN,
+        },
+        include: {
+          batch: { include: { class: true } },
+          class: true,
+          subject: true,
           records: true,
         },
       });
@@ -597,27 +680,52 @@ export class AttendanceService {
       return existingSession;
     }
 
-    // Create session
-    const session = await this.prisma.attendanceSession.create({
-      data: {
-        batchId: batch.id,
-        classId: dto.classId || batch.classId,
-        subjectId: dto.subjectId || null,
-        classScheduleId: dto.scheduleId || null,
-        startTime: dto.startTime || null,
-        endTime: dto.endTime || null,
-        date: dateObj,
-        sessionType: dto.sessionType || SessionType.MORNING,
-        status: SessionStatus.OPEN,
-        createdById: actorId,
-      },
-      include: {
-        batch: { include: { class: true } },
-        class: true,
-        subject: true,
-        records: true,
-      },
-    });
+    // Create session (wrapped in try/catch to gracefully handle race conditions & unique constraints)
+    let session = null;
+    try {
+      session = await this.prisma.attendanceSession.create({
+        data: {
+          batchId: batch.id,
+          classId: targetClassId || batch.classId,
+          subjectId: dto.subjectId || null,
+          classScheduleId: dto.scheduleId || null,
+          startTime: dto.startTime || null,
+          endTime: dto.endTime || null,
+          date: dateObj,
+          sessionType: dto.sessionType || SessionType.MORNING,
+          status: SessionStatus.OPEN,
+          createdById: actorId,
+        },
+        include: {
+          batch: { include: { class: true } },
+          class: true,
+          subject: true,
+          records: true,
+        },
+      });
+    } catch (err: any) {
+      if (err.code === 'P2002') {
+        // Concurrently created or existing session found matching constraint
+        const fallback = await this.prisma.attendanceSession.findFirst({
+          where: {
+            batchId: batch.id,
+            date: dateObj,
+            classScheduleId: dto.scheduleId || null,
+            ...(dto.subjectId ? { subjectId: dto.subjectId } : {}),
+          },
+          include: {
+            batch: { include: { class: true } },
+            class: true,
+            subject: true,
+            records: true,
+          },
+        });
+        if (fallback) {
+          return fallback;
+        }
+      }
+      throw err;
+    }
 
     await this.prisma.auditLog.create({
       data: {
@@ -671,7 +779,10 @@ export class AttendanceService {
     });
   }
 
-  async getSessionById(sessionId: string) {
+  async getSessionById(
+    sessionId: string,
+    filterOverride?: { batchId?: string; classId?: string; subjectId?: string },
+  ) {
     const session = await this.prisma.attendanceSession.findUnique({
       where: { id: sessionId },
       include: {
@@ -716,47 +827,83 @@ export class AttendanceService {
 
     // Deduplicate and collect all active enrolled students for this session
     const studentMap = new Map<string, any>();
-    const targetClassId = session.classId || session.batch?.classId;
-    const isScheduleAllBatches = !session.classSchedule?.batchId;
 
-    // 1. If session has a specific batch (not All Batches)
-    if (!isScheduleAllBatches && session.batch?.enrollments) {
-      for (const e of session.batch.enrollments) {
-        if (
-          e.student &&
-          e.student.status === StudentStatus.ACTIVE &&
-          (!session.subjectId || e.subjectId === session.subjectId || e.subjectId === null)
-        ) {
+    const targetBatchId = filterOverride?.batchId || (session.classSchedule ? session.classSchedule.batchId : null);
+    const targetClassId = filterOverride?.classId || session.classId || session.batch?.classId;
+    const targetSubjectId = filterOverride?.subjectId !== undefined ? (filterOverride.subjectId || null) : (session.subjectId || null);
+
+    if (targetBatchId) {
+      // 1. Explicit Batch requested: get active students enrolled in this batch
+      const batchEnrollments = await this.prisma.studentBatchEnrollment.findMany({
+        where: {
+          batchId: targetBatchId,
+          isActive: true,
+          student: { status: StudentStatus.ACTIVE },
+          ...(targetSubjectId
+            ? {
+                OR: [
+                  { subjectId: targetSubjectId },
+                  { subjectId: null },
+                ],
+              }
+            : {}),
+        },
+        include: { student: true },
+      });
+      for (const e of batchEnrollments) {
+        if (e.student) {
           studentMap.set(e.student.id, e.student);
         }
       }
-    }
-
-    // 2. If schedule is for "All Batches" or batch enrollments didn't yield students:
-    if (studentMap.size === 0 && targetClassId) {
+    } else if (targetClassId) {
+      // 2. Class requested (without specific batch): get active students across all batches of this class
       const classEnrollments = await this.prisma.studentBatchEnrollment.findMany({
         where: {
           batch: { classId: targetClassId },
           isActive: true,
           student: { status: StudentStatus.ACTIVE },
+          ...(targetSubjectId
+            ? {
+                OR: [
+                  { subjectId: targetSubjectId },
+                  { subjectId: null },
+                ],
+              }
+            : {}),
         },
         include: { student: true },
       });
-
-      // Filter by subject if specified
-      let matched = classEnrollments;
-      if (session.subjectId) {
-        const bySubject = classEnrollments.filter(
-          (ce) => ce.subjectId === session.subjectId || ce.subjectId === null,
-        );
-        if (bySubject.length > 0) {
-          matched = bySubject;
+      for (const e of classEnrollments) {
+        if (e.student) {
+          studentMap.set(e.student.id, e.student);
         }
       }
+    } else if (targetSubjectId) {
+      // 3. Subject requested across all batches/classes
+      const subjectEnrollments = await this.prisma.studentBatchEnrollment.findMany({
+        where: {
+          subjectId: targetSubjectId,
+          isActive: true,
+          student: { status: StudentStatus.ACTIVE },
+        },
+        include: { student: true },
+      });
+      for (const e of subjectEnrollments) {
+        if (e.student) {
+          studentMap.set(e.student.id, e.student);
+        }
+      }
+    }
 
-      for (const ce of matched) {
-        if (ce.student && ce.student.status === StudentStatus.ACTIVE) {
-          studentMap.set(ce.student.id, ce.student);
+    // 4. Fallback to session's own batch enrollments if nothing matched
+    if (studentMap.size === 0 && session.batch?.enrollments) {
+      for (const e of session.batch.enrollments) {
+        if (
+          e.student &&
+          e.student.status === StudentStatus.ACTIVE &&
+          (!targetSubjectId || e.subjectId === targetSubjectId || e.subjectId === null)
+        ) {
+          studentMap.set(e.student.id, e.student);
         }
       }
     }
@@ -766,16 +913,20 @@ export class AttendanceService {
       (s) => !recordedStudentIds.has(s.id),
     );
 
-    const presentCount = session.records.filter(
+    const relevantRecords = studentMap.size > 0
+      ? session.records.filter((r) => studentMap.has(r.studentId))
+      : session.records;
+
+    const presentCount = relevantRecords.filter(
       (r) => r.status === AttendanceStatus.PRESENT,
     ).length;
-    const absentCount = session.records.filter(
+    const absentCount = relevantRecords.filter(
       (r) => r.status === AttendanceStatus.ABSENT,
     ).length;
-    const lateCount = session.records.filter(
+    const lateCount = relevantRecords.filter(
       (r) => r.status === AttendanceStatus.LATE,
     ).length;
-    const excusedCount = session.records.filter(
+    const excusedCount = relevantRecords.filter(
       (r) => r.status === AttendanceStatus.EXCUSED,
     ).length;
 
@@ -1563,7 +1714,7 @@ export class AttendanceService {
 
       return {
         type: 'CHECK_IN',
-        message: `Welcome, ${staff.firstName} ${staff.lastName}! Check-In recorded at ${now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}. Check-Out is automatic at 09:30 PM.`,
+        message: `Welcome, ${staff.firstName} ${staff.lastName}! Check-In recorded at ${now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })}. Check-Out is automatic at 09:30 PM.`,
         staff: {
           id: staff.id,
           name: `${staff.firstName} ${staff.lastName}`,
@@ -1577,7 +1728,7 @@ export class AttendanceService {
       // Already checked in today
       return {
         type: 'ALREADY_CHECKED_IN',
-        message: `${staff.firstName} ${staff.lastName} is already checked in for today at ${existing.checkInAt ? new Date(existing.checkInAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'earlier'}. Check-Out is automatic at 09:30 PM.`,
+        message: `${staff.firstName} ${staff.lastName} is already checked in for today at ${existing.checkInAt ? new Date(existing.checkInAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }) : 'earlier'}. Check-Out is automatic at 09:30 PM.`,
         staff: {
           id: staff.id,
           name: `${staff.firstName} ${staff.lastName}`,

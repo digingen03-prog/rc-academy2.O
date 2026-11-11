@@ -99,7 +99,7 @@ export function Sidebar() {
         {/* Navigation Links */}
         <nav className="flex-1 px-3 py-5 space-y-1 overflow-y-auto">
           {navigation.map((item) => {
-            const isActive = pathname === item.href || pathname.startsWith(`${item.href}/`);
+            const isActive = pathname === item.href || Boolean(pathname?.startsWith(`${item.href}/`));
             const Icon = item.icon;
             return (
               <Link

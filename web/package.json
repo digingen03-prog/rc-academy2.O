@@ -4,7 +4,7 @@
   "private": true,
   "description": "RC Academy 2.0 Web Frontend (Next.js 15 + React 19 + Tailwind CSS)",
   "scripts": {
-    "dev": "next dev -p 3000",
+    "dev": "next dev --turbopack -p 3000",
     "build": "next build",
     "start": "next start -p 3000",
     "lint": "next lint",

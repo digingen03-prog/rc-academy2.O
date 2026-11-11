@@ -1,4 +1,4 @@
-import { Controller, Get, UseGuards } from '@nestjs/common';
+import { Controller, Get, Query, UseGuards } from '@nestjs/common';
 import { DashboardService } from './dashboard.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
@@ -21,5 +21,27 @@ export class DashboardController {
   )
   async getMetrics(@CurrentUser() user: any) {
     return this.dashboardService.getMetrics(user);
+  }
+
+  @Get('attendance-analytics')
+  @Roles(
+    UserRoleType.SUPER_ADMIN,
+    UserRoleType.ACADEMY_ADMIN,
+    UserRoleType.TEACHER,
+    UserRoleType.ACCOUNTANT,
+    UserRoleType.STAFF,
+  )
+  async getAttendanceAnalytics(
+    @Query('consecutiveThreshold') threshold?: string,
+    @Query('classId') classId?: string,
+    @CurrentUser() user?: any,
+  ) {
+    return this.dashboardService.getAttendanceAnalytics(
+      {
+        consecutiveThreshold: threshold ? parseInt(threshold, 10) : 3,
+        classId,
+      },
+      user,
+    );
   }
 }

@@ -17,7 +17,7 @@ export function MobileBottomNavigation() {
 
   // Check if current route is among secondary items (in which case highlight "More")
   const isSecondaryActive =
-    !primaryItems.some((item) => pathname === item.href || pathname.startsWith(`${item.href}/`)) &&
+    !primaryItems.some((item) => pathname === item.href || Boolean(pathname?.startsWith(`${item.href}/`))) &&
     pathname !== '/login';
 
   return (
@@ -28,7 +28,7 @@ export function MobileBottomNavigation() {
       >
         <div className="grid grid-cols-5 h-[58px] items-center px-1">
           {primaryItems.map((item) => {
-            const isActive = pathname === item.href || pathname.startsWith(`${item.href}/`);
+            const isActive = pathname === item.href || Boolean(pathname?.startsWith(`${item.href}/`));
             const Icon = item.icon;
 
             return (

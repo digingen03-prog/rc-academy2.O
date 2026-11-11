@@ -99,6 +99,10 @@ export class CreateStaffDto {
 
   @IsString()
   @IsOptional()
+  dateOfJoining?: string;
+
+  @IsString()
+  @IsOptional()
   password?: string;
 
   @IsArray()
@@ -111,11 +115,19 @@ export class CreateStaffDto {
 export class UpdateStaffDto {
   @IsString()
   @IsOptional()
+  name?: string;
+
+  @IsString()
+  @IsOptional()
   firstName?: string;
 
   @IsString()
   @IsOptional()
   lastName?: string;
+
+  @IsEmail()
+  @IsOptional()
+  email?: string;
 
   @IsString()
   @IsOptional()
@@ -148,9 +160,19 @@ export class UpdateStaffDto {
   @IsOptional()
   compensationEffectiveDate?: string;
 
+  @IsString()
+  @IsOptional()
+  dateOfJoining?: string;
+
   @IsEnum(UserStatus)
   @IsOptional()
   status?: UserStatus;
+
+  @IsArray()
+  @IsOptional()
+  @ValidateNested({ each: true })
+  @Type(() => CourseAssignmentItemDto)
+  courseAssignments?: CourseAssignmentItemDto[];
 }
 
 export class AssignStaffCoursesDto {

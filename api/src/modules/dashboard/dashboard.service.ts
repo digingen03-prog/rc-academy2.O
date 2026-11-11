@@ -419,4 +419,236 @@ export class DashboardService {
       };
     }
   }
+
+  // ==========================================
+  // ATTENDANCE ANALYTICS: CONSECUTIVE ABSENCES
+  // ==========================================
+
+  async getAttendanceAnalytics(query: { consecutiveThreshold?: number; classId?: string }, user?: any) {
+    const threshold = query.consecutiveThreshold ? Number(query.consecutiveThreshold) : 3;
+    const filterClassId = query.classId;
+
+    const roles: string[] = user?.roles || [];
+    const isSuperAdmin = roles.includes(UserRoleType.SUPER_ADMIN);
+    const isAcademyAdmin = roles.includes(UserRoleType.ACADEMY_ADMIN);
+    const isStaffOrTeacher =
+      (roles.includes(UserRoleType.STAFF) || roles.includes(UserRoleType.TEACHER)) &&
+      !isSuperAdmin &&
+      !isAcademyAdmin;
+
+    // Student scope filter
+    const studentWhere: any = {
+      status: StudentStatus.ACTIVE,
+    };
+
+    if (filterClassId) {
+      studentWhere.batchEnrollments = {
+        some: {
+          isActive: true,
+          batch: { classId: filterClassId },
+        },
+      };
+    }
+
+    if (isStaffOrTeacher && user?.id) {
+      const staffId = user.id;
+      const [courseAssignments, classSchedules] = await Promise.all([
+        this.prisma.staffCourseAssignment.findMany({
+          where: { userId: staffId, isActive: true },
+          select: { classId: true, batchId: true },
+        }),
+        this.prisma.classSchedule.findMany({
+          where: { staffId, isActive: true },
+          select: { classId: true, batchId: true },
+        }),
+      ]);
+      const allAssignments = [...courseAssignments, ...classSchedules];
+      const directBatchIds = Array.from(new Set(allAssignments.map((a) => a.batchId).filter(Boolean))) as string[];
+      const assignedClassIds = Array.from(new Set(allAssignments.map((a) => a.classId).filter(Boolean))) as string[];
+
+      studentWhere.batchEnrollments = {
+        some: {
+          isActive: true,
+          OR: [
+            ...(directBatchIds.length > 0 ? [{ batchId: { in: directBatchIds } }] : []),
+            ...(assignedClassIds.length > 0 ? [{ batch: { classId: { in: assignedClassIds } } }] : []),
+          ],
+        },
+      };
+    }
+
+    // Fetch active students with batch enrollments, guardians, and recent attendance records
+    const students = await this.prisma.student.findMany({
+      where: studentWhere,
+      include: {
+        batchEnrollments: {
+          where: { isActive: true },
+          include: {
+            batch: {
+              include: { class: true },
+            },
+            subject: true,
+          },
+        },
+        guardians: {
+          include: { guardian: true },
+        },
+        attendanceRecords: {
+          orderBy: { recordedAt: 'desc' },
+          take: 30,
+          include: {
+            session: {
+              include: {
+                class: true,
+                batch: { include: { class: true } },
+                subject: true,
+              },
+            },
+          },
+        },
+      },
+      orderBy: { lastName: 'asc' },
+    });
+
+    const evaluatedStudents = [];
+    let criticalCount = 0; // >= 3 consecutive absences
+    let atRiskCount = 0;   // exactly 2 consecutive absences
+
+    for (const s of students) {
+      // Sort records from newest to oldest by session date, falling back to recordedAt
+      const sortedRecords = [...s.attendanceRecords].sort((a, b) => {
+        const timeA = new Date(a.session?.date || a.recordedAt).getTime();
+        const timeB = new Date(b.session?.date || b.recordedAt).getTime();
+        return timeB - timeA;
+      });
+
+      let consecutiveAbsences = 0;
+      let countingStreak = true;
+      let lastAttendedDate: string | null = null;
+      const missedSessions: Array<{
+        date: string;
+        className: string;
+        batchName: string;
+        subjectName?: string;
+        status: string;
+      }> = [];
+
+      for (const rec of sortedRecords) {
+        const isAbsent = rec.status === AttendanceStatus.ABSENT;
+        const isPresentOrLate = rec.status === AttendanceStatus.PRESENT || rec.status === AttendanceStatus.LATE;
+
+        if (countingStreak) {
+          if (isAbsent) {
+            consecutiveAbsences++;
+            missedSessions.push({
+              date: rec.session?.date
+                ? new Date(rec.session.date).toISOString().split('T')[0]
+                : new Date(rec.recordedAt).toISOString().split('T')[0],
+              className: rec.session?.class?.name || rec.session?.batch?.class?.name || 'Class',
+              batchName: rec.session?.batch?.name || 'Batch',
+              subjectName: rec.session?.subject?.name || undefined,
+              status: rec.status,
+            });
+          } else if (isPresentOrLate) {
+            countingStreak = false;
+            lastAttendedDate = rec.session?.date
+              ? new Date(rec.session.date).toISOString().split('T')[0]
+              : new Date(rec.recordedAt).toISOString().split('T')[0];
+          }
+        } else if (!lastAttendedDate && isPresentOrLate) {
+          lastAttendedDate = rec.session?.date
+            ? new Date(rec.session.date).toISOString().split('T')[0]
+            : new Date(rec.recordedAt).toISOString().split('T')[0];
+        }
+      }
+
+      if (consecutiveAbsences >= 3) {
+        criticalCount++;
+      } else if (consecutiveAbsences === 2) {
+        atRiskCount++;
+      }
+
+      // Compute student total attendance rate from recent sessions
+      const totalSessions = sortedRecords.length;
+      const presentSessions = sortedRecords.filter(
+        (r) => r.status === AttendanceStatus.PRESENT || r.status === AttendanceStatus.LATE,
+      ).length;
+      const attendanceRate = totalSessions > 0 ? Math.round((presentSessions / totalSessions) * 100) : 100;
+
+      // Extract primary guardian and phones
+      const primaryGuardianRel = s.guardians.find((g) => g.isPrimary) || s.guardians[0];
+      const guardian = primaryGuardianRel?.guardian || null;
+
+      const studentPhone = s.phone || s.alternativePhone || null;
+      const parentPhone = guardian?.phone || null;
+      const primaryContactPhone = parentPhone || studentPhone || null;
+
+      // Enrolled class and batch details
+      const primaryEnrollment = s.batchEnrollments[0];
+      const className = primaryEnrollment?.batch?.class?.name || 'Unassigned';
+      const classCode = primaryEnrollment?.batch?.class?.code || '';
+      const classId = primaryEnrollment?.batch?.class?.id || '';
+      const batchName = primaryEnrollment?.batch?.name || 'Unassigned';
+
+      const allEnrolledCourses = s.batchEnrollments.map((be) => ({
+        classId: be.batch?.class?.id,
+        className: be.batch?.class?.name,
+        classCode: be.batch?.class?.code,
+        batchName: be.batch?.name,
+        subjectName: be.subject?.name,
+      }));
+
+      evaluatedStudents.push({
+        studentId: s.id,
+        studentName: `${s.firstName} ${s.lastName}`.trim(),
+        studentCode: s.studentCode,
+        admissionNumber: s.admissionNumber,
+        attendanceCode: s.attendanceCode,
+        classId,
+        className,
+        classCode,
+        batchName,
+        allEnrolledCourses,
+        studentPhone,
+        parentPhone,
+        parentName: guardian?.fullName || null,
+        parentRelationship: guardian?.relationship || 'PARENT',
+        primaryContactPhone,
+        consecutiveAbsences,
+        isConsecutiveAbsent: consecutiveAbsences >= threshold,
+        isCritical: consecutiveAbsences >= 3,
+        isAtRisk: consecutiveAbsences === 2,
+        lastAttendedDate,
+        missedSessions,
+        totalSessionsEvaluated: totalSessions,
+        attendanceRate,
+      });
+    }
+
+    // Filter to students who have consecutive absences >= threshold (or if threshold is 0, all students with any absence streak)
+    const filteredStudents = evaluatedStudents
+      .filter((s) => s.consecutiveAbsences >= threshold)
+      .sort((a, b) => b.consecutiveAbsences - a.consecutiveAbsences);
+
+    // List of classes for filter dropdown
+    const availableClassesMap = new Map<string, { id: string; name: string; code: string }>();
+    for (const s of evaluatedStudents) {
+      if (s.classId) {
+        availableClassesMap.set(s.classId, { id: s.classId, name: s.className, code: s.classCode });
+      }
+    }
+
+    return {
+      summary: {
+        totalStudentsEvaluated: evaluatedStudents.length,
+        criticalAbsenteesCount: criticalCount,
+        atRiskCount,
+        thresholdUsed: threshold,
+        filteredCount: filteredStudents.length,
+      },
+      availableClasses: Array.from(availableClassesMap.values()),
+      students: filteredStudents,
+      allEvaluatedCount: evaluatedStudents.length,
+    };
+  }
 }

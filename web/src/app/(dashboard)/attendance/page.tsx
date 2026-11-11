@@ -34,11 +34,15 @@ import {
   GraduationCap,
   Phone,
   Copy,
-  MessageCircle
+  MessageCircle,
+  CheckSquare,
+  Square,
+  RotateCcw
 } from 'lucide-react';
 import { Modal } from '@/components/ui/modal';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { formatTime12h, formatTimeOnly12h } from '@/lib/utils/time-format';
 
 // ----------------------------------------------------
 // TYPES
@@ -264,7 +268,21 @@ export default function AttendancePage() {
   const [showGroupLinkModal, setShowGroupLinkModal] = useState<{ batchId: string; batchName: string } | null>(null);
   const [groupLinkInput, setGroupLinkInput] = useState('');
   const [selectedTodayAttendanceClass, setSelectedTodayAttendanceClass] = useState<ScheduledClassItem | null>(null);
-  const [todayAttendanceStudents, setTodayAttendanceStudents] = useState<Array<{ id: string; studentId: string; name: string; code: string; status: 'PRESENT' | 'ABSENT' }>>([]);
+  const [todayAttendanceStudents, setTodayAttendanceStudents] = useState<
+    Array<{
+      id: string;
+      studentId: string;
+      name: string;
+      code: string;
+      status: 'PRESENT' | 'ABSENT' | 'UNMARKED';
+    }>
+  >([]);
+  const [selectedStudentIds, setSelectedStudentIds] = useState<Set<string>>(new Set());
+  const [todayAttendanceFilterTab, setTodayAttendanceFilterTab] = useState<'ALL' | 'PRESENT' | 'ABSENT' | 'UNMARKED'>('ALL');
+  const [classFilterId, setClassFilterId] = useState<string>('');
+  const [batchFilterId, setBatchFilterId] = useState<string>('');
+  const [subjectFilterId, setSubjectFilterId] = useState<string>('');
+  const [classSearchQuery, setClassSearchQuery] = useState<string>('');
   const [loadingTodayAttendance, setLoadingTodayAttendance] = useState(false);
   const [submittingTodayAttendance, setSubmittingTodayAttendance] = useState(false);
   const [todayAttendanceSearch, setTodayAttendanceSearch] = useState('');
@@ -310,6 +328,7 @@ export default function AttendancePage() {
   // Filter options
   const [classesList, setClassesList] = useState<any[]>([]);
   const [batchesList, setBatchesList] = useState<any[]>([]);
+  const [subjectsList, setSubjectsList] = useState<any[]>([]);
   const [staffUsersList, setStaffUsersList] = useState<any[]>([]);
 
   // Correction modal state
@@ -406,14 +425,16 @@ export default function AttendancePage() {
 
   const loadFilterOptions = async () => {
     try {
-      const [classes, batches, staff] = await Promise.all([
+      const [classes, batches, staff, subjects] = await Promise.all([
         ApiClient.fetch<any[]>('/courses').catch(() => []),
         ApiClient.fetch<any[]>('/courses/batches').catch(() => []),
         ApiClient.fetch<any[]>('/staff').catch(() => []),
+        ApiClient.fetch<any[]>('/courses/subjects').catch(() => []),
       ]);
       setClassesList(classes || []);
       setBatchesList(batches || []);
       setStaffUsersList(staff || []);
+      setSubjectsList(subjects || []);
     } catch (err) {
       console.error('Failed to load filter options:', err);
     }
@@ -639,35 +660,121 @@ export default function AttendancePage() {
     }
   };
 
-  const handleSelectClassForTodayAttendance = async (item: ScheduledClassItem) => {
-    setSelectedTodayAttendanceClass(item);
+  // Filtered batches based on selected class
+  // Filtered batches based on selected class
+  const availableBatches = React.useMemo(() => {
+    if (!classFilterId) {
+      if (batchesList.length > 0) {
+        return batchesList.map((b: any) => {
+          const parentClass = classesList.find((c) => c.id === b.classId);
+          return {
+            ...b,
+            className: parentClass?.name || b.class?.name || '',
+          };
+        });
+      }
+      return classesList.flatMap((c) =>
+        (c.batches || []).map((b: any) => ({
+          ...b,
+          classId: c.id,
+          className: c.name,
+        }))
+      );
+    }
+    const selectedClass = classesList.find((c) => c.id === classFilterId);
+    const fromBatchesList = batchesList.filter((b: any) => b.classId === classFilterId);
+    if (fromBatchesList.length > 0) {
+      return fromBatchesList.map((b: any) => ({
+        ...b,
+        className: selectedClass?.name || '',
+      }));
+    }
+    return (selectedClass?.batches || []).map((b: any) => ({
+      ...b,
+      classId: selectedClass.id,
+      className: selectedClass.name,
+    }));
+  }, [classesList, batchesList, classFilterId]);
+
+  // Filtered subjects based on selected class
+  const availableSubjects = React.useMemo(() => {
+    if (!classFilterId) {
+      return subjectsList;
+    }
+    return subjectsList.filter((s: any) => !s.classId || s.classId === classFilterId);
+  }, [subjectsList, classFilterId]);
+
+  const handleLoadAttendanceForFilter = async (
+    targetClassId?: string,
+    targetBatchId?: string,
+    targetSubjectId?: string,
+    targetDate?: string,
+  ) => {
+    const cId = targetClassId !== undefined ? targetClassId : classFilterId;
+    const bId = targetBatchId !== undefined ? targetBatchId : batchFilterId;
+    const sId = targetSubjectId !== undefined ? targetSubjectId : subjectFilterId;
+    const dStr = targetDate || selectedDate;
+
+    // If no filter selected at all, clear roster
+    if (!cId && !bId && !sId) {
+      setSelectedTodayAttendanceClass(null);
+      setTodayAttendanceStudents([]);
+      setSelectedStudentIds(new Set());
+      return;
+    }
+
     setLoadingTodayAttendance(true);
     try {
-      let sessionId = item.sessionId;
+      const res = await ApiClient.fetch<any>('/attendance/sessions/start-class', {
+        method: 'POST',
+        body: JSON.stringify({
+          classId: cId || undefined,
+          batchId: bId || undefined,
+          subjectId: sId || undefined,
+          date: dStr,
+        }),
+      });
 
-      if (!sessionId) {
-        const res = await ApiClient.fetch<any>('/attendance/sessions/start-class', {
-          method: 'POST',
-          body: JSON.stringify({
-            scheduleId: item.scheduleId,
-            batchId: item.batchId || undefined,
-            classId: item.classId,
-            subjectId: item.subjectId || undefined,
-            startTime: item.startTime,
-            endTime: item.endTime,
-            date: selectedDate,
-          }),
-        });
-        sessionId = res.id;
-        item.sessionId = res.id;
-      }
+      const cls = classesList.find((c) => c.id === cId) || res.class;
+      const bch = availableBatches.find((b: any) => b.id === bId) || res.batch;
+      const sbj = availableSubjects.find((s: any) => s.id === sId) || res.subject;
 
-      const sessionDetails = await ApiClient.fetch<ActiveSessionData>(`/attendance/sessions/${sessionId}`);
+      const item: ScheduledClassItem = {
+        id: res.id,
+        scheduleId: res.classScheduleId || null,
+        classId: cId || res.classId || '',
+        className: cls?.name || res.class?.name || (bch?.className ? bch.className : 'Class'),
+        classCode: cls?.code || res.class?.code || '',
+        batchId: bId || res.batchId || null,
+        batchName: bId ? (bch?.name || res.batch?.name || 'Batch') : 'All Batches',
+        subjectId: sId || res.subjectId || null,
+        subjectName: sId ? (sbj?.name || res.subject?.name || null) : 'All Subjects',
+        subjectCode: sbj?.code || res.subject?.code || null,
+        teacherName: bch?.teacherName || res.teacher?.name || '',
+        startTime: res.startTime || '09:00',
+        endTime: res.endTime || '10:00',
+        isCancelled: false,
+        sessionId: res.id,
+        sessionStatus: 'OPEN',
+        eligibleStudentCount: 0,
+        presentCount: 0,
+        absentCount: 0,
+        lateCount: 0,
+        excusedCount: 0,
+        unmarkedCount: 0,
+        attendanceRate: 0,
+      };
+
+      setSelectedTodayAttendanceClass(item);
+
+      const sessionDetails = await ApiClient.fetch<ActiveSessionData>(
+        `/attendance/sessions/${res.id}?batchId=${encodeURIComponent(bId || '')}&classId=${encodeURIComponent(cId || '')}&subjectId=${encodeURIComponent(sId || '')}`
+      );
       setActiveSessionData(sessionDetails);
 
-      const list: Array<{ id: string; studentId: string; name: string; code: string; status: 'PRESENT' | 'ABSENT' }> = [];
+      const list: Array<{ id: string; studentId: string; name: string; code: string; status: 'PRESENT' | 'ABSENT' | 'UNMARKED' }> = [];
 
-      // Add recorded students
+      // Add recorded students with their recorded status
       sessionDetails.records.forEach((r) => {
         list.push({
           id: r.id,
@@ -678,38 +785,98 @@ export default function AttendancePage() {
         });
       });
 
-      // Add unmarked students (defaulted to 'PRESENT' so all are checked Present initially)
+      // Add unmarked students (kept as UNMARKED so admin selects status)
       sessionDetails.unmarkedStudents.forEach((u: any) => {
         list.push({
           id: `unmarked-${u.id}`,
           studentId: u.id,
           name: u.studentName || `${u.firstName || ''} ${u.lastName || ''}`.trim() || 'Student',
           code: u.attendanceCode || u.studentCode || u.admissionNumber || '',
-          status: 'PRESENT',
+          status: 'UNMARKED',
         });
       });
 
       list.sort((a, b) => a.name.localeCompare(b.name));
       setTodayAttendanceStudents(list);
+      setSelectedStudentIds(new Set());
+      setTodayAttendanceFilterTab('ALL');
     } catch (err: any) {
-      alert(`Could not load class students: ${err?.message || 'Error occurred'}`);
+      alert(`Could not load class attendance: ${err?.message || 'Error occurred'}`);
     } finally {
       setLoadingTodayAttendance(false);
     }
   };
 
+  const handleSelectClassForTodayAttendance = async (item: ScheduledClassItem) => {
+    await handleLoadAttendanceForFilter(item.classId, item.batchId || undefined, item.subjectId || undefined, selectedDate);
+  };
+
+  const handleToggleSelectStudent = (studentId: string) => {
+    setSelectedStudentIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(studentId)) {
+        next.delete(studentId);
+      } else {
+        next.add(studentId);
+      }
+      return next;
+    });
+  };
+
+  const handleSelectAllVisibleStudents = (visibleStudentIds: string[]) => {
+    setSelectedStudentIds((prev) => {
+      const allSelected = visibleStudentIds.length > 0 && visibleStudentIds.every((id) => prev.has(id));
+      const next = new Set(prev);
+      if (allSelected) {
+        visibleStudentIds.forEach((id) => next.delete(id));
+      } else {
+        visibleStudentIds.forEach((id) => next.add(id));
+      }
+      return next;
+    });
+  };
+
+  const handleMarkSelectedStatus = (status: 'PRESENT' | 'ABSENT') => {
+    if (selectedStudentIds.size === 0) return;
+    setTodayAttendanceStudents((prev) =>
+      prev.map((s) => (selectedStudentIds.has(s.studentId) ? { ...s, status } : s))
+    );
+    showToast(`Marked ${selectedStudentIds.size} student(s) as ${status}`);
+    setSelectedStudentIds(new Set());
+  };
+
+  const handleClearSelection = () => {
+    setSelectedStudentIds(new Set());
+  };
+
   const handleToggleStudentStatus = (studentId: string, status: 'PRESENT' | 'ABSENT') => {
     setTodayAttendanceStudents((prev) =>
-      prev.map((s) => (s.studentId === studentId ? { ...s, status } : s))
+      prev.map((s) => {
+        if (s.studentId !== studentId) return s;
+        return { ...s, status: s.status === status ? 'UNMARKED' : status };
+      })
     );
   };
 
   const handleSetAllStudentsStatus = (status: 'PRESENT' | 'ABSENT') => {
     setTodayAttendanceStudents((prev) => prev.map((s) => ({ ...s, status })));
+    showToast(`Marked all students as ${status}`);
   };
 
   const handleSubmitTodayAttendance = async () => {
     if (!selectedTodayAttendanceClass || todayAttendanceStudents.length === 0 || submittingTodayAttendance) return;
+
+    let finalStudents = [...todayAttendanceStudents];
+    const unmarkedStudents = finalStudents.filter((s) => s.status === 'UNMARKED');
+    if (unmarkedStudents.length > 0) {
+      const confirmAbsent = window.confirm(
+        `There are ${unmarkedStudents.length} student(s) still unmarked.\n\nClick OK to mark them as ABSENT and save attendance, or Cancel to review.`
+      );
+      if (!confirmAbsent) return;
+      finalStudents = finalStudents.map((s) => (s.status === 'UNMARKED' ? { ...s, status: 'ABSENT' as const } : s));
+      setTodayAttendanceStudents(finalStudents);
+    }
+
     setSubmittingTodayAttendance(true);
 
     try {
@@ -718,8 +885,8 @@ export default function AttendancePage() {
         sessionId = activeSessionData.session.id;
       }
 
-      const presentIds = todayAttendanceStudents.filter((s) => s.status === 'PRESENT').map((s) => s.studentId);
-      const absentStudents = todayAttendanceStudents.filter((s) => s.status === 'ABSENT');
+      const presentIds = finalStudents.filter((s) => s.status === 'PRESENT').map((s) => s.studentId);
+      const absentStudents = finalStudents.filter((s) => s.status === 'ABSENT');
       const absentIds = absentStudents.map((s) => s.studentId);
 
       if (presentIds.length > 0) {
@@ -765,8 +932,8 @@ export default function AttendancePage() {
         teacherName: selectedTodayAttendanceClass.teacherName,
         presentCount: presentIds.length,
         absentCount: absentIds.length,
-        totalEnrolled: todayAttendanceStudents.length,
-        attendanceRate: todayAttendanceStudents.length > 0 ? Math.round((presentIds.length / todayAttendanceStudents.length) * 100) : 0,
+        totalEnrolled: finalStudents.length,
+        attendanceRate: finalStudents.length > 0 ? Math.round((presentIds.length / finalStudents.length) * 100) : 0,
         absentees: absentList,
       });
 
@@ -782,10 +949,11 @@ export default function AttendancePage() {
         absentees: absentList,
         presentCount: presentIds.length,
         absentCount: absentIds.length,
-        totalCount: todayAttendanceStudents.length,
+        totalCount: finalStudents.length,
       });
 
       showToast(`Attendance saved! Generated absentee report for ${absentList.length} absentees.`);
+      setSelectedStudentIds(new Set());
     } catch (err: any) {
       alert(`Could not submit attendance: ${err?.message || 'Error occurred'}`);
     } finally {
@@ -985,7 +1153,7 @@ export default function AttendancePage() {
         type: res.type,
         message: res.message,
         staffName: res.staff?.name,
-        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        time: formatTimeOnly12h(new Date()),
       });
 
       setStaffCodeInput('');
@@ -1038,6 +1206,9 @@ export default function AttendancePage() {
     const newDateStr = `${y}-${m}-${d}`;
     setSelectedDate(newDateStr);
     loadTodayData(newDateStr);
+    if (classFilterId || batchFilterId || subjectFilterId) {
+      handleLoadAttendanceForFilter(classFilterId, batchFilterId, subjectFilterId, newDateStr);
+    }
     if (activeTab === 'STAFF') loadStaffRecords(newDateStr);
   };
 
@@ -1087,6 +1258,23 @@ export default function AttendancePage() {
   const renderStudentAttendanceSheet = () => {
     if (!selectedTodayAttendanceClass) return null;
 
+    const presentCount = todayAttendanceStudents.filter((s) => s.status === 'PRESENT').length;
+    const absentCount = todayAttendanceStudents.filter((s) => s.status === 'ABSENT').length;
+    const unmarkedCount = todayAttendanceStudents.filter((s) => s.status === 'UNMARKED').length;
+
+    const visibleStudents = todayAttendanceStudents.filter((s) => {
+      if (todayAttendanceFilterTab !== 'ALL' && s.status !== todayAttendanceFilterTab) {
+        return false;
+      }
+      if (!todayAttendanceSearch.trim()) return true;
+      const q = todayAttendanceSearch.toLowerCase();
+      return s.name.toLowerCase().includes(q) || s.code.toLowerCase().includes(q);
+    });
+
+    const isAllVisibleSelected =
+      visibleStudents.length > 0 &&
+      visibleStudents.every((s) => selectedStudentIds.has(s.studentId));
+
     return (
       <div className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden animate-in fade-in duration-200 mt-6">
         {/* Header with Title & Stats */}
@@ -1102,13 +1290,13 @@ export default function AttendancePage() {
                     {selectedTodayAttendanceClass.subjectName}
                   </span>
                 )}
-                <span className="inline-flex items-center gap-1 rounded-md bg-orange-100/80 px-2 py-0.5 text-[11px] font-bold text-[#D96B00] border border-orange-200/60 shrink-0">
-                  <Clock className="h-3 w-3" /> Auto-closes 09:30 PM
+                <span className="inline-flex items-center gap-1 rounded-md bg-neutral-100 px-2 py-0.5 text-[11px] font-bold text-neutral-700 border border-neutral-200 shrink-0">
+                  <UserCheck className="h-3 w-3 text-[#FF8500]" /> Manual Roll Call
                 </span>
               </div>
               <p className="text-xs text-gray-500 mt-1 flex items-center gap-1.5 flex-wrap">
                 <Clock className="h-3.5 w-3.5 text-gray-400 shrink-0" />
-                <span>{selectedTodayAttendanceClass.startTime} – {selectedTodayAttendanceClass.endTime}</span>
+                <span>{formatTime12h(selectedTodayAttendanceClass.startTime)} – {formatTime12h(selectedTodayAttendanceClass.endTime)}</span>
                 {selectedTodayAttendanceClass.teacherName && (
                   <>
                     <span className="text-gray-300">•</span>
@@ -1125,6 +1313,7 @@ export default function AttendancePage() {
                 onClick={() => {
                   setSelectedTodayAttendanceClass(null);
                   setTodayAttendanceStudents([]);
+                  setSelectedStudentIds(new Set());
                 }}
                 className="text-xs font-semibold text-gray-500 hover:text-gray-800 flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-100 bg-white shadow-2xs transition"
                 title="Close student sheet"
@@ -1135,47 +1324,73 @@ export default function AttendancePage() {
             </div>
           </div>
 
-          {/* Stats pills: 3-col grid on mobile, flex on desktop */}
-          <div className="grid grid-cols-3 gap-2 sm:flex sm:items-center sm:gap-2 mt-3">
-            <div className="flex items-center justify-center sm:justify-start gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 shadow-2xs text-center sm:text-left">
+          {/* Stats pills: 4-col grid */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-3">
+            <div className="flex items-center justify-center sm:justify-start gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 shadow-2xs">
               <Users className="h-3.5 w-3.5 text-gray-400 shrink-0" />
               <span className="text-[11px] sm:text-xs text-gray-500">Total:</span>
               <span className="text-xs sm:text-sm font-bold text-gray-800">{todayAttendanceStudents.length}</span>
             </div>
-            <div className="flex items-center justify-center sm:justify-start gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 shadow-2xs text-center sm:text-left">
+            <div className="flex items-center justify-center sm:justify-start gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 shadow-2xs">
               <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
               <span className="text-[11px] sm:text-xs text-emerald-700">Present:</span>
-              <span className="text-xs sm:text-sm font-bold text-emerald-800">
-                {todayAttendanceStudents.filter((s) => s.status === 'PRESENT').length}
-              </span>
+              <span className="text-xs sm:text-sm font-bold text-emerald-800">{presentCount}</span>
             </div>
-            <div className="flex items-center justify-center sm:justify-start gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1.5 shadow-2xs text-center sm:text-left">
+            <div className="flex items-center justify-center sm:justify-start gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1.5 shadow-2xs">
               <XCircle className="h-3.5 w-3.5 text-rose-600 shrink-0" />
               <span className="text-[11px] sm:text-xs text-rose-700">Absent:</span>
-              <span className="text-xs sm:text-sm font-bold text-rose-800">
-                {todayAttendanceStudents.filter((s) => s.status === 'ABSENT').length}
-              </span>
+              <span className="text-xs sm:text-sm font-bold text-rose-800">{absentCount}</span>
+            </div>
+            <div className="flex items-center justify-center sm:justify-start gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1.5 shadow-2xs">
+              <AlertTriangle className="h-3.5 w-3.5 text-amber-600 shrink-0" />
+              <span className="text-[11px] sm:text-xs text-amber-700">Unmarked:</span>
+              <span className="text-xs sm:text-sm font-bold text-amber-800">{unmarkedCount}</span>
             </div>
           </div>
 
-          {/* Actions & Search Bar */}
-          <div className="mt-3 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 pt-3 border-t border-gray-200">
-            <div className="relative flex-1 min-w-0">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-gray-400" />
-              <input
-                type="text"
-                value={todayAttendanceSearch}
-                onChange={(e) => setTodayAttendanceSearch(e.target.value)}
-                placeholder="Search student by name..."
-                className="w-full pl-9 pr-3 py-2 text-xs rounded-lg border border-gray-300 bg-white focus:outline-none focus:border-[#FF8500]"
-              />
+          {/* Status Filter Tabs & Bulk Actions */}
+          <div className="mt-3.5 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 pt-3 border-t border-gray-200">
+            {/* Filter Tabs */}
+            <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-1 sm:pb-0">
+              {(['ALL', 'PRESENT', 'ABSENT', 'UNMARKED'] as const).map((tab) => {
+                const count =
+                  tab === 'ALL'
+                    ? todayAttendanceStudents.length
+                    : tab === 'PRESENT'
+                    ? presentCount
+                    : tab === 'ABSENT'
+                    ? absentCount
+                    : unmarkedCount;
+                const isSelected = todayAttendanceFilterTab === tab;
+                return (
+                  <button
+                    key={tab}
+                    type="button"
+                    onClick={() => setTodayAttendanceFilterTab(tab)}
+                    className={`px-2.5 py-1 rounded-md text-xs font-bold transition-all shrink-0 ${
+                      isSelected
+                        ? tab === 'PRESENT'
+                          ? 'bg-emerald-600 text-white shadow-xs'
+                          : tab === 'ABSENT'
+                          ? 'bg-rose-600 text-white shadow-xs'
+                          : tab === 'UNMARKED'
+                          ? 'bg-amber-600 text-white shadow-xs'
+                          : 'bg-gray-800 text-white shadow-xs'
+                        : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                    }`}
+                  >
+                    {tab === 'ALL' ? 'All' : tab.charAt(0) + tab.slice(1).toLowerCase()} ({count})
+                  </button>
+                );
+              })}
             </div>
 
+            {/* Quick Bulk All Actions */}
             <div className="grid grid-cols-2 gap-2 sm:flex sm:items-center">
               <button
                 type="button"
                 onClick={() => handleSetAllStudentsStatus('PRESENT')}
-                className="px-3 py-2 text-xs font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 rounded-lg transition active:scale-95 flex items-center justify-center gap-1.5"
+                className="px-3 py-1.5 text-xs font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 rounded-lg transition active:scale-95 flex items-center justify-center gap-1.5"
               >
                 <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
                 Mark All Present
@@ -1183,13 +1398,62 @@ export default function AttendancePage() {
               <button
                 type="button"
                 onClick={() => handleSetAllStudentsStatus('ABSENT')}
-                className="px-3 py-2 text-xs font-bold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-300 rounded-lg transition active:scale-95 flex items-center justify-center gap-1.5"
+                className="px-3 py-1.5 text-xs font-bold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-300 rounded-lg transition active:scale-95 flex items-center justify-center gap-1.5"
               >
                 <XCircle className="h-3.5 w-3.5 text-rose-600" />
                 Mark All Absent
               </button>
             </div>
           </div>
+
+          {/* Search Input Bar */}
+          <div className="relative mt-2.5">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-gray-400" />
+            <input
+              type="text"
+              value={todayAttendanceSearch}
+              onChange={(e) => setTodayAttendanceSearch(e.target.value)}
+              placeholder="Search enrolled student by name or student code..."
+              className="w-full pl-9 pr-3 py-2 text-xs rounded-lg border border-gray-300 bg-white focus:outline-none focus:border-[#FF8500]"
+            />
+          </div>
+
+          {/* Multi-Select Floating Action Bar */}
+          {selectedStudentIds.size > 0 && (
+            <div className="mt-3 bg-orange-50/90 border border-orange-200 rounded-lg p-2.5 px-3 flex flex-wrap items-center justify-between gap-2.5 shadow-2xs animate-in fade-in duration-150">
+              <div className="flex items-center gap-2">
+                <CheckSquare className="h-4 w-4 text-[#FF8500]" />
+                <span className="text-xs font-bold text-gray-900">
+                  {selectedStudentIds.size} student{selectedStudentIds.size > 1 ? 's' : ''} selected
+                </span>
+              </div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  type="button"
+                  onClick={() => handleMarkSelectedStatus('PRESENT')}
+                  className="px-3 py-1.5 text-xs font-bold text-emerald-700 bg-emerald-100 hover:bg-emerald-200 border border-emerald-300 rounded-lg transition active:scale-95 flex items-center gap-1.5"
+                >
+                  <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+                  Mark Selected Present
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleMarkSelectedStatus('ABSENT')}
+                  className="px-3 py-1.5 text-xs font-bold text-rose-700 bg-rose-100 hover:bg-rose-200 border border-rose-300 rounded-lg transition active:scale-95 flex items-center gap-1.5"
+                >
+                  <XCircle className="h-3.5 w-3.5 text-rose-600" />
+                  Mark Selected Absent
+                </button>
+                <button
+                  type="button"
+                  onClick={handleClearSelection}
+                  className="text-xs text-gray-500 hover:text-gray-800 font-semibold px-2 py-1"
+                >
+                  Clear Selection
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Table Body */}
@@ -1198,94 +1462,120 @@ export default function AttendancePage() {
             <RefreshCw className="h-6 w-6 animate-spin mx-auto text-[#FF8500]" />
             <p className="text-xs font-medium">Loading enrolled students...</p>
           </div>
-        ) : todayAttendanceStudents.length === 0 ? (
+        ) : visibleStudents.length === 0 ? (
           <div className="py-16 text-center text-gray-400">
             <Users className="h-8 w-8 mx-auto text-gray-300 mb-2" />
-            <p className="text-sm font-semibold text-gray-600">No students enrolled</p>
-            <p className="text-xs text-gray-400">There are no active student enrollments for this class/batch.</p>
+            <p className="text-sm font-semibold text-gray-600">
+              {todayAttendanceStudents.length === 0
+                ? 'No enrolled students found for this selection'
+                : 'No students match current filter'}
+            </p>
+            <p className="text-xs text-gray-400 mt-1 max-w-sm mx-auto">
+              {todayAttendanceStudents.length === 0
+                ? 'Try selecting a different batch, class, or choose "All Subjects" to view enrolled students.'
+                : 'Try adjusting your search query or changing the status filter tab (All, Present, Absent, Unmarked).'}
+            </p>
           </div>
         ) : (
           <div>
             {/* MOBILE RESPONSIVE VIEW (sm:hidden) */}
-            {/* Clean layout: Name as title, Red and Green Dots, no code/admission */}
             <div className="block sm:hidden">
-              {/* Header with Title and Red/Green Dot labels */}
               <div className="flex items-center justify-between px-4 py-2.5 bg-gray-100/90 border-b border-gray-200 text-xs font-bold text-gray-700">
-                <span>Student Name</span>
-                <div className="flex items-center gap-4 pr-1">
-                  <span className="flex items-center gap-1.5 text-emerald-700 text-xs font-semibold">
-                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 ring-2 ring-emerald-200 inline-block" />
-                    Present
-                  </span>
-                  <span className="flex items-center gap-1.5 text-rose-700 text-xs font-semibold">
-                    <span className="w-2.5 h-2.5 rounded-full bg-rose-500 ring-2 ring-rose-200 inline-block" />
-                    Absent
-                  </span>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={isAllVisibleSelected}
+                    onChange={() => handleSelectAllVisibleStudents(visibleStudents.map((s) => s.studentId))}
+                    className="h-4 w-4 rounded border-gray-300 text-[#FF8500] focus:ring-[#FF8500]"
+                  />
+                  <span>Select All ({visibleStudents.length})</span>
+                </div>
+                <div className="flex items-center gap-2 pr-1">
+                  <span className="text-[11px] font-semibold text-gray-500">Tap to Mark</span>
                 </div>
               </div>
 
               {/* Student Rows */}
               <div className="divide-y divide-gray-100 bg-white">
-                {todayAttendanceStudents
-                  .filter((s) => {
-                    if (!todayAttendanceSearch.trim()) return true;
-                    const q = todayAttendanceSearch.toLowerCase();
-                    return s.name.toLowerCase().includes(q) || s.code.toLowerCase().includes(q);
-                  })
-                  .map((student, idx) => {
-                    const isPresent = student.status === 'PRESENT';
-                    return (
-                      <div
-                        key={student.studentId}
-                        className={`flex items-center justify-between px-4 py-3.5 transition-colors ${
-                          !isPresent ? 'bg-rose-50/40' : 'hover:bg-gray-50/60'
-                        }`}
-                      >
-                        {/* Student Name as the title (No code or admission number on mobile) */}
-                        <div className="flex items-center gap-2.5 min-w-0 pr-3">
-                          <span className="text-xs font-bold text-gray-400 w-5 shrink-0 text-right">
-                            {idx + 1}.
-                          </span>
-                          <p className="font-bold text-gray-900 text-sm truncate">
-                            {student.name}
-                          </p>
-                        </div>
+                {visibleStudents.map((student, idx) => {
+                  const isPresent = student.status === 'PRESENT';
+                  const isAbsent = student.status === 'ABSENT';
+                  const isUnmarked = student.status === 'UNMARKED';
+                  const isSelected = selectedStudentIds.has(student.studentId);
 
-                        {/* Interactive Green and Red Dots */}
-                        <div className="flex items-center gap-3.5 shrink-0">
-                          {/* Green Dot (Present) */}
-                          <button
-                            type="button"
-                            onClick={() => handleToggleStudentStatus(student.studentId, 'PRESENT')}
-                            className={`w-9 h-9 rounded-full flex items-center justify-center transition-all active:scale-90 cursor-pointer ${
-                              isPresent
-                                ? 'bg-emerald-500 text-white shadow-md ring-4 ring-emerald-100 scale-105'
-                                : 'bg-gray-100 text-gray-300 hover:bg-emerald-100 hover:text-emerald-600'
-                            }`}
-                            title="Mark Present"
-                            aria-label={`Mark ${student.name} Present`}
-                          >
-                            <Check className={`w-5 h-5 stroke-[2.5] ${isPresent ? 'text-white opacity-100' : 'text-gray-400 opacity-40'}`} />
-                          </button>
-
-                          {/* Red Dot (Absent) */}
-                          <button
-                            type="button"
-                            onClick={() => handleToggleStudentStatus(student.studentId, 'ABSENT')}
-                            className={`w-9 h-9 rounded-full flex items-center justify-center transition-all active:scale-90 cursor-pointer ${
-                              !isPresent
-                                ? 'bg-rose-500 text-white shadow-md ring-4 ring-rose-100 scale-105'
-                                : 'bg-gray-100 text-gray-300 hover:bg-rose-100 hover:text-rose-600'
-                            }`}
-                            title="Mark Absent"
-                            aria-label={`Mark ${student.name} Absent`}
-                          >
-                            <X className={`w-5 h-5 stroke-[2.5] ${!isPresent ? 'text-white opacity-100' : 'text-gray-400 opacity-40'}`} />
-                          </button>
+                  return (
+                    <div
+                      key={student.studentId}
+                      className={`flex items-center justify-between px-3.5 py-3 transition-colors ${
+                        isSelected
+                          ? 'bg-orange-50/60'
+                          : isPresent
+                          ? 'hover:bg-gray-50/60'
+                          : isAbsent
+                          ? 'bg-rose-50/30'
+                          : 'bg-amber-50/20'
+                      }`}
+                    >
+                      {/* Checkbox & Student Info */}
+                      <div className="flex items-center gap-2.5 min-w-0 pr-2">
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => handleToggleSelectStudent(student.studentId)}
+                          className="h-4 w-4 rounded border-gray-300 text-[#FF8500] focus:ring-[#FF8500] shrink-0"
+                        />
+                        <div className="min-w-0">
+                          <p className="font-bold text-gray-900 text-xs truncate">{student.name}</p>
+                          <div className="flex items-center gap-1.5 mt-0.5">
+                            <span className="font-mono text-[10px] text-gray-500 bg-gray-100 px-1.5 py-0.2 rounded">
+                              {student.code || 'N/A'}
+                            </span>
+                            <span
+                              className={`text-[9px] font-bold px-1.5 py-0.2 rounded ${
+                                isPresent
+                                  ? 'bg-emerald-100 text-emerald-800'
+                                  : isAbsent
+                                  ? 'bg-rose-100 text-rose-800'
+                                  : 'bg-amber-100 text-amber-800'
+                              }`}
+                            >
+                              {student.status}
+                            </span>
+                          </div>
                         </div>
                       </div>
-                    );
-                  })}
+
+                      {/* Interactive Present & Absent Buttons */}
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => handleToggleStudentStatus(student.studentId, 'PRESENT')}
+                          className={`w-8 h-8 rounded-full flex items-center justify-center transition-all active:scale-90 cursor-pointer ${
+                            isPresent
+                              ? 'bg-emerald-500 text-white shadow-md ring-3 ring-emerald-100'
+                              : 'bg-gray-100 text-gray-400 hover:bg-emerald-50 hover:text-emerald-600'
+                          }`}
+                          title="Mark Present"
+                        >
+                          <Check className={`w-4 h-4 stroke-[2.5] ${isPresent ? 'text-white' : 'text-gray-400'}`} />
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handleToggleStudentStatus(student.studentId, 'ABSENT')}
+                          className={`w-8 h-8 rounded-full flex items-center justify-center transition-all active:scale-90 cursor-pointer ${
+                            isAbsent
+                              ? 'bg-rose-500 text-white shadow-md ring-3 ring-rose-100'
+                              : 'bg-gray-100 text-gray-400 hover:bg-rose-50 hover:text-rose-600'
+                          }`}
+                          title="Mark Absent"
+                        >
+                          <X className={`w-4 h-4 stroke-[2.5] ${isAbsent ? 'text-white' : 'text-gray-400'}`} />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
 
@@ -1294,83 +1584,124 @@ export default function AttendancePage() {
               <table className="w-full text-left text-xs border-collapse">
                 <thead>
                   <tr className="border-b border-gray-200 bg-gray-100/70 text-gray-600 font-bold uppercase text-[10px] tracking-wider">
-                    <th className="py-3 px-4 w-12 text-center">#</th>
+                    <th className="py-3 px-4 w-10 text-center">
+                      <input
+                        type="checkbox"
+                        checked={isAllVisibleSelected}
+                        onChange={() => handleSelectAllVisibleStudents(visibleStudents.map((s) => s.studentId))}
+                        className="h-4 w-4 rounded border-gray-300 text-[#FF8500] focus:ring-[#FF8500]"
+                      />
+                    </th>
+                    <th className="py-3 px-2 w-10 text-center">#</th>
                     <th className="py-3 px-4">Student Name</th>
                     <th className="py-3 px-4">Code / Admission</th>
-                    <th className="py-3 px-4 text-center w-56">Attendance Status</th>
+                    <th className="py-3 px-4 text-center">Current Status</th>
+                    <th className="py-3 px-4 text-center w-56">Take Attendance</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {todayAttendanceStudents
-                    .filter((s) => {
-                      if (!todayAttendanceSearch.trim()) return true;
-                      const q = todayAttendanceSearch.toLowerCase();
-                      return s.name.toLowerCase().includes(q) || s.code.toLowerCase().includes(q);
-                    })
-                    .map((student, idx) => {
-                      const isPresent = student.status === 'PRESENT';
-                      return (
-                        <tr
-                          key={student.studentId}
-                          className={`transition-colors hover:bg-gray-50/80 ${
-                            !isPresent ? 'bg-rose-50/30' : ''
-                          }`}
-                        >
-                          <td className="py-3 px-4 text-center font-medium text-gray-400 text-xs">
-                            {idx + 1}
-                          </td>
-                          <td className="py-3 px-4">
-                            <div className="flex items-center gap-2.5">
-                              <div
-                                className={`h-8 w-8 rounded-full flex items-center justify-center font-bold text-xs shrink-0 ${
-                                  isPresent
-                                    ? 'bg-emerald-100 text-emerald-800'
-                                    : 'bg-rose-100 text-rose-800'
-                                }`}
-                              >
-                                {student.name.charAt(0).toUpperCase()}
-                              </div>
-                              <div>
-                                <p className="font-bold text-gray-900 text-sm">{student.name}</p>
-                              </div>
+                  {visibleStudents.map((student, idx) => {
+                    const isPresent = student.status === 'PRESENT';
+                    const isAbsent = student.status === 'ABSENT';
+                    const isUnmarked = student.status === 'UNMARKED';
+                    const isSelected = selectedStudentIds.has(student.studentId);
+
+                    return (
+                      <tr
+                        key={student.studentId}
+                        className={`transition-colors hover:bg-gray-50/80 ${
+                          isSelected
+                            ? 'bg-orange-50/40'
+                            : isPresent
+                            ? ''
+                            : isAbsent
+                            ? 'bg-rose-50/25'
+                            : 'bg-amber-50/15'
+                        }`}
+                      >
+                        <td className="py-3 px-4 text-center">
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => handleToggleSelectStudent(student.studentId)}
+                            className="h-4 w-4 rounded border-gray-300 text-[#FF8500] focus:ring-[#FF8500]"
+                          />
+                        </td>
+                        <td className="py-3 px-2 text-center font-medium text-gray-400 text-xs">
+                          {idx + 1}
+                        </td>
+                        <td className="py-3 px-4">
+                          <div className="flex items-center gap-2.5">
+                            <div
+                              className={`h-7 w-7 rounded-full flex items-center justify-center font-bold text-xs shrink-0 ${
+                                isPresent
+                                  ? 'bg-emerald-100 text-emerald-800'
+                                  : isAbsent
+                                  ? 'bg-rose-100 text-rose-800'
+                                  : 'bg-gray-100 text-gray-700'
+                              }`}
+                            >
+                              {student.name.charAt(0).toUpperCase()}
                             </div>
-                          </td>
-                          <td className="py-3 px-4">
-                            <span className="font-mono text-xs font-semibold px-2 py-0.5 rounded bg-gray-100 text-gray-700">
-                              {student.code || 'N/A'}
-                            </span>
-                          </td>
-                          <td className="py-3 px-4">
-                            <div className="flex items-center justify-center gap-2">
-                              <button
-                                type="button"
-                                onClick={() => handleToggleStudentStatus(student.studentId, 'PRESENT')}
-                                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition active:scale-95 cursor-pointer ${
-                                  isPresent
-                                    ? 'bg-emerald-600 text-white shadow-2xs'
-                                    : 'bg-gray-100 text-gray-600 hover:bg-emerald-50 hover:text-emerald-700 border border-gray-200'
-                                }`}
-                              >
-                                <CheckCircle2 className={`h-3.5 w-3.5 ${isPresent ? 'text-white' : 'text-emerald-500'}`} />
-                                Present
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleToggleStudentStatus(student.studentId, 'ABSENT')}
-                                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition active:scale-95 cursor-pointer ${
-                                  !isPresent
-                                    ? 'bg-rose-600 text-white shadow-2xs'
-                                    : 'bg-gray-100 text-gray-600 hover:bg-rose-50 hover:text-rose-700 border border-gray-200'
-                                }`}
-                              >
-                                <XCircle className={`h-3.5 w-3.5 ${!isPresent ? 'text-white' : 'text-rose-500'}`} />
-                                Absent
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
+                            <span className="font-bold text-gray-900 text-xs">{student.name}</span>
+                          </div>
+                        </td>
+                        <td className="py-3 px-4">
+                          <span className="font-mono text-xs font-semibold px-2 py-0.5 rounded bg-gray-100 text-gray-700">
+                            {student.code || 'N/A'}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4 text-center">
+                          <span
+                            className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold ${
+                              isPresent
+                                ? 'bg-emerald-100 text-emerald-800'
+                                : isAbsent
+                                ? 'bg-rose-100 text-rose-800'
+                                : 'bg-amber-100 text-amber-800'
+                            }`}
+                          >
+                            {isPresent ? (
+                              <CheckCircle2 className="h-3 w-3 text-emerald-600" />
+                            ) : isAbsent ? (
+                              <XCircle className="h-3 w-3 text-rose-600" />
+                            ) : (
+                              <AlertTriangle className="h-3 w-3 text-amber-600" />
+                            )}
+                            {student.status}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4">
+                          <div className="flex items-center justify-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => handleToggleStudentStatus(student.studentId, 'PRESENT')}
+                              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition active:scale-95 cursor-pointer ${
+                                isPresent
+                                  ? 'bg-emerald-600 text-white shadow-2xs'
+                                  : 'bg-gray-100 text-gray-600 hover:bg-emerald-50 hover:text-emerald-700 border border-gray-200'
+                              }`}
+                            >
+                              <CheckCircle2 className={`h-3.5 w-3.5 ${isPresent ? 'text-white' : 'text-emerald-500'}`} />
+                              Present
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleToggleStudentStatus(student.studentId, 'ABSENT')}
+                              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition active:scale-95 cursor-pointer ${
+                                isAbsent
+                                  ? 'bg-rose-600 text-white shadow-2xs'
+                                  : 'bg-gray-100 text-gray-600 hover:bg-rose-50 hover:text-rose-700 border border-gray-200'
+                              }`}
+                            >
+                              <XCircle className={`h-3.5 w-3.5 ${!isPresent && !isUnmarked ? 'text-white' : 'text-rose-500'}`} />
+                              Absent
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -1382,17 +1713,15 @@ export default function AttendancePage() {
           <div className="flex flex-col gap-0.5 text-xs text-gray-600">
             <div>
               <span className="font-bold text-gray-900">{todayAttendanceStudents.length}</span> total students:{' '}
-              <span className="font-bold text-emerald-700">
-                {todayAttendanceStudents.filter((s) => s.status === 'PRESENT').length} Present
-              </span>
-              ,{' '}
-              <span className="font-bold text-rose-700">
-                {todayAttendanceStudents.filter((s) => s.status === 'ABSENT').length} Absent
-              </span>
+              <span className="font-bold text-emerald-700">{presentCount} Present</span>
+              , <span className="font-bold text-rose-700">{absentCount} Absent</span>
+              {unmarkedCount > 0 && (
+                <span className="font-bold text-amber-700">, {unmarkedCount} Unmarked</span>
+              )}
             </div>
             <p className="text-[11px] text-gray-500 flex items-center gap-1">
-              <Clock className="h-3 w-3 text-[#FF8500] shrink-0" />
-              <span>Attendance auto-closes at 09:30 PM • No manual close needed</span>
+              <UserCheck className="h-3 w-3 text-[#FF8500] shrink-0" />
+              <span>Select students or use bulk actions, then click Confirm & Make Attendance.</span>
             </p>
           </div>
 
@@ -1409,7 +1738,7 @@ export default function AttendancePage() {
             ) : (
               <>
                 <Check className="h-4 w-4" />
-                <span>Save Attendance & Generate Absentee Notice</span>
+                <span>Confirm & Make Attendance</span>
               </>
             )}
           </Button>
@@ -1423,20 +1752,15 @@ export default function AttendancePage() {
       {/* Top Header */}
       <Header
         title="Attendance Management"
-        subtitle="Today's scheduled classes, live session scanner, historical records & staff terminal"
+        subtitle="Filter classes, select students, mark attendance records & view attendance history"
       />
 
       <ResponsivePageContainer>
         {/* Navigation Tabs Bar */}
         <div className="mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-gray-200 pb-3">
           <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-1 sm:pb-0 -mx-4 px-4 sm:mx-0 sm:px-0">
-                        <button
-              onClick={() => {
-                setActiveTab('SCANNER');
-                if (!selectedTodayAttendanceClass && scheduledClasses.length > 0) {
-                  handleSelectClassForTodayAttendance(scheduledClasses[0]);
-                }
-              }}
+            <button
+              onClick={() => setActiveTab('SCANNER')}
               className={`flex items-center gap-2 shrink-0 whitespace-nowrap rounded-lg px-3.5 py-2 text-xs sm:text-sm font-semibold transition-all ${
                 activeTab === 'SCANNER'
                   ? 'bg-[#FF8500] text-white shadow-sm'
@@ -1444,7 +1768,7 @@ export default function AttendancePage() {
               }`}
             >
               <UserCheck className="h-4 w-4 shrink-0" />
-              <span>Today Attendance</span>
+              <span>Take Attendance</span>
             </button>
 
             <button
@@ -1472,222 +1796,326 @@ export default function AttendancePage() {
             </button>
           </div>
 
-          {/* Academy Timezone & Auto-Close Policy Indicator */}
+          {/* Academy Timezone & Mode Indicator */}
           <div className="flex items-center gap-2 flex-wrap self-start sm:self-auto">
             <div className="flex items-center gap-1.5 rounded-lg bg-white px-2.5 py-1 text-[11px] sm:text-xs font-medium text-gray-600 border border-gray-200 shadow-sm shrink-0">
               <Clock className="h-3.5 w-3.5 text-[#FF8500]" />
               <span>Timezone: <strong className="text-black">{timezone}</strong></span>
             </div>
             <div className="flex items-center gap-1.5 rounded-lg bg-orange-50 px-2.5 py-1 text-[11px] sm:text-xs font-bold text-[#D96B00] border border-orange-200 shadow-2xs shrink-0">
-              <CheckCircle2 className="h-3.5 w-3.5 text-[#FF8500]" />
-              <span>Auto-closes: 09:30 PM</span>
+              <UserCheck className="h-3.5 w-3.5 text-[#FF8500]" />
+              <span>Manual Admin Mode</span>
             </div>
           </div>
         </div>
 
         {/* ==================================================== */}
-        {/* TAB 2: TODAY ATTENDANCE (CLASS LIST & STUDENT MARK)   */}
+        {/* TAB 1: TAKE ATTENDANCE (DIRECT FILTER & ROLL CALL)   */}
         {/* ==================================================== */}
         {activeTab === 'SCANNER' && (
           <div className="space-y-6">
-            {/* Date Navigator Banner */}
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-xl border border-gray-200 bg-white p-3.5 sm:p-4 shadow-sm">
-              <div className="flex items-center justify-between sm:justify-start gap-3">
-                <div className="flex items-center gap-3 min-w-0">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-orange-50 text-[#FF8500] shrink-0">
-                    <CalendarDays className="h-5 w-5" />
-                  </div>
-                  <div className="min-w-0">
-                    <h2 className="text-sm sm:text-base font-bold text-gray-900 truncate">
-                      {dateFormatted || 'Academy Schedule'}
-                    </h2>
-                    <p className="text-[11px] sm:text-xs text-gray-500 flex items-center gap-1.5 flex-wrap">
-                      <span className="font-semibold text-orange-950">Auto-closes daily at 09:30 PM</span>
-                      <span className="hidden sm:inline">•</span>
-                      <span className="hidden sm:inline text-gray-400">Timetable: {timezone}</span>
-                    </p>
+            {/* Direct Roll Call Filter Bar */}
+            <div className="rounded-xl border border-gray-200 bg-white p-4 sm:p-5 shadow-sm space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-gray-100 pb-3">
+                <div className="flex items-center gap-2">
+                  <Filter className="h-5 w-5 text-[#FF8500]" />
+                  <div>
+                    <h3 className="text-sm sm:text-base font-bold text-gray-900">Attendance Roll Call & Filters</h3>
+                    <p className="text-xs text-gray-500">Filter by Class, Batch, Subject, or Date to load students and mark roll call</p>
                   </div>
                 </div>
-              </div>
-
-              <div className="flex items-center justify-between sm:justify-end gap-1.5 w-full sm:w-auto pt-2 sm:pt-0 border-t sm:border-t-0 border-gray-100">
-                <div className="flex items-center gap-1 flex-1 sm:flex-initial">
+                {(classFilterId || batchFilterId || subjectFilterId) && (
                   <button
-                    onClick={() => shiftDate(-1)}
-                    className="rounded-lg border border-gray-200 bg-white p-2 text-gray-600 hover:bg-gray-50 hover:text-black transition-colors shrink-0"
-                    title="Previous Day"
-                  >
-                    <ChevronLeft className="h-4 w-4" />
-                  </button>
-
-                  <input
-                    type="date"
-                    value={selectedDate}
-                    onChange={(e) => {
-                      setSelectedDate(e.target.value);
-                      loadTodayData(e.target.value);
-                    }}
-                    className="w-full sm:w-auto rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-800 focus:border-[#FF8500] focus:outline-none min-w-0"
-                  />
-
-                  <button
-                    onClick={() => shiftDate(1)}
-                    className="rounded-lg border border-gray-200 bg-white p-2 text-gray-600 hover:bg-gray-50 hover:text-black transition-colors shrink-0"
-                    title="Next Day"
-                  >
-                    <ChevronRight className="h-4 w-4" />
-                  </button>
-                </div>
-
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => loadTodayData(selectedDate)}
-                  disabled={loadingToday}
-                  className="text-xs shrink-0 px-2.5 py-1.5 h-auto flex items-center gap-1"
-                >
-                  <RefreshCw className={`h-3.5 w-3.5 ${loadingToday ? 'animate-spin' : ''}`} />
-                  <span className="hidden sm:inline">Refresh</span>
-                </Button>
-              </div>
-            </div>
-
-            {/* Class Selection Section */}
-            <div className="rounded-xl border border-gray-200 bg-white p-4 sm:p-5 shadow-sm">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
-                <div>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <h3 className="text-sm sm:text-base font-bold text-gray-900 flex items-center gap-2">
-                      <CalendarDays className="h-4 sm:h-5 w-4 sm:w-5 text-[#FF8500]" />
-                      Today's Classes ({scheduledClasses.length})
-                    </h3>
-                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-orange-100 text-[#D96B00] border border-orange-200/60">
-                      Auto-closes 09:30 PM
-                    </span>
-                  </div>
-                  <p className="text-xs text-gray-500 mt-1">
-                    Select a class to mark attendance and immediately generate WhatsApp absentee notice.
-                  </p>
-                </div>
-                {selectedTodayAttendanceClass && (
-                  <button
+                    type="button"
                     onClick={() => {
+                      setClassFilterId('');
+                      setBatchFilterId('');
+                      setSubjectFilterId('');
                       setSelectedTodayAttendanceClass(null);
                       setTodayAttendanceStudents([]);
+                      setSelectedStudentIds(new Set());
                     }}
-                    className="self-start sm:self-auto text-xs font-semibold text-gray-500 hover:text-gray-800 flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-50"
+                    className="text-xs text-[#FF8500] hover:text-[#d96b00] font-bold flex items-center gap-1 self-start sm:self-auto cursor-pointer"
                   >
-                    <X className="h-3.5 w-3.5" />
-                    Deselect Class
+                    <RotateCcw className="h-3.5 w-3.5" />
+                    Reset All Filters
                   </button>
                 )}
               </div>
 
-              {loadingToday ? (
-                <div className="py-12 flex flex-col items-center justify-center text-gray-400 gap-3">
-                  <RefreshCw className="h-6 w-6 animate-spin text-[#FF8500]" />
-                  <p className="text-xs font-medium">Loading today's scheduled classes...</p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+                {/* 1. Date Selector */}
+                <div>
+                  <label className="text-[11px] font-bold text-gray-700 uppercase tracking-wider block mb-1">
+                    Date
+                  </label>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => shiftDate(-1)}
+                      className="rounded-lg border border-gray-300 bg-white p-2 text-gray-600 hover:bg-gray-50 hover:text-black transition shrink-0"
+                      title="Previous Day"
+                    >
+                      <ChevronLeft className="h-3.5 w-3.5" />
+                    </button>
+                    <input
+                      type="date"
+                      value={selectedDate}
+                      onChange={(e) => {
+                        const newD = e.target.value;
+                        setSelectedDate(newD);
+                        loadTodayData(newD);
+                        if (classFilterId || batchFilterId || subjectFilterId) {
+                          handleLoadAttendanceForFilter(classFilterId, batchFilterId, subjectFilterId, newD);
+                        }
+                      }}
+                      className="w-full rounded-lg border border-gray-300 bg-white px-2.5 py-2 text-xs font-semibold text-gray-800 focus:border-[#FF8500] focus:outline-none min-w-0"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => shiftDate(1)}
+                      className="rounded-lg border border-gray-300 bg-white p-2 text-gray-600 hover:bg-gray-50 hover:text-black transition shrink-0"
+                      title="Next Day"
+                    >
+                      <ChevronRight className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
                 </div>
-              ) : scheduledClasses.length === 0 ? (
-                <div className="rounded-xl border border-dashed border-gray-200 py-10 text-center">
-                  <Calendar className="mx-auto h-8 w-8 text-gray-300" />
-                  <p className="text-sm font-semibold text-gray-600 mt-2">No Scheduled Classes Today</p>
-                  <p className="text-xs text-gray-400 mt-0.5">Check class timetables or create a schedule for this date.</p>
+
+                {/* 2. Standard / Class Selector */}
+                <div>
+                  <label className="text-[11px] font-bold text-gray-700 uppercase tracking-wider block mb-1">
+                    Standard / Class
+                  </label>
+                  <select
+                    value={classFilterId}
+                    onChange={(e) => {
+                      const newCId = e.target.value;
+                      setClassFilterId(newCId);
+
+                      // Check if current batch belongs to the new class
+                      let nextBId = batchFilterId;
+                      if (newCId && batchFilterId) {
+                        const bObj = batchesList.find((b: any) => b.id === batchFilterId);
+                        if (bObj && bObj.classId && bObj.classId !== newCId) {
+                          nextBId = '';
+                          setBatchFilterId('');
+                        }
+                      }
+
+                      // Check if current subject belongs to the new class
+                      let nextSId = subjectFilterId;
+                      if (newCId && subjectFilterId) {
+                        const sObj = subjectsList.find((s: any) => s.id === subjectFilterId);
+                        if (sObj && sObj.classId && sObj.classId !== newCId) {
+                          nextSId = '';
+                          setSubjectFilterId('');
+                        }
+                      }
+
+                      if (newCId || nextBId || nextSId) {
+                        handleLoadAttendanceForFilter(newCId, nextBId, nextSId, selectedDate);
+                      } else {
+                        setSelectedTodayAttendanceClass(null);
+                        setTodayAttendanceStudents([]);
+                        setSelectedStudentIds(new Set());
+                      }
+                    }}
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-semibold text-gray-800 focus:border-[#FF8500] focus:outline-none"
+                  >
+                    <option value="">All Classes / Standards ({classesList.length})</option>
+                    {classesList.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name} {c.code ? `(${c.code})` : ''}
+                      </option>
+                    ))}
+                  </select>
                 </div>
-              ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-                  {scheduledClasses.map((item) => {
-                    const isSelected =
-                      selectedTodayAttendanceClass?.scheduleId === item.scheduleId &&
-                      selectedTodayAttendanceClass?.batchId === item.batchId;
-                    const isOpen = item.sessionStatus === 'OPEN';
-                    const isClosed = item.sessionStatus === 'CLOSED';
-                    const isMarked = item.presentCount > 0 || item.absentCount > 0;
 
-                    return (
-                      <div
-                        key={`${item.scheduleId}-${item.batchId}`}
-                        onClick={() => handleSelectClassForTodayAttendance(item)}
-                        className={`cursor-pointer rounded-xl border p-4 transition-all duration-150 flex flex-col justify-between ${
-                          isSelected
-                            ? 'border-[#FF8500] ring-2 ring-[#FF8500]/20 bg-orange-50/40 shadow-sm'
-                            : 'border-gray-200 bg-white hover:border-[#FF8500]/50 hover:bg-orange-50/10 hover:shadow-sm'
-                        }`}
-                      >
-                        <div>
-                          <div className="flex items-start justify-between gap-2">
-                            <span className="font-bold text-sm text-gray-900 group-hover:text-[#FF8500] line-clamp-1">
-                              {item.className}
-                            </span>
-                            <span
-                              className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold shrink-0 ${
-                                isMarked
-                                  ? 'bg-emerald-100 text-emerald-800'
-                                  : isClosed
-                                  ? 'bg-gray-100 text-gray-700'
-                                  : 'bg-amber-100 text-amber-800'
-                              }`}
-                            >
-                              {isMarked
-                                ? `Marked (${item.presentCount}P / ${item.absentCount}A)`
-                                : isClosed
-                                ? 'Closed (09:30 PM)'
-                                : 'Pending'}
-                            </span>
-                          </div>
+                {/* 3. Batch Selector */}
+                <div>
+                  <label className="text-[11px] font-bold text-gray-700 uppercase tracking-wider block mb-1">
+                    Batch
+                  </label>
+                  <select
+                    value={batchFilterId}
+                    onChange={(e) => {
+                      const newBId = e.target.value;
+                      setBatchFilterId(newBId);
 
-                          <div className="mt-1 flex items-center gap-1.5 text-xs text-gray-600 flex-wrap">
-                            <span className="font-medium text-gray-800">{item.batchName}</span>
-                            {item.subjectName && (
-                              <>
-                                <span className="text-gray-300">•</span>
-                                <span className="text-gray-500">{item.subjectName}</span>
-                              </>
-                            )}
-                          </div>
+                      let targetCId = classFilterId;
+                      if (newBId) {
+                        const foundBatch = availableBatches.find((b: any) => b.id === newBId) || batchesList.find((b: any) => b.id === newBId);
+                        if (foundBatch?.classId && foundBatch.classId !== classFilterId) {
+                          targetCId = foundBatch.classId;
+                          setClassFilterId(targetCId);
+                        }
+                      }
 
-                          <div className="mt-3 flex items-center gap-1.5 text-xs text-gray-500">
-                            <Clock className="h-3.5 w-3.5 text-gray-400 shrink-0" />
-                            <span>{item.startTime} – {item.endTime}</span>
-                          </div>
+                      if (targetCId || newBId || subjectFilterId) {
+                        handleLoadAttendanceForFilter(targetCId, newBId, subjectFilterId, selectedDate);
+                      } else {
+                        setSelectedTodayAttendanceClass(null);
+                        setTodayAttendanceStudents([]);
+                        setSelectedStudentIds(new Set());
+                      }
+                    }}
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-semibold text-gray-800 focus:border-[#FF8500] focus:outline-none"
+                  >
+                    <option value="">All Batches {availableBatches.length > 0 ? `(${availableBatches.length})` : ''}</option>
+                    {availableBatches.map((b: any) => (
+                      <option key={b.id} value={b.id}>
+                        {b.className && !classFilterId ? `${b.className} - ` : ''}{b.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
 
-                          {item.teacherName && (
-                            <div className="mt-1 text-xs text-gray-500 flex items-center gap-1.5">
-                              <span className="text-gray-400 font-medium">Faculty:</span>
-                              <span className="truncate">{item.teacherName}</span>
-                            </div>
-                          )}
+                {/* 4. Subject Selector */}
+                <div>
+                  <label className="text-[11px] font-bold text-gray-700 uppercase tracking-wider block mb-1">
+                    Subject
+                  </label>
+                  <select
+                    value={subjectFilterId}
+                    onChange={(e) => {
+                      const newSId = e.target.value;
+                      setSubjectFilterId(newSId);
 
-                          <div className="mt-2 flex items-center gap-1 text-[11px] text-gray-400">
-                            <Clock className="h-3 w-3 text-orange-400 shrink-0" />
-                            <span>Auto-closes 09:30 PM</span>
-                          </div>
-                        </div>
+                      let targetCId = classFilterId;
+                      if (newSId) {
+                        const foundSubject = subjectsList.find((s: any) => s.id === newSId);
+                        if (foundSubject?.classId && !classFilterId) {
+                          targetCId = foundSubject.classId;
+                          setClassFilterId(targetCId);
+                        }
+                      }
 
-                        <div className="mt-4 pt-3 border-t border-gray-100 flex items-center justify-between">
-                          <span className="text-[11px] font-bold text-gray-500 flex items-center gap-1">
-                            <Users className="h-3.5 w-3.5 text-gray-400" />
-                            {item.eligibleStudentCount || 0} enrolled
-                          </span>
-                          <span
-                            className={`text-xs font-bold px-2.5 py-1 rounded-md transition ${
-                              isSelected
-                                ? 'bg-[#FF8500] text-white shadow-2xs'
-                                : 'bg-gray-100 text-gray-700 hover:bg-[#FF8500] hover:text-white'
-                            }`}
-                          >
-                            {isSelected ? 'Sheet Open ✓' : isMarked ? 'Edit / View →' : 'Take Attendance →'}
-                          </span>
-                        </div>
-                      </div>
-                    );
-                  })}
+                      if (targetCId || batchFilterId || newSId) {
+                        handleLoadAttendanceForFilter(targetCId, batchFilterId, newSId, selectedDate);
+                      } else {
+                        setSelectedTodayAttendanceClass(null);
+                        setTodayAttendanceStudents([]);
+                        setSelectedStudentIds(new Set());
+                      }
+                    }}
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-semibold text-gray-800 focus:border-[#FF8500] focus:outline-none"
+                  >
+                    <option value="">All Subjects {availableSubjects.length > 0 ? `(${availableSubjects.length})` : ''}</option>
+                    {availableSubjects.map((s: any) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name} {s.code ? `(${s.code})` : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* Active Selection Info Badge */}
+              {selectedTodayAttendanceClass && (
+                <div className="flex items-center justify-between gap-2 pt-2 border-t border-gray-100 flex-wrap">
+                  <div className="flex items-center gap-2 text-xs text-gray-600">
+                    <span className="font-semibold text-gray-900">Loaded Roster:</span>
+                    <span className="rounded bg-orange-100 text-[#D96B00] px-2 py-0.5 font-bold">
+                      {selectedTodayAttendanceClass.className}
+                    </span>
+                    {selectedTodayAttendanceClass.batchName && selectedTodayAttendanceClass.batchName !== 'All Batches' && (
+                      <span className="rounded bg-gray-100 text-gray-800 px-2 py-0.5 font-semibold">
+                        {selectedTodayAttendanceClass.batchName}
+                      </span>
+                    )}
+                    {selectedTodayAttendanceClass.subjectName && (
+                      <span className="rounded bg-blue-100 text-blue-800 px-2 py-0.5 font-semibold">
+                        {selectedTodayAttendanceClass.subjectName}
+                      </span>
+                    )}
+                    <span className="text-gray-400">• {selectedDate}</span>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handleLoadAttendanceForFilter(classFilterId, batchFilterId, subjectFilterId, selectedDate)}
+                      disabled={loadingTodayAttendance}
+                      className="text-xs h-7 px-2.5 flex items-center gap-1"
+                    >
+                      <RefreshCw className={`h-3 w-3 ${loadingTodayAttendance ? 'animate-spin' : ''}`} />
+                      <span>Reload Roster</span>
+                    </Button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedTodayAttendanceClass(null);
+                        setTodayAttendanceStudents([]);
+                        setSelectedStudentIds(new Set());
+                      }}
+                      className="text-xs text-gray-500 hover:text-gray-800 font-semibold px-2 py-1"
+                    >
+                      Clear Roster
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
 
-            {/* Student Attendance Marking Sheet */}
-            {renderStudentAttendanceSheet()}
+            {/* If Roster is Loaded, render Student Attendance Sheet */}
+            {selectedTodayAttendanceClass && renderStudentAttendanceSheet()}
+
+            {/* If No Class is selected yet, show Quick Selector Guide */}
+            {!selectedTodayAttendanceClass && !loadingTodayAttendance && (
+              <div className="rounded-xl border border-dashed border-gray-300 bg-white p-8 text-center space-y-4">
+                <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-orange-50 text-[#FF8500]">
+                  <GraduationCap className="h-7 w-7" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-gray-900">Select a Class or Batch to Start Roll Call</h3>
+                  <p className="text-xs text-gray-500 mt-1 max-w-md mx-auto">
+                    Use the filters above to choose a Class, Batch, and Subject, or click any class below to load students:
+                  </p>
+                </div>
+
+                {classesList.length > 0 && (
+                  <div className="pt-2">
+                    <p className="text-[11px] font-bold text-gray-400 uppercase tracking-wider mb-2.5">
+                      Available Classes ({classesList.length})
+                    </p>
+                    <div className="flex items-center justify-center gap-2 flex-wrap max-w-2xl mx-auto">
+                      {classesList.map((c) => (
+                        <button
+                          key={c.id}
+                          type="button"
+                          onClick={() => {
+                            setClassFilterId(c.id);
+                            setBatchFilterId('');
+                            setSubjectFilterId('');
+                            handleLoadAttendanceForFilter(c.id, '', '', selectedDate);
+                          }}
+                          className="px-3.5 py-2 rounded-lg border border-gray-200 bg-gray-50 hover:bg-[#FF8500] hover:text-white hover:border-[#FF8500] text-xs font-bold text-gray-800 transition active:scale-95 shadow-2xs flex items-center gap-1.5 cursor-pointer"
+                        >
+                          <BookOpen className="h-3.5 w-3.5 shrink-0" />
+                          <span>{c.name}</span>
+                          {c.batches && c.batches.length > 0 && (
+                            <span className="text-[10px] opacity-75 font-normal">
+                              ({c.batches.length} {c.batches.length === 1 ? 'batch' : 'batches'})
+                            </span>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Loading Indicator */}
+            {loadingTodayAttendance && !selectedTodayAttendanceClass && (
+              <div className="rounded-xl border border-gray-200 bg-white p-12 text-center space-y-2">
+                <RefreshCw className="h-8 w-8 animate-spin mx-auto text-[#FF8500]" />
+                <p className="text-sm font-semibold text-gray-700">Loading student roster...</p>
+                <p className="text-xs text-gray-400">Fetching enrollments for the selected class and filters.</p>
+              </div>
+            )}
           </div>
         )}
 
@@ -1864,7 +2292,7 @@ export default function AttendancePage() {
                             <span className="font-bold text-gray-900">{r.sessionDate}</span>
                             {r.startTime && (
                               <span className="block text-[11px] text-gray-500">
-                                {r.startTime} – {r.endTime}
+                                {formatTime12h(r.startTime)} – {formatTime12h(r.endTime)}
                               </span>
                             )}
                           </td>
@@ -1894,7 +2322,7 @@ export default function AttendancePage() {
                             )}
                           </td>
                           <td className="px-4 py-3 text-gray-500 whitespace-nowrap">
-                            {new Date(r.recordedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            {formatTimeOnly12h(r.recordedAt)}
                           </td>
                           <td className="px-4 py-3 text-gray-600">{r.recordedBy}</td>
                           <td className="px-4 py-3 text-right">
@@ -2108,7 +2536,7 @@ export default function AttendancePage() {
                                 )}
                               </td>
                               <td className="px-3 py-2.5 text-emerald-700 font-semibold font-mono text-xs">
-                                {s.checkInAt ? new Date(s.checkInAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}
+                                {s.checkInAt ? formatTimeOnly12h(s.checkInAt) : '—'}
                               </td>
                               <td className="px-3 py-2.5">
                                 <span className="inline-flex items-center gap-1 font-mono text-xs font-semibold text-gray-700 bg-gray-100 px-2 py-0.5 rounded border border-gray-200">

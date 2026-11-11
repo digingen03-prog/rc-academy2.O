@@ -17,6 +17,7 @@ import {
   ResolveExceptionDto,
   SalaryLedgerQueryDto,
   AccrueFixedSalaryDto,
+  AccrueFacultyMonthlySalaryDto,
   CreateSalaryAdjustmentDto,
 } from './dto/salary.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -57,6 +58,47 @@ export class SalaryController {
   @Roles(UserRoleType.SUPER_ADMIN, UserRoleType.ACADEMY_ADMIN, UserRoleType.ACCOUNTANT)
   async getRevenueSummary() {
     return this.salaryService.getAcademyRevenueSummary();
+  }
+
+  // ----------------------------------------------------
+  // Executive Finance Analytics & Settlements (Super Admin Only)
+  // ----------------------------------------------------
+
+  @Get('analytics')
+  @Roles(UserRoleType.SUPER_ADMIN)
+  async getFinanceAnalytics() {
+    return this.salaryService.getFinanceExecutiveAnalytics();
+  }
+
+  @Get('staff-settlements')
+  @Roles(UserRoleType.SUPER_ADMIN)
+  async getStaffSettlementsOverview() {
+    return this.salaryService.getStaffSettlementsOverview();
+  }
+
+  @Get('payouts')
+  @Roles(UserRoleType.SUPER_ADMIN)
+  async getAllPayouts(
+    @Query('status') status?: string,
+    @Query('staffId') staffId?: string,
+  ) {
+    return this.salaryService.getAllPayouts({ status, staffId });
+  }
+
+  @Post('settle-staff')
+  @Roles(UserRoleType.SUPER_ADMIN)
+  async settleStaffDirect(
+    @Body()
+    dto: {
+      staffId: string;
+      paymentMethod?: string;
+      reference?: string;
+      notes?: string;
+      ledgerIds?: string[];
+    },
+    @CurrentUser('id') actorId: string,
+  ) {
+    return this.salaryService.directSettleStaff(dto, actorId);
   }
 
   // ----------------------------------------------------
@@ -152,6 +194,15 @@ export class SalaryController {
     @CurrentUser('id') actorId: string,
   ) {
     return this.salaryService.accrueFixedSalaries(dto, actorId);
+  }
+
+  @Post('accrue-faculty-monthly')
+  @Roles(UserRoleType.SUPER_ADMIN, UserRoleType.ACADEMY_ADMIN, UserRoleType.ACCOUNTANT)
+  async accrueFacultyMonthly(
+    @Body() dto: AccrueFacultyMonthlySalaryDto,
+    @CurrentUser('id') actorId: string,
+  ) {
+    return this.salaryService.accrueMonthlyFacultyEntitlements(dto, actorId);
   }
 
   // ----------------------------------------------------
