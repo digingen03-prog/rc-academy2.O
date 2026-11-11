@@ -35,6 +35,9 @@ export interface SettlementFormState {
   perStudentAmount: number;
   // Standard percentage share
   staffSharePercentage: number;
+  billingPeriod?: string;
+  settlementTrigger?: string;
+  marginPct?: number;
 }
 
 export const defaultSettlementState: SettlementFormState = {
@@ -48,6 +51,9 @@ export const defaultSettlementState: SettlementFormState = {
   includeTwoSubjects: true,
   perStudentAmount: 1000,
   staffSharePercentage: 70,
+  billingPeriod: 'MONTHLY',
+  settlementTrigger: 'ACCRUAL_REALIZED',
+  marginPct: 30,
 };
 
 /**

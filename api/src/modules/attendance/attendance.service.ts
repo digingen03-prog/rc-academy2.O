@@ -639,15 +639,14 @@ export class AttendanceService {
       });
     }
 
-    // Fallback: check by batch, date, subjectId, and startTime
-    if (!existingSession) {
+    // Step 2: check by batch, date, and subject if subject is specified
+    if (!existingSession && dto.subjectId) {
       existingSession = await this.prisma.attendanceSession.findFirst({
         where: {
           batchId: batch.id,
           date: dateObj,
-          startTime: dto.startTime || null,
-          subjectId: dto.subjectId ? dto.subjectId : null,
-          ...(targetClassId ? { classId: targetClassId } : {}),
+          subjectId: dto.subjectId,
+          ...(dto.startTime ? { startTime: dto.startTime } : {}),
         },
         include: {
           batch: { include: { class: true } },
@@ -658,14 +657,13 @@ export class AttendanceService {
       });
     }
 
-    // Secondary fallback: if no subject specified, check if an open session exists for this batch today
+    // Step 3: check for a general non-subject session for this batch on dateObj
     if (!existingSession && !dto.subjectId) {
       existingSession = await this.prisma.attendanceSession.findFirst({
         where: {
           batchId: batch.id,
           date: dateObj,
-          classScheduleId: null,
-          status: SessionStatus.OPEN,
+          subjectId: null,
         },
         include: {
           batch: { include: { class: true } },
@@ -673,6 +671,23 @@ export class AttendanceService {
           subject: true,
           records: true,
         },
+      });
+    }
+
+    // Step 4: if still not found and no specific subject was requested, reuse ANY session for this batch on dateObj
+    if (!existingSession && !dto.subjectId) {
+      existingSession = await this.prisma.attendanceSession.findFirst({
+        where: {
+          batchId: batch.id,
+          date: dateObj,
+        },
+        include: {
+          batch: { include: { class: true } },
+          class: true,
+          subject: true,
+          records: true,
+        },
+        orderBy: { createdAt: 'desc' },
       });
     }
 
@@ -704,13 +719,12 @@ export class AttendanceService {
         },
       });
     } catch (err: any) {
-      if (err.code === 'P2002') {
+      if (err.code === 'P2002' || err.message?.includes('Unique constraint')) {
         // Concurrently created or existing session found matching constraint
         const fallback = await this.prisma.attendanceSession.findFirst({
           where: {
             batchId: batch.id,
             date: dateObj,
-            classScheduleId: dto.scheduleId || null,
             ...(dto.subjectId ? { subjectId: dto.subjectId } : {}),
           },
           include: {
@@ -719,11 +733,31 @@ export class AttendanceService {
             subject: true,
             records: true,
           },
+          orderBy: { createdAt: 'desc' },
         });
         if (fallback) {
           return fallback;
         }
+
+        // Broadest fallback: any session for this batch on this date
+        const broadFallback = await this.prisma.attendanceSession.findFirst({
+          where: {
+            batchId: batch.id,
+            date: dateObj,
+          },
+          include: {
+            batch: { include: { class: true } },
+            class: true,
+            subject: true,
+            records: true,
+          },
+          orderBy: { createdAt: 'desc' },
+        });
+        if (broadFallback) {
+          return broadFallback;
+        }
       }
+      this.logger.error(`Failed to create attendance session: ${err.message}`, err.stack);
       throw err;
     }
 
@@ -1023,27 +1057,46 @@ export class AttendanceService {
       return existing;
     }
 
-    return this.prisma.attendanceSession.create({
-      data: {
-        batchId: dto.batchId,
-        classId: dto.classId || batch.classId,
-        subjectId: dto.subjectId || null,
-        classScheduleId: dto.classScheduleId || null,
-        startTime: dto.startTime || null,
-        endTime: dto.endTime || null,
-        date: sessionDate,
-        sessionType: dto.sessionType,
-        status: SessionStatus.OPEN,
-        createdById: actorId,
-      },
-      include: {
-        batch: {
-          include: {
-            class: true,
+    try {
+      return await this.prisma.attendanceSession.create({
+        data: {
+          batchId: dto.batchId,
+          classId: dto.classId || batch.classId,
+          subjectId: dto.subjectId || null,
+          classScheduleId: dto.classScheduleId || null,
+          startTime: dto.startTime || null,
+          endTime: dto.endTime || null,
+          date: sessionDate,
+          sessionType: dto.sessionType,
+          status: SessionStatus.OPEN,
+          createdById: actorId,
+        },
+        include: {
+          batch: {
+            include: {
+              class: true,
+            },
           },
         },
-      },
-    });
+      });
+    } catch (err: any) {
+      if (err.code === 'P2002' || err.message?.includes('Unique constraint')) {
+        const fallback = await this.prisma.attendanceSession.findFirst({
+          where: {
+            batchId: dto.batchId,
+            date: sessionDate,
+          },
+          include: {
+            batch: { include: { class: true } },
+          },
+          orderBy: { createdAt: 'desc' },
+        });
+        if (fallback) {
+          return fallback;
+        }
+      }
+      throw err;
+    }
   }
 
   async closeSession(sessionId: string, dto: CloseSessionDto, actorId: string) {
@@ -1228,16 +1281,29 @@ export class AttendanceService {
 
     if (!session) {
       const matchedEnrollment = student.batchEnrollments.find((e) => e.batchId === targetBatchId);
-      session = await this.prisma.attendanceSession.create({
-        data: {
-          batchId: targetBatchId,
-          classId: matchedEnrollment?.batch?.classId || null,
-          date: today,
-          sessionType,
-          status: SessionStatus.OPEN,
-          createdById: actorId,
-        },
-      });
+      try {
+        session = await this.prisma.attendanceSession.create({
+          data: {
+            batchId: targetBatchId,
+            classId: matchedEnrollment?.batch?.classId || null,
+            date: today,
+            sessionType,
+            status: SessionStatus.OPEN,
+            createdById: actorId,
+          },
+        });
+      } catch (err: any) {
+        if (err.code === 'P2002' || err.message?.includes('Unique constraint')) {
+          session = await this.prisma.attendanceSession.findFirst({
+            where: {
+              batchId: targetBatchId,
+              date: today,
+            },
+            orderBy: { createdAt: 'desc' },
+          });
+        }
+        if (!session) throw err;
+      }
     }
 
     if (session.status === SessionStatus.CLOSED) {

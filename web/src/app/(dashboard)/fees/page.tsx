@@ -58,6 +58,9 @@ import {
   Bell,
   MessageSquare,
   Send,
+  ChevronDown,
+  ChevronUp,
+  ChevronRight,
 } from 'lucide-react';
 import { Modal } from '@/components/ui/modal';
 import { Badge } from '@/components/ui/badge';
@@ -392,6 +395,12 @@ export default function FeesPage() {
     marginPct?: number;
   } | null>(null);
 
+  // In-page rule editor & inline expandable row states (No overlay)
+  const [isStaffPayRuleEditorOpen, setIsStaffPayRuleEditorOpen] = useState(false);
+  const [expandedAssignmentId, setExpandedAssignmentId] = useState<string | null>(null);
+  const [inlineStaffDetail, setInlineStaffDetail] = useState<{ [staffId: string]: any }>({});
+  const [loadingInlineStaffDetail, setLoadingInlineStaffDetail] = useState<string | null>(null);
+
   const filteredFacultyAssignments = useMemo(() => {
     return facultyAssignments.filter((as) => {
       if (facultySearchQuery.trim()) {
@@ -420,6 +429,159 @@ export default function FeesPage() {
       return true;
     });
   }, [facultyAssignments, facultySearchQuery, facultyFilterCourseId, facultyFilterStatus]);
+
+  // Executive KPI summary for Faculty & Staff Pay tab
+  const facultySummaryKpis = useMemo(() => {
+    const uniqueFaculty = new Set<string>();
+    let totalEntitlementSum = 0;
+    let realizedSum = 0;
+    let eligibleStudentsSum = 0;
+
+    filteredFacultyAssignments.forEach((as: any) => {
+      const sId = as.userId || as.staffId;
+      if (sId) {
+        uniqueFaculty.add(sId);
+      }
+
+      const parsed = parseSettlementToForm(
+        as.compensationRule,
+        as.staffSharePercentage ?? 70,
+      );
+      const amountPerStudent = Number(parsed.perStudentAmount) || 0;
+
+      const matchingSettlement = staffSettlementsData.find(
+        (s: any) => s.staffId === sId,
+      );
+      const assignmentSettlement =
+        matchingSettlement?.byAssignment?.[as.id] || matchingSettlement;
+      const courseItem = courseBreakdown.find((b) => b.courseId === as.classId);
+
+      const enrolledInCourse = studentAccounts.filter((sa) =>
+        sa.enrolledCourses?.some((c) => c.courseId === as.classId)
+      );
+      const filteredByBatch = as.batch?.name
+        ? enrolledInCourse.filter((sa) =>
+            sa.enrolledCourses?.some(
+              (c) =>
+                c.courseId === as.classId &&
+                (c.batchName === as.batch.name || (c as any).batchId === as.batchId)
+            )
+          )
+        : enrolledInCourse;
+
+      const targetSubName = (as.subject?.name || as.subjectName || '').trim().toLowerCase();
+      const filteredEligibleStudents = targetSubName
+        ? filteredByBatch.filter((sa) => {
+            const courseEntries = (sa.enrolledCourses || []).filter((ec) => ec.courseId === as.classId);
+            const distinctSubs = new Set(courseEntries.map((e) => (e.subjectName || '').trim().toLowerCase()).filter(Boolean));
+            return distinctSubs.size >= 3 || courseEntries.some((e) => !e.subjectName) || distinctSubs.has(targetSubName);
+          })
+        : filteredByBatch;
+
+      let liveAllCount = 0;
+      let liveTwoCount = 0;
+      let liveSingleCount = 0;
+      let liveRealizedAmount = 0;
+
+      if (filteredEligibleStudents.length > 0) {
+        filteredEligibleStudents.forEach((st) => {
+          const courseEntries = st.enrolledCourses.filter((ec) => ec.courseId === as.classId);
+          const distinctSubjects = new Set(courseEntries.map((e) => e.subjectName).filter(Boolean));
+          let stStaffShare = amountPerStudent;
+          if (distinctSubjects.size >= 3 || courseEntries.some((e) => !e.subjectName)) {
+            liveAllCount++;
+            if (parsed.mode === 'STUDENT_TIER_BASED') {
+              stStaffShare = Number(parsed.allSubjectsValue) || 0;
+            }
+          } else if (distinctSubjects.size === 2) {
+            liveTwoCount++;
+            if (parsed.mode === 'STUDENT_TIER_BASED') {
+              stStaffShare = Number(parsed.twoSubjectsValue) || 0;
+            }
+          } else {
+            liveSingleCount++;
+            if (parsed.mode === 'STUDENT_TIER_BASED') {
+              stStaffShare = Number(parsed.singleSubjectValue) || 0;
+            }
+          }
+
+          if (st.overallStatus === 'PAID') {
+            liveRealizedAmount += stStaffShare;
+          } else if (st.overallStatus === 'PARTIAL' && st.consolidatedBilled > 0 && st.consolidatedPaid > 0) {
+            liveRealizedAmount += Math.round(stStaffShare * Math.min(1, st.consolidatedPaid / st.consolidatedBilled));
+          }
+        });
+      }
+
+      const liveEligibleCount =
+        filteredEligibleStudents.length > 0
+          ? filteredEligibleStudents.length
+          : (courseItem?.enrolledStudentsCount ?? 0);
+
+      const eligibleStudents =
+        assignmentSettlement?.eligibleStudents && assignmentSettlement.eligibleStudents > 0
+          ? assignmentSettlement.eligibleStudents
+          : liveEligibleCount;
+
+      const computedTierEntitlement =
+        parsed.mode === 'STUDENT_TIER_BASED'
+          ? liveAllCount * (Number(parsed.allSubjectsValue) || 0) +
+            liveTwoCount * (Number(parsed.twoSubjectsValue) || 0) +
+            liveSingleCount * (Number(parsed.singleSubjectValue) || 0)
+          : eligibleStudents * amountPerStudent;
+
+      const totalEntitlement =
+        assignmentSettlement?.totalEntitlement && assignmentSettlement.totalEntitlement > 0
+          ? assignmentSettlement.totalEntitlement
+          : computedTierEntitlement;
+
+      const realizedAmount =
+        assignmentSettlement?.realizedAmount !== undefined
+          ? assignmentSettlement.realizedAmount
+          : liveRealizedAmount;
+
+      if (as.isActive !== false) {
+        totalEntitlementSum += totalEntitlement;
+        realizedSum += realizedAmount;
+        eligibleStudentsSum += eligibleStudents;
+      }
+    });
+
+    return {
+      facultyCount: uniqueFaculty.size,
+      rulesCount: filteredFacultyAssignments.length,
+      activeRulesCount: filteredFacultyAssignments.filter((a) => a.isActive !== false).length,
+      totalEntitlement: totalEntitlementSum,
+      realizedAmount: realizedSum,
+      pendingRealization: Math.max(0, totalEntitlementSum - realizedSum),
+      eligibleStudents: eligibleStudentsSum,
+    };
+  }, [filteredFacultyAssignments, staffSettlementsData, courseBreakdown, studentAccounts]);
+
+  const handleToggleExpandAssignment = async (as: any) => {
+    const targetId = as.id || `${as.staffId}-${as.classId}`;
+    if (expandedAssignmentId === targetId) {
+      setExpandedAssignmentId(null);
+      return;
+    }
+    setExpandedAssignmentId(targetId);
+    const staffId = as.userId || as.staffId;
+    if (staffId && !inlineStaffDetail[staffId]) {
+      setLoadingInlineStaffDetail(staffId);
+      try {
+        const detail = await ApiClient.fetch(
+          `/finance-analytics/staff-settlements/${staffId}/history?month=${selectedSettlementMonth}`,
+        ).catch(() => null);
+        if (detail) {
+          setInlineStaffDetail((prev) => ({ ...prev, [staffId]: detail }));
+        }
+      } catch (err) {
+        console.error('Failed to load inline staff settlement:', err);
+      } finally {
+        setLoadingInlineStaffDetail(null);
+      }
+    }
+  };
 
   // ====================================================
   // Data Fetching
@@ -1844,7 +2006,10 @@ export default function FeesPage() {
         singleSubjectValue: initialSingle,
       },
     });
-    setShowStaffPayRuleModal(true);
+    setIsStaffPayRuleEditorOpen(true);
+    if (activeTab !== 'revenue_salary') {
+      setActiveTab('revenue_salary');
+    }
   };
 
   const handleOpenEditStaffPayRule = (assignment: any) => {
@@ -1862,7 +2027,10 @@ export default function FeesPage() {
       role: assignment.role || 'TEACHER',
       settlement: parsedSettlement,
     });
-    setShowStaffPayRuleModal(true);
+    setIsStaffPayRuleEditorOpen(true);
+    if (activeTab !== 'revenue_salary') {
+      setActiveTab('revenue_salary');
+    }
   };
 
   const handleSaveStaffPayRule = async (e: React.FormEvent) => {
@@ -1915,6 +2083,7 @@ export default function FeesPage() {
         setSuccessMsg('Staff pay rule configured and assigned successfully!');
       }
 
+      setIsStaffPayRuleEditorOpen(false);
       setShowStaffPayRuleModal(false);
       await fetchSalaryRevenueData();
     } catch (err: any) {
@@ -1945,6 +2114,7 @@ export default function FeesPage() {
       });
       setSuccessMsg('Staff pay rule and course assignment removed successfully!');
       setDeleteRuleTarget(null);
+      setIsStaffPayRuleEditorOpen(false);
       setShowStaffPayRuleModal(false);
       await fetchSalaryRevenueData();
     } catch (err: any) {
@@ -3503,33 +3673,576 @@ export default function FeesPage() {
         {/* ==================================================================== */}
         {activeTab === 'revenue_salary' && (
           <div className="space-y-4">
-            {/* Header & Main Action */}
+            {/* 1. Header & Main Action */}
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div>
-                <h3 className="text-base font-bold text-black">Faculty & Staff Pay Rules</h3>
+                <h3 className="text-base font-bold text-black flex items-center gap-2">
+                  <span>Faculty & Staff Pay Rules</span>
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#FFF4E5] text-[#CC6B00] border border-[#FF8500]/30">
+                    {facultySummaryKpis.activeRulesCount} Active
+                  </span>
+                </h3>
                 <p className="text-xs text-neutral-500">
                   Per-student fixed rupee allocation rules, billing periods, and entitlement settlements for faculty
                 </p>
               </div>
               <div className="flex items-center gap-2">
-                <Button size="sm" variant="primary" onClick={() => handleOpenCreateStaffPayRule()}>
-                  <Plus className="w-3.5 h-3.5" />
-                  Configure Staff Pay Rule
+                <Button
+                  size="sm"
+                  variant={isStaffPayRuleEditorOpen ? 'outline' : 'primary'}
+                  onClick={() => {
+                    if (isStaffPayRuleEditorOpen) {
+                      setIsStaffPayRuleEditorOpen(false);
+                    } else {
+                      handleOpenCreateStaffPayRule();
+                    }
+                  }}
+                  className="flex items-center gap-1.5"
+                >
+                  {isStaffPayRuleEditorOpen ? (
+                    <>
+                      <X className="w-3.5 h-3.5" />
+                      <span>Close Editor</span>
+                    </>
+                  ) : (
+                    <>
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>Configure Staff Pay Rule</span>
+                    </>
+                  )}
                 </Button>
               </div>
             </div>
 
-            {/* Search, Filter & Period Control Toolbar */}
-            <div className="bg-white p-3.5 rounded-xl border border-neutral-200 shadow-card flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3">
+            {/* 2. Unified Executive KPI Ribbon (Screen-Fitted 4 Tiles) */}
+            <div className="bg-white rounded-2xl border border-neutral-200/90 shadow-card p-3 grid grid-cols-2 lg:grid-cols-4 divide-y lg:divide-y-0 lg:divide-x divide-neutral-100 gap-y-3 lg:gap-y-0">
+              {/* Tile 1: Assigned Faculty */}
+              <div className="px-3 sm:px-4 py-1 flex items-center justify-between">
+                <div>
+                  <span className="text-[11px] uppercase font-bold tracking-wider text-neutral-500">
+                    Assigned Faculty
+                  </span>
+                  <div className="text-xl sm:text-2xl font-bold font-mono text-neutral-900 mt-0.5">
+                    {facultySummaryKpis.facultyCount}
+                  </div>
+                  <div className="text-[11px] text-neutral-500 mt-0.5">
+                    {facultySummaryKpis.activeRulesCount} active compensation rules
+                  </div>
+                </div>
+                <div className="w-9 h-9 rounded-xl bg-neutral-100 flex items-center justify-center text-neutral-700 shrink-0">
+                  <Users className="w-4 h-4" />
+                </div>
+              </div>
+
+              {/* Tile 2: Eligible Students */}
+              <div className="px-3 sm:px-4 py-1 flex items-center justify-between">
+                <div>
+                  <span className="text-[11px] uppercase font-bold tracking-wider text-neutral-500">
+                    Enrolled Students
+                  </span>
+                  <div className="text-xl sm:text-2xl font-bold font-mono text-neutral-900 mt-0.5">
+                    {facultySummaryKpis.eligibleStudents}
+                  </div>
+                  <div className="text-[11px] text-neutral-500 mt-0.5">
+                    Across {new Set(filteredFacultyAssignments.map((a) => a.classId)).size} course standards
+                  </div>
+                </div>
+                <div className="w-9 h-9 rounded-xl bg-[#FFF4E5] text-[#CC6B00] flex items-center justify-center shrink-0">
+                  <BookOpen className="w-4 h-4" />
+                </div>
+              </div>
+
+              {/* Tile 3: Month Entitlement */}
+              <div className="px-3 sm:px-4 py-1 flex items-center justify-between">
+                <div>
+                  <span className="text-[11px] uppercase font-bold tracking-wider text-neutral-500">
+                    Month Entitlement
+                  </span>
+                  <div className="text-xl sm:text-2xl font-bold font-mono text-[#CC6B00] mt-0.5">
+                    ₹{facultySummaryKpis.totalEntitlement.toLocaleString('en-IN')}
+                  </div>
+                  <div className="text-[11px] text-neutral-500 mt-0.5">
+                    Period: {selectedSettlementMonth}
+                  </div>
+                </div>
+                <div className="w-9 h-9 rounded-xl bg-orange-50 text-[#FF8500] flex items-center justify-center shrink-0">
+                  <Award className="w-4 h-4" />
+                </div>
+              </div>
+
+              {/* Tile 4: Realized Payout */}
+              <div className="px-3 sm:px-4 py-1 flex items-center justify-between">
+                <div>
+                  <span className="text-[11px] uppercase font-bold tracking-wider text-neutral-500">
+                    Realized Payout
+                  </span>
+                  <div className="text-xl sm:text-2xl font-bold font-mono text-emerald-600 mt-0.5">
+                    ₹{facultySummaryKpis.realizedAmount.toLocaleString('en-IN')}
+                  </div>
+                  <div className="text-[11px] text-neutral-500 mt-0.5">
+                    ₹{facultySummaryKpis.pendingRealization.toLocaleString('en-IN')} pending fee collection
+                  </div>
+                </div>
+                <div className="w-9 h-9 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0">
+                  <CheckCircle2 className="w-4 h-4" />
+                </div>
+              </div>
+            </div>
+
+            {/* 3. In-Page Collapsible Staff Pay Rule Editor (No Overlay / No Modal) */}
+            {isStaffPayRuleEditorOpen && (
+              <div className="bg-white rounded-2xl border-2 border-[#FF8500]/40 shadow-card p-4 sm:p-5 animate-in fade-in duration-200 space-y-4">
+                <div className="flex items-center justify-between border-b border-neutral-100 pb-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-xl bg-[#FFF4E5] text-[#FF8500] flex items-center justify-center font-bold">
+                      <Sparkles className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-bold text-neutral-900">
+                        {editingStaffAssignmentId ? 'Edit Faculty Pay Rule' : 'Configure New Staff Pay Rule'}
+                      </h4>
+                      <p className="text-[11px] text-neutral-500">
+                        Configure fixed rupee allocations per student tier for this course offering
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setIsStaffPayRuleEditorOpen(false)}
+                    className="p-1.5 rounded-lg text-neutral-400 hover:text-black hover:bg-neutral-100 transition"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <form onSubmit={handleSaveStaffPayRule} className="space-y-4">
+                  {/* Step 1: Faculty Member & Course Offering */}
+                  <div className="p-3.5 bg-neutral-50/80 rounded-xl border border-neutral-200">
+                    <div className="flex items-center gap-2 mb-2.5">
+                      <span className="w-2 h-2 rounded-full bg-[#FF8500]" />
+                      <span className="text-[11px] font-bold uppercase tracking-wider text-neutral-700">
+                        1. Faculty Member & Course Offering
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                      <div>
+                        <label className="text-xs font-semibold text-neutral-700 block mb-1">
+                          Faculty Member <span className="text-red-500">*</span>
+                        </label>
+                        <select
+                          value={staffPayRuleForm.userId}
+                          onChange={(e) => {
+                            const newUserId = e.target.value;
+                            const selectedStaff = staffOptions.find((s) => s.id === newUserId);
+                            const firstAssign = selectedStaff?.assignments?.[0];
+                            const nextClassId =
+                              firstAssign?.classId ||
+                              firstAssign?.courseId ||
+                              firstAssign?.class?.id ||
+                              staffPayRuleForm.classId;
+                            const nextBatchId = firstAssign?.batchId || firstAssign?.batch?.id || '';
+                            const nextSubjectId = firstAssign?.subjectId || firstAssign?.subject?.id || '';
+
+                            const { allFee: baseFee, twoFee, singleFee } = resolveConfiguredFeesForStandard(
+                              nextClassId,
+                              nextSubjectId,
+                            );
+
+                            setStaffPayRuleForm((prev) => ({
+                              ...prev,
+                              userId: newUserId,
+                              classId: nextClassId,
+                              batchId: nextBatchId,
+                              subjectId: nextSubjectId,
+                              settlement: {
+                                ...prev.settlement,
+                                allSubjectsValue: baseFee > 0 ? Math.round((baseFee * 0.2) / 50) * 50 : prev.settlement.allSubjectsValue,
+                                twoSubjectsValue: twoFee > 0 ? Math.round((twoFee * 0.2) / 50) * 50 : prev.settlement.twoSubjectsValue,
+                                singleSubjectValue: singleFee > 0 ? Math.round((singleFee * 0.25) / 50) * 50 : prev.settlement.singleSubjectValue,
+                              },
+                            }));
+                          }}
+                          disabled={Boolean(editingStaffAssignmentId)}
+                          className="w-full px-2.5 py-1.5 bg-white border border-neutral-300 rounded-lg text-xs text-black disabled:bg-neutral-100 disabled:cursor-not-allowed focus:outline-none focus:border-[#FF8500]"
+                          required
+                        >
+                          <option value="">-- Select Faculty --</option>
+                          {staffOptions.map((s) => {
+                            const cleanLast = s.lastName && s.lastName !== '.' ? s.lastName : '';
+                            const displayName = s.firstName ? `${s.firstName} ${cleanLast}`.trim() : (s.name || s.email);
+                            return (
+                              <option key={s.id} value={s.id}>
+                                {displayName} ({s.designation || 'Faculty'})
+                              </option>
+                            );
+                          })}
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="text-xs font-semibold text-neutral-700 block mb-1">
+                          Course / Standard <span className="text-red-500">*</span>
+                        </label>
+                        <select
+                          value={staffPayRuleForm.classId}
+                          onChange={(e) => {
+                            const newClassId = e.target.value;
+                            const { allFee: baseFee, twoFee, singleFee } = resolveConfiguredFeesForStandard(newClassId);
+                            setStaffPayRuleForm((prev) => ({
+                              ...prev,
+                              classId: newClassId,
+                              batchId: '',
+                              subjectId: '',
+                              settlement: {
+                                ...prev.settlement,
+                                allSubjectsValue: baseFee > 0 ? Math.round((baseFee * 0.2) / 50) * 50 : 0,
+                                twoSubjectsValue: twoFee > 0 ? Math.round((twoFee * 0.2) / 50) * 50 : 0,
+                                singleSubjectValue: singleFee > 0 ? Math.round((singleFee * 0.25) / 50) * 50 : 0,
+                              },
+                            }));
+                          }}
+                          className="w-full px-2.5 py-1.5 bg-white border border-neutral-300 rounded-lg text-xs text-black focus:outline-none focus:border-[#FF8500]"
+                          required
+                        >
+                          <option value="">-- Select Course / Standard --</option>
+                          {availableCourses.map((c) => (
+                            <option key={c.id} value={c.id}>
+                              {c.name} {c.code ? `(${c.code})` : ''}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {(() => {
+                        const selectedCourse = availableCourses.find((c) => c.id === staffPayRuleForm.classId);
+                        const courseBatches = selectedCourse?.batches || [];
+                        const courseSubjects = selectedCourse?.subjects || [];
+                        return (
+                          <>
+                            <div>
+                              <label className="text-xs font-semibold text-neutral-700 block mb-1">
+                                Batch <span className="text-neutral-400 font-normal">(Optional)</span>
+                              </label>
+                              <select
+                                value={staffPayRuleForm.batchId}
+                                onChange={(e) => setStaffPayRuleForm((prev) => ({ ...prev, batchId: e.target.value }))}
+                                disabled={courseBatches.length === 0}
+                                className="w-full px-2.5 py-1.5 bg-white border border-neutral-300 rounded-lg text-xs text-black disabled:bg-neutral-100 focus:outline-none focus:border-[#FF8500]"
+                              >
+                                <option value="">All Batches</option>
+                                {courseBatches.map((b: any) => (
+                                  <option key={b.id} value={b.id}>
+                                    {b.name}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+
+                            <div>
+                              <label className="text-xs font-semibold text-neutral-700 block mb-1">
+                                Subject <span className="text-neutral-400 font-normal">(Optional)</span>
+                              </label>
+                              <select
+                                value={staffPayRuleForm.subjectId}
+                                onChange={(e) => {
+                                  const newSubId = e.target.value;
+                                  const subCfg = courseConfigs.find(
+                                    (c) =>
+                                      c.class?.id === staffPayRuleForm.classId &&
+                                      c.subject?.id === newSubId &&
+                                      c.isActive !== false
+                                  );
+                                  setStaffPayRuleForm((prev) => {
+                                    const subFee = subCfg ? Number(subCfg.amount) : 0;
+                                    return {
+                                      ...prev,
+                                      subjectId: newSubId,
+                                      settlement: {
+                                        ...prev.settlement,
+                                        singleSubjectValue:
+                                          subFee > 0
+                                            ? Math.round((subFee * 0.25) / 50) * 50
+                                            : prev.settlement.singleSubjectValue,
+                                      },
+                                    };
+                                  });
+                                }}
+                                className="w-full px-2.5 py-1.5 bg-white border border-neutral-300 rounded-lg text-xs text-black focus:outline-none focus:border-[#FF8500]"
+                              >
+                                <option value="">All Subjects</option>
+                                {courseSubjects.map((s: any) => (
+                                  <option key={s.id} value={s.id}>
+                                    {s.name} {s.code ? `(${s.code})` : ''}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          </>
+                        );
+                      })()}
+                    </div>
+                  </div>
+
+                  {/* Step 2: Student-Tiered Fixed Rupee Allocation Rates */}
+                  <div className="p-3.5 bg-neutral-50/80 rounded-xl border border-neutral-200 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-full bg-[#FF8500]" />
+                        <span className="text-[11px] font-bold uppercase tracking-wider text-neutral-700">
+                          2. Fixed Rupee Payout Rates (Per Enrolled Student)
+                        </span>
+                      </div>
+                      <span className="text-[11px] text-neutral-500 font-mono">
+                        Tiered Fixed Rupee Model
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      {/* Tier 1: All Subjects */}
+                      <div className="p-3 bg-white rounded-lg border border-neutral-200 space-y-1">
+                        <div className="flex items-center justify-between">
+                          <label className="text-xs font-bold text-neutral-900">
+                            Tier 1: All Subjects
+                          </label>
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 font-semibold">
+                            Full Bundle
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-neutral-400">
+                          Payout when student takes all subjects in standard
+                        </p>
+                        <div className="relative mt-1">
+                          <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-bold text-neutral-400">
+                            ₹
+                          </span>
+                          <input
+                            type="number"
+                            min="0"
+                            step="10"
+                            value={staffPayRuleForm.settlement.allSubjectsValue || ''}
+                            onChange={(e) =>
+                              setStaffPayRuleForm((prev) => ({
+                                ...prev,
+                                settlement: {
+                                  ...prev.settlement,
+                                  allSubjectsValue: Number(e.target.value) || 0,
+                                },
+                              }))
+                            }
+                            placeholder="e.g. 1000"
+                            className="w-full pl-6 pr-3 py-1.5 text-xs font-mono font-bold bg-neutral-50 border border-neutral-300 rounded-lg text-black focus:outline-none focus:border-[#FF8500]"
+                            required
+                          />
+                        </div>
+                      </div>
+
+                      {/* Tier 2: Two Subjects */}
+                      <div className="p-3 bg-white rounded-lg border border-neutral-200 space-y-1">
+                        <div className="flex items-center justify-between">
+                          <label className="text-xs font-bold text-neutral-900">
+                            Tier 2: Two Subjects
+                          </label>
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 font-semibold">
+                            2-Sub Combo
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-neutral-400">
+                          Payout when student enrolls in exactly 2 subjects
+                        </p>
+                        <div className="relative mt-1">
+                          <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-bold text-neutral-400">
+                            ₹
+                          </span>
+                          <input
+                            type="number"
+                            min="0"
+                            step="10"
+                            value={staffPayRuleForm.settlement.twoSubjectsValue || ''}
+                            onChange={(e) =>
+                              setStaffPayRuleForm((prev) => ({
+                                ...prev,
+                                settlement: {
+                                  ...prev.settlement,
+                                  twoSubjectsValue: Number(e.target.value) || 0,
+                                },
+                              }))
+                            }
+                            placeholder="e.g. 600"
+                            className="w-full pl-6 pr-3 py-1.5 text-xs font-mono font-bold bg-neutral-50 border border-neutral-300 rounded-lg text-black focus:outline-none focus:border-[#FF8500]"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Tier 3: Single Subject */}
+                      <div className="p-3 bg-white rounded-lg border border-neutral-200 space-y-1">
+                        <div className="flex items-center justify-between">
+                          <label className="text-xs font-bold text-neutral-900">
+                            Tier 3: Single Subject
+                          </label>
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-50 text-purple-700 font-semibold">
+                            Individual Sub
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-neutral-400">
+                          Payout when student enrolls in 1 individual subject
+                        </p>
+                        <div className="relative mt-1">
+                          <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-bold text-neutral-400">
+                            ₹
+                          </span>
+                          <input
+                            type="number"
+                            min="0"
+                            step="10"
+                            value={staffPayRuleForm.settlement.singleSubjectValue || ''}
+                            onChange={(e) =>
+                              setStaffPayRuleForm((prev) => ({
+                                ...prev,
+                                settlement: {
+                                  ...prev.settlement,
+                                  singleSubjectValue: Number(e.target.value) || 0,
+                                },
+                              }))
+                            }
+                            placeholder="e.g. 400"
+                            className="w-full pl-6 pr-3 py-1.5 text-xs font-mono font-bold bg-neutral-50 border border-neutral-300 rounded-lg text-black focus:outline-none focus:border-[#FF8500]"
+                            required
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Step 3: Billing Period & Margin */}
+                  <div className="p-3.5 bg-neutral-50/80 rounded-xl border border-neutral-200">
+                    <div className="flex items-center gap-2 mb-2.5">
+                      <span className="w-2 h-2 rounded-full bg-[#FF8500]" />
+                      <span className="text-[11px] font-bold uppercase tracking-wider text-neutral-700">
+                        3. Billing Period & Settlement Trigger
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <div>
+                        <label className="text-xs font-semibold text-neutral-700 block mb-1">
+                          Billing Period
+                        </label>
+                        <select
+                          value={staffPayRuleForm.settlement.billingPeriod || 'MONTHLY'}
+                          onChange={(e) =>
+                            setStaffPayRuleForm((prev) => ({
+                              ...prev,
+                              settlement: {
+                                ...prev.settlement,
+                                billingPeriod: e.target.value as any,
+                              },
+                            }))
+                          }
+                          className="w-full px-2.5 py-1.5 bg-white border border-neutral-300 rounded-lg text-xs text-black focus:outline-none focus:border-[#FF8500]"
+                        >
+                          <option value="MONTHLY">Monthly</option>
+                          <option value="QUARTERLY">Quarterly</option>
+                          <option value="ANNUAL">Annual</option>
+                          <option value="PER_SESSION">Per Session</option>
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="text-xs font-semibold text-neutral-700 block mb-1">
+                          Settlement Trigger
+                        </label>
+                        <select
+                          value={staffPayRuleForm.settlement.settlementTrigger || 'ACCRUAL_REALIZED'}
+                          onChange={(e) =>
+                            setStaffPayRuleForm((prev) => ({
+                              ...prev,
+                              settlement: {
+                                ...prev.settlement,
+                                settlementTrigger: e.target.value as any,
+                              },
+                            }))
+                          }
+                          className="w-full px-2.5 py-1.5 bg-white border border-neutral-300 rounded-lg text-xs text-black focus:outline-none focus:border-[#FF8500]"
+                        >
+                          <option value="ACCRUAL_REALIZED">Realized on Student Fee Collection</option>
+                          <option value="IMMEDIATE_POSTING">Immediate on Invoice Issuance</option>
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="text-xs font-semibold text-neutral-700 block mb-1">
+                          Academy Retained Margin (%)
+                        </label>
+                        <input
+                          type="number"
+                          min="0"
+                          max="100"
+                          value={staffPayRuleForm.settlement.marginPct || 30}
+                          onChange={(e) =>
+                            setStaffPayRuleForm((prev) => ({
+                              ...prev,
+                              settlement: {
+                                ...prev.settlement,
+                                marginPct: Number(e.target.value) || 30,
+                              },
+                            }))
+                          }
+                          className="w-full px-2.5 py-1.5 bg-white border border-neutral-300 rounded-lg text-xs text-black focus:outline-none focus:border-[#FF8500]"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Form Actions */}
+                  <div className="flex items-center justify-between pt-2">
+                    {editingStaffAssignmentId ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const assignmentToDelete = facultyAssignments.find(
+                            (a: any) => a.id === editingStaffAssignmentId
+                          );
+                          if (assignmentToDelete) {
+                            handleInitiateDeleteStaffPayRule(assignmentToDelete);
+                          }
+                        }}
+                        disabled={deletingStaffPayRule}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-200 text-red-600 bg-red-50 hover:bg-red-100 font-semibold text-xs transition cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>Delete Rule</span>
+                      </button>
+                    ) : (
+                      <div />
+                    )}
+
+                    <div className="flex items-center gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => setIsStaffPayRuleEditorOpen(false)}
+                      >
+                        Cancel
+                      </Button>
+                      <Button type="submit" variant="primary" disabled={savingStaffPayRule}>
+                        {savingStaffPayRule ? 'Saving Rule...' : 'Save Staff Pay Rule'}
+                      </Button>
+                    </div>
+                  </div>
+                </form>
+              </div>
+            )}
+
+            {/* 4. Search, Filter & Quick Period Control Toolbar */}
+            <div className="bg-white p-3 rounded-xl border border-neutral-200 shadow-card flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-2.5">
               <div className="flex flex-wrap items-center gap-2 flex-1">
-                <div className="relative flex-1 min-w-[200px] max-w-sm">
-                  <Search className="w-4 h-4 absolute left-3 top-2.5 text-neutral-400" />
+                <div className="relative flex-1 min-w-[180px] max-w-sm">
+                  <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-neutral-400" />
                   <input
                     type="text"
-                    placeholder="Search by faculty member, course, or subject..."
+                    placeholder="Search faculty, course, subject..."
                     value={facultySearchQuery}
                     onChange={(e) => setFacultySearchQuery(e.target.value)}
-                    className="w-full pl-9 pr-3 py-1.5 bg-neutral-50 border border-neutral-200 rounded-lg text-xs text-black focus:outline-none focus:ring-2 focus:ring-[#FF8500]"
+                    className="w-full pl-8 pr-3 py-1.5 bg-neutral-50 border border-neutral-200 rounded-lg text-xs text-black focus:outline-none focus:ring-2 focus:ring-[#FF8500]"
                   />
                 </div>
 
@@ -3537,9 +4250,9 @@ export default function FeesPage() {
                 <select
                   value={facultyFilterCourseId}
                   onChange={(e) => setFacultyFilterCourseId(e.target.value)}
-                  className="px-3 py-1.5 bg-white border border-neutral-200 rounded-lg text-xs text-black font-medium focus:outline-none focus:ring-2 focus:ring-[#FF8500]"
+                  className="px-2.5 py-1.5 bg-white border border-neutral-200 rounded-lg text-xs text-black font-medium focus:outline-none focus:ring-2 focus:ring-[#FF8500]"
                 >
-                  <option value="">All Courses / Standards</option>
+                  <option value="">All Standards ({availableCourses.length})</option>
                   {availableCourses.map((c) => (
                     <option key={c.id} value={c.id}>
                       {c.name} {c.code ? `(${c.code})` : ''}
@@ -3551,7 +4264,7 @@ export default function FeesPage() {
                 <select
                   value={facultyFilterStatus}
                   onChange={(e) => setFacultyFilterStatus(e.target.value as any)}
-                  className="px-3 py-1.5 bg-white border border-neutral-200 rounded-lg text-xs text-black font-medium focus:outline-none focus:ring-2 focus:ring-[#FF8500]"
+                  className="px-2.5 py-1.5 bg-white border border-neutral-200 rounded-lg text-xs text-black font-medium focus:outline-none focus:ring-2 focus:ring-[#FF8500]"
                 >
                   <option value="ALL">All Statuses</option>
                   <option value="ACTIVE">Active Rules</option>
@@ -3559,18 +4272,38 @@ export default function FeesPage() {
                 </select>
               </div>
 
-              {/* Pay Period & Refresh */}
+              {/* Pay Period & Rapid Month Navigator */}
               <div className="flex items-center gap-2 self-end lg:self-auto">
-                <div className="flex items-center gap-1.5 bg-neutral-50 px-2.5 py-1 rounded-lg border border-neutral-200 text-xs font-semibold text-neutral-700">
-                  <Calendar className="w-3.5 h-3.5 text-[#FF8500]" />
-                  <span>Period:</span>
-                  <input
-                    type="month"
-                    value={selectedSettlementMonth}
-                    onChange={(e) => setSelectedSettlementMonth(e.target.value)}
-                    className="bg-transparent font-bold text-neutral-900 border-none outline-none text-xs cursor-pointer"
-                  />
+                <div className="flex items-center bg-neutral-50 rounded-lg border border-neutral-200 text-xs font-semibold text-neutral-700">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const [y, m] = selectedSettlementMonth.split('-').map(Number);
+                      const prevDate = new Date(Date.UTC(y, m - 2, 1));
+                      setSelectedSettlementMonth(prevDate.toISOString().slice(0, 7));
+                    }}
+                    title="Previous Month"
+                    className="px-2 py-1 hover:bg-neutral-200/60 rounded-l-lg transition"
+                  >
+                    &lt;
+                  </button>
+                  <span className="px-1.5 font-mono font-bold text-neutral-900 text-xs">
+                    {selectedSettlementMonth}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const [y, m] = selectedSettlementMonth.split('-').map(Number);
+                      const nextDate = new Date(Date.UTC(y, m, 1));
+                      setSelectedSettlementMonth(nextDate.toISOString().slice(0, 7));
+                    }}
+                    title="Next Month"
+                    className="px-2 py-1 hover:bg-neutral-200/60 rounded-r-lg transition"
+                  >
+                    &gt;
+                  </button>
                 </div>
+
                 <button
                   type="button"
                   onClick={() => fetchSalaryRevenueData()}
@@ -3582,18 +4315,15 @@ export default function FeesPage() {
               </div>
             </div>
 
-            {/* Standards / Courses Quick Filter Strip */}
+            {/* Standards Quick Pill Filter Strip */}
             {availableCourses.length > 0 && (
-              <div className="flex items-center gap-2 overflow-x-auto pb-1 no-scrollbar">
-                <span className="text-[11px] font-bold uppercase tracking-wider text-neutral-500 shrink-0 mr-1">
-                  Standards:
-                </span>
+              <div className="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar">
                 <button
                   type="button"
                   onClick={() => setFacultyFilterCourseId('')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition shrink-0 flex items-center gap-1.5 cursor-pointer ${
+                  className={`px-2.5 py-1 rounded-lg text-xs font-semibold border transition shrink-0 flex items-center gap-1.5 cursor-pointer ${
                     facultyFilterCourseId === ''
-                      ? 'bg-[#FF8500] text-white border-[#FF8500] shadow-2xs'
+                      ? 'bg-[#FF8500] text-white border-[#FF8500] shadow-2xs font-bold'
                       : 'bg-white text-neutral-700 border-neutral-200 hover:border-neutral-300'
                   }`}
                 >
@@ -3616,24 +4346,13 @@ export default function FeesPage() {
                       key={course.id}
                       type="button"
                       onClick={() => setFacultyFilterCourseId(isSelected ? '' : course.id)}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition shrink-0 flex items-center gap-1.5 cursor-pointer ${
+                      className={`px-2.5 py-1 rounded-lg text-xs font-semibold border transition shrink-0 flex items-center gap-1.5 cursor-pointer ${
                         isSelected
-                          ? 'bg-[#FF8500] text-white border-[#FF8500] shadow-2xs'
+                          ? 'bg-[#FF8500] text-white border-[#FF8500] shadow-2xs font-bold'
                           : 'bg-white text-neutral-700 border-neutral-200 hover:border-[#FF8500]/50 hover:bg-[#FFF4E5]/40'
                       }`}
                     >
                       <span>{course.name}</span>
-                      {course.code && (
-                        <span
-                          className={`font-mono text-[10px] px-1.5 py-0.2 rounded ${
-                            isSelected
-                              ? 'bg-black/20 text-white'
-                              : 'bg-neutral-100 text-neutral-500'
-                          }`}
-                        >
-                          {course.code}
-                        </span>
-                      )}
                       <span
                         className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
                           isSelected
@@ -3651,342 +4370,485 @@ export default function FeesPage() {
               </div>
             )}
 
-            {/* Faculty Pay Configuration Table (Matching Fee Rules Tab) */}
-            <div className="bg-white rounded-2xl border border-neutral-200 shadow-card overflow-hidden">
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse text-xs">
-                  <thead>
-                    <tr className="bg-neutral-50 border-b border-neutral-200 text-neutral-600 uppercase font-semibold text-[11px] tracking-wider">
-                      <th className="py-3 px-3 text-center w-14 font-semibold text-neutral-600">S.No</th>
-                      <th className="py-3 px-4">Faculty Member</th>
-                      <th className="py-3 px-4">Course / Standard</th>
-                      <th className="py-3 px-4">Batch</th>
-                      <th className="py-3 px-4">Subject</th>
-                      <th className="py-3 px-4 text-right">Amount Per Student (₹)</th>
-                      <th className="py-3 px-4 text-center">Billing Period</th>
-                      <th className="py-3 px-4 text-center">Eligible Students</th>
-                      <th className="py-3 px-4 text-right">Total Entitlement (₹)</th>
-                      <th className="py-3 px-4 text-center">Status</th>
-                      <th className="py-3 px-4 text-right">Actions</th>
+            {/* 5. Screen-Fitted 5-Column High-Density Table (100% Width, No Horizontal Overflow) */}
+            <div className="bg-white rounded-2xl border border-neutral-200/90 shadow-card overflow-hidden">
+              <table className="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr className="bg-neutral-50/90 border-b border-neutral-200 text-neutral-600 uppercase font-semibold text-[11px] tracking-wider">
+                    <th className="py-3 px-4 w-[34%]">Faculty & Offering</th>
+                    <th className="py-3 px-3 w-[22%]">Payout Formula</th>
+                    <th className="py-3 px-3 w-[16%] text-center">Students</th>
+                    <th className="py-3 px-3 w-[16%] text-right">Month Entitlement</th>
+                    <th className="py-3 px-4 w-[12%] text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-neutral-100 text-neutral-800">
+                  {filteredFacultyAssignments.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="py-12 text-center text-neutral-400">
+                        <Users className="w-8 h-8 text-neutral-300 mx-auto mb-2" />
+                        <p className="text-xs font-semibold text-neutral-700">No faculty pay rules found.</p>
+                        <p className="text-[11px] text-neutral-400 mt-0.5">
+                          {facultySearchQuery || facultyFilterCourseId || facultyFilterStatus !== 'ALL'
+                            ? 'Try adjusting your search query or filter options.'
+                            : 'Click "Configure Staff Pay Rule" to add a per-student subject allocation.'}
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => handleOpenCreateStaffPayRule(facultyFilterCourseId || undefined)}
+                          className="mt-3 text-xs text-[#FF8500] font-semibold hover:underline inline-flex items-center gap-1 cursor-pointer"
+                        >
+                          <Plus className="w-3.5 h-3.5" /> Configure Staff Pay Rule
+                        </button>
+                      </td>
                     </tr>
-                  </thead>
-                  <tbody className="divide-y divide-neutral-100 text-neutral-800">
-                    {filteredFacultyAssignments.length === 0 ? (
-                      <tr>
-                        <td colSpan={11} className="py-12 text-center text-neutral-400">
-                          <Users className="w-8 h-8 text-neutral-300 mx-auto mb-2" />
-                          <p className="text-xs font-semibold text-neutral-700">No faculty pay rules found.</p>
-                          <p className="text-[11px] text-neutral-400 mt-0.5">
-                            {facultySearchQuery || facultyFilterCourseId || facultyFilterStatus !== 'ALL'
-                              ? 'Try adjusting your search query or filter options.'
-                              : 'Click "Configure Staff Pay Rule" to add a per-student subject allocation.'}
-                          </p>
-                          <button
-                            type="button"
-                            onClick={() => handleOpenCreateStaffPayRule(facultyFilterCourseId || undefined)}
-                            className="mt-3 text-xs text-[#FF8500] font-semibold hover:underline inline-flex items-center gap-1 cursor-pointer"
-                          >
-                            <Plus className="w-3.5 h-3.5" /> Configure Staff Pay Rule
-                          </button>
-                        </td>
-                      </tr>
-                    ) : (
-                      filteredFacultyAssignments.map((as: any, index: number) => {
-                        const parsed = parseSettlementToForm(
-                          as.compensationRule,
-                          as.staffSharePercentage ?? 70,
-                        );
-                        const amountPerStudent = Number(parsed.perStudentAmount) || 0;
-                        const billingPeriod =
-                          (as.compensationRule as any)?.config?.billingPeriod ||
-                          (as.compensationRule as any)?.billingPeriod ||
-                          'MONTHLY';
+                  ) : (
+                    filteredFacultyAssignments.map((as: any, index: number) => {
+                      const targetId = as.id || `${as.staffId}-${as.classId}-${index}`;
+                      const isExpanded = expandedAssignmentId === targetId;
 
-                        const matchingSettlement = staffSettlementsData.find(
-                          (s: any) => s.staffId === (as.userId || as.staffId),
-                        );
-                        const assignmentSettlement =
-                          matchingSettlement?.byAssignment?.[as.id] || matchingSettlement;
-                        const courseItem = courseBreakdown.find((b) => b.courseId === as.classId);
+                      const parsed = parseSettlementToForm(
+                        as.compensationRule,
+                        as.staffSharePercentage ?? 70,
+                      );
+                      const amountPerStudent = Number(parsed.perStudentAmount) || 0;
+                      const billingPeriod =
+                        (as.compensationRule as any)?.config?.billingPeriod ||
+                        (as.compensationRule as any)?.billingPeriod ||
+                        'MONTHLY';
 
-                        // Live student tier breakdown for this standard/batch/subject
-                        const enrolledInCourse = studentAccounts.filter((sa) =>
-                          sa.enrolledCourses?.some((c) => c.courseId === as.classId)
-                        );
-                        const filteredByBatch = as.batch?.name
-                          ? enrolledInCourse.filter((sa) =>
-                              sa.enrolledCourses?.some(
-                                (c) =>
-                                  c.courseId === as.classId &&
-                                  (c.batchName === as.batch.name || (c as any).batchId === as.batchId)
-                              )
+                      const matchingSettlement = staffSettlementsData.find(
+                        (s: any) => s.staffId === (as.userId || as.staffId),
+                      );
+                      const assignmentSettlement =
+                        matchingSettlement?.byAssignment?.[as.id] || matchingSettlement;
+                      const courseItem = courseBreakdown.find((b) => b.courseId === as.classId);
+
+                      // Live student tier breakdown for this standard/batch/subject
+                      const enrolledInCourse = studentAccounts.filter((sa) =>
+                        sa.enrolledCourses?.some((c) => c.courseId === as.classId)
+                      );
+                      const filteredByBatch = as.batch?.name
+                        ? enrolledInCourse.filter((sa) =>
+                            sa.enrolledCourses?.some(
+                              (c) =>
+                                c.courseId === as.classId &&
+                                (c.batchName === as.batch.name || (c as any).batchId === as.batchId)
                             )
-                          : enrolledInCourse;
+                          )
+                        : enrolledInCourse;
 
-                        const targetSubName = (as.subject?.name || as.subjectName || '').trim().toLowerCase();
-                        const filteredEligibleStudents = targetSubName
-                          ? filteredByBatch.filter((sa) => {
-                              const courseEntries = (sa.enrolledCourses || []).filter((ec) => ec.courseId === as.classId);
-                              const distinctSubs = new Set(courseEntries.map((e) => (e.subjectName || '').trim().toLowerCase()).filter(Boolean));
-                              return distinctSubs.size >= 3 || courseEntries.some((e) => !e.subjectName) || distinctSubs.has(targetSubName);
-                            })
-                          : filteredByBatch;
+                      const targetSubName = (as.subject?.name || as.subjectName || '').trim().toLowerCase();
+                      const filteredEligibleStudents = targetSubName
+                        ? filteredByBatch.filter((sa) => {
+                            const courseEntries = (sa.enrolledCourses || []).filter((ec) => ec.courseId === as.classId);
+                            const distinctSubs = new Set(courseEntries.map((e) => (e.subjectName || '').trim().toLowerCase()).filter(Boolean));
+                            return distinctSubs.size >= 3 || courseEntries.some((e) => !e.subjectName) || distinctSubs.has(targetSubName);
+                          })
+                        : filteredByBatch;
 
-                        let liveAllCount = 0;
-                        let liveTwoCount = 0;
-                        let liveSingleCount = 0;
-                        let livePaidStudentsCount = 0;
-                        let liveRealizedAmount = 0;
+                      let liveAllCount = 0;
+                      let liveTwoCount = 0;
+                      let liveSingleCount = 0;
+                      let livePaidStudentsCount = 0;
+                      let liveRealizedAmount = 0;
 
-                        if (filteredEligibleStudents.length > 0) {
-                          filteredEligibleStudents.forEach((st) => {
-                            const courseEntries = st.enrolledCourses.filter((ec) => ec.courseId === as.classId);
-                            const distinctSubjects = new Set(courseEntries.map((e) => e.subjectName).filter(Boolean));
-                            let stStaffShare = amountPerStudent;
-                            if (distinctSubjects.size >= 3 || courseEntries.some((e) => !e.subjectName)) {
-                              liveAllCount++;
-                              if (parsed.mode === 'STUDENT_TIER_BASED') {
-                                stStaffShare = Number(parsed.allSubjectsValue) || 0;
-                              }
-                            } else if (distinctSubjects.size === 2) {
-                              liveTwoCount++;
-                              if (parsed.mode === 'STUDENT_TIER_BASED') {
-                                stStaffShare = Number(parsed.twoSubjectsValue) || 0;
-                              }
-                            } else {
-                              liveSingleCount++;
-                              if (parsed.mode === 'STUDENT_TIER_BASED') {
-                                stStaffShare = Number(parsed.singleSubjectValue) || 0;
-                              }
+                      if (filteredEligibleStudents.length > 0) {
+                        filteredEligibleStudents.forEach((st) => {
+                          const courseEntries = st.enrolledCourses.filter((ec) => ec.courseId === as.classId);
+                          const distinctSubjects = new Set(courseEntries.map((e) => e.subjectName).filter(Boolean));
+                          let stStaffShare = amountPerStudent;
+                          if (distinctSubjects.size >= 3 || courseEntries.some((e) => !e.subjectName)) {
+                            liveAllCount++;
+                            if (parsed.mode === 'STUDENT_TIER_BASED') {
+                              stStaffShare = Number(parsed.allSubjectsValue) || 0;
                             }
-
-                            if (st.overallStatus === 'PAID') {
-                              livePaidStudentsCount++;
-                              liveRealizedAmount += stStaffShare;
-                            } else if (st.overallStatus === 'PARTIAL' && st.consolidatedBilled > 0 && st.consolidatedPaid > 0) {
-                              livePaidStudentsCount++;
-                              liveRealizedAmount += Math.round(stStaffShare * Math.min(1, st.consolidatedPaid / st.consolidatedBilled));
+                          } else if (distinctSubjects.size === 2) {
+                            liveTwoCount++;
+                            if (parsed.mode === 'STUDENT_TIER_BASED') {
+                              stStaffShare = Number(parsed.twoSubjectsValue) || 0;
                             }
-                          });
-                        }
+                          } else {
+                            liveSingleCount++;
+                            if (parsed.mode === 'STUDENT_TIER_BASED') {
+                              stStaffShare = Number(parsed.singleSubjectValue) || 0;
+                            }
+                          }
 
-                        const liveEligibleCount =
-                          filteredEligibleStudents.length > 0
-                            ? filteredEligibleStudents.length
-                            : (courseItem?.enrolledStudentsCount ?? 0);
+                          if (st.overallStatus === 'PAID') {
+                            livePaidStudentsCount++;
+                            liveRealizedAmount += stStaffShare;
+                          } else if (st.overallStatus === 'PARTIAL' && st.consolidatedBilled > 0 && st.consolidatedPaid > 0) {
+                            livePaidStudentsCount++;
+                            liveRealizedAmount += Math.round(stStaffShare * Math.min(1, st.consolidatedPaid / st.consolidatedBilled));
+                          }
+                        });
+                      }
 
-                        const eligibleStudents =
-                          assignmentSettlement?.eligibleStudents && assignmentSettlement.eligibleStudents > 0
-                            ? assignmentSettlement.eligibleStudents
-                            : liveEligibleCount;
+                      const liveEligibleCount =
+                        filteredEligibleStudents.length > 0
+                          ? filteredEligibleStudents.length
+                          : (courseItem?.enrolledStudentsCount ?? 0);
 
-                        const computedTierEntitlement =
-                          parsed.mode === 'STUDENT_TIER_BASED'
-                            ? liveAllCount * (Number(parsed.allSubjectsValue) || 0) +
-                              liveTwoCount * (Number(parsed.twoSubjectsValue) || 0) +
-                              liveSingleCount * (Number(parsed.singleSubjectValue) || 0)
-                            : eligibleStudents * amountPerStudent;
+                      const eligibleStudents =
+                        assignmentSettlement?.eligibleStudents && assignmentSettlement.eligibleStudents > 0
+                          ? assignmentSettlement.eligibleStudents
+                          : liveEligibleCount;
 
-                        const totalEntitlement =
-                          assignmentSettlement?.totalEntitlement && assignmentSettlement.totalEntitlement > 0
-                            ? assignmentSettlement.totalEntitlement
-                            : computedTierEntitlement;
+                      const computedTierEntitlement =
+                        parsed.mode === 'STUDENT_TIER_BASED'
+                          ? liveAllCount * (Number(parsed.allSubjectsValue) || 0) +
+                            liveTwoCount * (Number(parsed.twoSubjectsValue) || 0) +
+                            liveSingleCount * (Number(parsed.singleSubjectValue) || 0)
+                          : eligibleStudents * amountPerStudent;
 
-                        const realizedAmount =
-                          assignmentSettlement?.realizedAmount !== undefined
-                            ? assignmentSettlement.realizedAmount
-                            : liveRealizedAmount;
+                      const totalEntitlement =
+                        assignmentSettlement?.totalEntitlement && assignmentSettlement.totalEntitlement > 0
+                          ? assignmentSettlement.totalEntitlement
+                          : computedTierEntitlement;
 
-                        const paidStudentsCount =
-                          assignmentSettlement?.paidStudentsCount !== undefined
-                            ? assignmentSettlement.paidStudentsCount
-                            : livePaidStudentsCount;
+                      const realizedAmount =
+                        assignmentSettlement?.realizedAmount !== undefined
+                          ? assignmentSettlement.realizedAmount
+                          : liveRealizedAmount;
 
-                        const activeTiers = assignmentSettlement?.tiers || matchingSettlement?.tiers;
+                      const staffId = as.userId || as.staffId;
+                      const staffDetailItem = inlineStaffDetail[staffId];
 
-                        return (
+                      return (
+                        <React.Fragment key={targetId}>
+                          {/* Main Row */}
                           <tr
-                            key={as.id || `${as.staffId}-${as.classId}-${index}`}
-                            onClick={() => handleOpenSettlementDrawer(as)}
-                            className="hover:bg-neutral-50/70 transition-colors cursor-pointer"
+                            onClick={() => handleToggleExpandAssignment(as)}
+                            className={`transition-colors cursor-pointer ${
+                              isExpanded ? 'bg-orange-50/30' : 'hover:bg-neutral-50/70'
+                            }`}
                           >
-                            <td className="py-3.5 px-3 text-center font-mono text-neutral-500 font-semibold text-xs">
-                              {index + 1}
-                            </td>
-
-                            <td className="py-3.5 px-4 font-bold text-black text-sm">
+                            {/* Column 1: Faculty & Assignment */}
+                            <td className="py-3 px-4">
                               <div className="flex items-center gap-2.5">
-                                <div className="w-8 h-8 rounded-full bg-orange-100 text-[#CC6B00] flex items-center justify-center font-bold text-xs uppercase shrink-0">
+                                <div className="w-8 h-8 rounded-xl bg-[#FFF4E5] text-[#CC6B00] border border-[#FF8500]/25 flex items-center justify-center font-bold text-xs uppercase shrink-0">
                                   {as.staffName ? as.staffName.charAt(0) : 'F'}
                                 </div>
-                                <div>
-                                  <div className="font-bold text-neutral-900">{as.staffName}</div>
-                                  <div className="text-[11px] font-normal text-neutral-400">
-                                    {as.designation || 'Faculty'} {as.staffCode ? `• ${as.staffCode}` : ''}
+                                <div className="min-w-0">
+                                  <div className="font-bold text-neutral-900 truncate flex items-center gap-1.5">
+                                    <span>{as.staffName}</span>
+                                    {as.staffCode && (
+                                      <span className="font-mono text-[10px] text-neutral-400 font-normal">
+                                        ({as.staffCode})
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
+                                    <span className="font-semibold text-neutral-800 text-[11px] bg-neutral-100 px-1.5 py-0.2 rounded">
+                                      {as.class?.name || as.className || 'General'}
+                                    </span>
+                                    {as.batch?.name || as.batchName ? (
+                                      <span className="text-[10px] bg-neutral-100 text-neutral-600 px-1.5 py-0.2 rounded">
+                                        {as.batch?.name || as.batchName}
+                                      </span>
+                                    ) : (
+                                      <span className="text-[10px] text-neutral-400">All Batches</span>
+                                    )}
+                                    {as.subject?.name || as.subjectName ? (
+                                      <span className="text-[10px] bg-[#FFF4E5] text-[#CC6B00] border border-[#FF8500]/20 px-1.5 py-0.2 rounded font-semibold">
+                                        {as.subject?.name || as.subjectName}
+                                      </span>
+                                    ) : (
+                                      <span className="text-[10px] text-neutral-400">All Subjects</span>
+                                    )}
                                   </div>
                                 </div>
                               </div>
                             </td>
 
-                            <td className="py-3.5 px-4">
-                              <div className="flex items-center gap-1.5 flex-wrap">
-                                <span className="font-bold text-black text-xs">
-                                  {as.class?.name || as.className || as.courseName || 'General Course'}
-                                </span>
-                                {(as.class?.code || as.courseCode) && (
-                                  <span className="px-1.5 py-0.5 rounded bg-[#FFF4E5] text-[#CC6B00] border border-[#FF8500]/25 font-mono font-bold text-[10px]">
-                                    {as.class?.code || as.courseCode}
-                                  </span>
-                                )}
-                              </div>
-                            </td>
-
-                            <td className="py-3.5 px-4">
-                              {as.batch?.name || as.batchName ? (
-                                <span className="px-2 py-0.5 rounded bg-neutral-100 text-neutral-700 font-medium text-xs">
-                                  {as.batch?.name || as.batchName}
-                                </span>
-                              ) : (
-                                <span className="text-neutral-400 text-xs">All Batches</span>
-                              )}
-                            </td>
-
-                            <td className="py-3.5 px-4">
-                              {as.subject?.name || as.subjectName ? (
-                                <span className="px-2 py-0.5 rounded bg-[#FFF4E5] text-[#CC6B00] font-semibold text-xs border border-[#FF8500]/25">
-                                  {as.subject?.name || as.subjectName}
-                                </span>
-                              ) : (
-                                <span className="text-neutral-400 text-xs">All Subjects</span>
-                              )}
-                            </td>
-
-                            <td className="py-3.5 px-4 text-right font-mono">
+                            {/* Column 2: Payout Formula */}
+                            <td className="py-3 px-3">
                               {parsed.mode === 'STUDENT_TIER_BASED' ? (
-                                <div className="flex flex-col items-end gap-0.5 text-xs">
-                                  <div className="font-semibold text-neutral-900">
-                                    <span className="text-[10px] text-neutral-400 font-sans mr-1">All:</span>
-                                    ₹{Number(parsed.allSubjectsValue || 0).toLocaleString('en-IN')}
+                                <div className="space-y-0.5">
+                                  <div className="flex items-center gap-1 text-[11px]">
+                                    <span className="text-neutral-400 text-[10px]">All:</span>
+                                    <span className="font-mono font-bold text-neutral-900">
+                                      ₹{Number(parsed.allSubjectsValue || 0).toLocaleString('en-IN')}
+                                    </span>
+                                    <span className="text-neutral-300">•</span>
+                                    <span className="text-neutral-400 text-[10px]">2-Sub:</span>
+                                    <span className="font-mono font-semibold text-neutral-800">
+                                      ₹{Number(parsed.twoSubjectsValue || 0).toLocaleString('en-IN')}
+                                    </span>
+                                    <span className="text-neutral-300">•</span>
+                                    <span className="text-neutral-400 text-[10px]">1-Sub:</span>
+                                    <span className="font-mono font-semibold text-neutral-800">
+                                      ₹{Number(parsed.singleSubjectValue || 0).toLocaleString('en-IN')}
+                                    </span>
                                   </div>
-                                  <div className="font-semibold text-neutral-700">
-                                    <span className="text-[10px] text-neutral-400 font-sans mr-1">2-Sub:</span>
-                                    ₹{Number(parsed.twoSubjectsValue || 0).toLocaleString('en-IN')}
-                                  </div>
-                                  <div className="font-semibold text-neutral-700">
-                                    <span className="text-[10px] text-neutral-400 font-sans mr-1">1-Sub:</span>
-                                    ₹{Number(parsed.singleSubjectValue || 0).toLocaleString('en-IN')}
-                                  </div>
+                                  <span className="text-[10px] font-medium text-neutral-400">
+                                    per student / {billingPeriod.toLowerCase()}
+                                  </span>
                                 </div>
                               ) : (
-                                <>
-                                  <div className="font-bold text-sm text-black">
+                                <div>
+                                  <div className="font-bold font-mono text-neutral-900">
                                     ₹{amountPerStudent.toLocaleString('en-IN')}
+                                    <span className="text-neutral-400 font-normal font-sans text-[10px] ml-1">
+                                      / student
+                                    </span>
                                   </div>
-                                  <div className="text-[10.5px] text-neutral-400 font-sans">per student</div>
-                                </>
+                                  <span className="text-[10px] text-neutral-400">
+                                    {billingPeriod.toLowerCase()}
+                                  </span>
+                                </div>
                               )}
                             </td>
 
-                            <td className="py-3.5 px-4 text-center font-medium text-neutral-700">
-                              <span className="px-2 py-0.5 rounded bg-neutral-100 text-neutral-800 text-xs font-semibold">
-                                {billingPeriod}
+                            {/* Column 3: Students & Progress */}
+                            <td className="py-3 px-3 text-center">
+                              <span className="font-bold font-mono text-neutral-900 text-xs px-2 py-0.5 rounded-full bg-neutral-100">
+                                {eligibleStudents} Students
                               </span>
-                            </td>
-
-                            <td className="py-3.5 px-4 text-center font-mono">
-                              <div className="font-bold text-xs text-neutral-900">
-                                {eligibleStudents}{' '}
-                                <span className="font-sans font-normal text-neutral-500 text-[11px]">std</span>
-                              </div>
-                              {(activeTiers && (activeTiers.all?.students > 0 || activeTiers.two?.students > 0 || activeTiers.single?.students > 0)) ? (
-                                <div className="text-[10px] text-neutral-400 font-sans mt-0.5">
-                                  {activeTiers.all?.students || 0} All • {activeTiers.two?.students || 0} 2-Sub • {activeTiers.single?.students || 0} 1-Sub
-                                </div>
-                              ) : (liveAllCount > 0 || liveTwoCount > 0 || liveSingleCount > 0) ? (
-                                <div className="text-[10px] text-neutral-400 font-sans mt-0.5">
+                              {(liveAllCount > 0 || liveTwoCount > 0 || liveSingleCount > 0) && (
+                                <div className="text-[10px] text-neutral-400 mt-1">
                                   {liveAllCount} All • {liveTwoCount} 2-Sub • {liveSingleCount} 1-Sub
                                 </div>
-                              ) : null}
+                              )}
                             </td>
 
-                            <td className="py-3.5 px-4 text-right font-mono">
-                              <div className="font-bold text-sm text-[#CC6B00]">
+                            {/* Column 4: Month Entitlement */}
+                            <td className="py-3 px-3 text-right">
+                              <div className="font-bold font-mono text-sm text-[#CC6B00]">
                                 ₹{totalEntitlement.toLocaleString('en-IN')}
                               </div>
-                              <div
-                                className={`text-[10px] font-semibold font-sans mt-0.5 ${
-                                  realizedAmount > 0 ? 'text-emerald-600' : 'text-neutral-400'
-                                }`}
-                              >
-                                ₹{(realizedAmount || 0).toLocaleString('en-IN')} shared ({paidStudentsCount}/{eligibleStudents} paid)
+                              <div className="text-[10px] font-semibold text-emerald-600 mt-0.5">
+                                ₹{realizedAmount.toLocaleString('en-IN')} realized ({livePaidStudentsCount}/{eligibleStudents} paid)
                               </div>
                             </td>
 
-                            <td className="py-3.5 px-4 text-center">
-                              <Badge variant={as.isActive !== false ? 'success' : 'neutral'}>
-                                {as.isActive !== false ? 'ACTIVE' : 'INACTIVE'}
-                              </Badge>
-                            </td>
-
-                            <td className="py-3.5 px-4 text-right" onClick={(e) => e.stopPropagation()}>
+                            {/* Column 5: Status & Quick Actions */}
+                            <td className="py-3 px-4 text-right" onClick={(e) => e.stopPropagation()}>
                               <div className="flex items-center justify-end gap-1.5">
+                                <Badge variant={as.isActive !== false ? 'success' : 'neutral'}>
+                                  {as.isActive !== false ? 'ACTIVE' : 'INACTIVE'}
+                                </Badge>
+
                                 <button
                                   type="button"
-                                  onClick={() => handleOpenSettlementDrawer(as)}
-                                  className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold rounded-lg border border-[#FF8500]/30 text-[#CC6B00] bg-[#FFF4E5] hover:bg-[#FFE8CC] transition cursor-pointer"
-                                  title="View Settlement details and audit history"
+                                  onClick={() => handleToggleExpandAssignment(as)}
+                                  className={`p-1.5 rounded-lg border transition cursor-pointer ${
+                                    isExpanded
+                                      ? 'border-[#FF8500] text-[#CC6B00] bg-[#FFF4E5]'
+                                      : 'border-neutral-200 text-neutral-600 hover:text-black hover:bg-neutral-100'
+                                  }`}
+                                  title={isExpanded ? 'Collapse breakdown' : 'Expand settlement breakdown'}
                                 >
-                                  <Eye className="w-3.5 h-3.5 text-[#FF8500]" />
-                                  <span>View Settlement</span>
+                                  {isExpanded ? (
+                                    <ChevronUp className="w-3.5 h-3.5" />
+                                  ) : (
+                                    <ChevronDown className="w-3.5 h-3.5" />
+                                  )}
                                 </button>
 
                                 <button
                                   type="button"
                                   onClick={() => handleOpenEditStaffPayRule(as)}
-                                  className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold rounded-lg border border-neutral-200 text-neutral-700 hover:text-[#FF8500] hover:border-[#FF8500] hover:bg-[#FFF4E5]/40 transition cursor-pointer"
+                                  className="p-1.5 rounded-lg border border-neutral-200 text-neutral-600 hover:text-[#FF8500] hover:border-[#FF8500] hover:bg-[#FFF4E5]/40 transition cursor-pointer"
                                   title="Edit Staff Pay Rule"
                                 >
-                                  <Pencil className="w-3.5 h-3.5 text-[#FF8500]" />
-                                  <span>Edit</span>
-                                </button>
-
-                                <button
-                                  type="button"
-                                  onClick={() => handleToggleStaffPayRuleActive(as)}
-                                  className={`inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold rounded-lg border transition cursor-pointer ${
-                                    as.isActive !== false
-                                      ? 'border-neutral-200 text-neutral-600 hover:text-red-600 hover:border-red-300 hover:bg-red-50'
-                                      : 'border-emerald-200 text-emerald-700 hover:bg-emerald-50'
-                                  }`}
-                                  title={
-                                    as.isActive !== false
-                                      ? 'Deactivate rule (preserves historical ledger)'
-                                      : 'Activate rule'
-                                  }
-                                >
-                                  <span>{as.isActive !== false ? 'Deactivate' : 'Activate'}</span>
+                                  <Pencil className="w-3.5 h-3.5" />
                                 </button>
                               </div>
                             </td>
                           </tr>
-                        );
-                      })
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
 
-            {/* Staff Settlement Drawer for Payout Details & Audit Trail */}
-            <StaffSettlementDrawer
-              isOpen={settlementDrawerOpen}
-              onClose={() => setSettlementDrawerOpen(false)}
-              staffId={selectedStaffForDrawer?.staffId || null}
-              staffName={selectedStaffForDrawer?.staffName}
-              month={selectedSettlementMonth}
-              marginPct={selectedStaffForDrawer?.marginPct}
-              onMonthChange={(newMonth) => setSelectedSettlementMonth(newMonth)}
-            />
+                          {/* Inline Expandable Settlement Details (Directly In-Page, Zero Overlay) */}
+                          {isExpanded && (
+                            <tr className="bg-gradient-to-b from-orange-50/20 to-neutral-50/50">
+                              <td colSpan={5} className="p-0 border-b border-neutral-200">
+                                <div className="p-4 sm:p-5 space-y-4 animate-in fade-in duration-200">
+                                  {/* Settlement Metric Ribbons */}
+                                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                                    <div className="p-2.5 bg-white rounded-xl border border-neutral-200 shadow-2xs">
+                                      <span className="text-[10px] font-bold uppercase tracking-wider text-neutral-500 block">
+                                        Total Entitlement
+                                      </span>
+                                      <span className="text-base font-bold font-mono text-[#CC6B00]">
+                                        ₹{totalEntitlement.toLocaleString('en-IN')}
+                                      </span>
+                                    </div>
+                                    <div className="p-2.5 bg-white rounded-xl border border-neutral-200 shadow-2xs">
+                                      <span className="text-[10px] font-bold uppercase tracking-wider text-neutral-500 block">
+                                        Realized (Paid Fees)
+                                      </span>
+                                      <span className="text-base font-bold font-mono text-emerald-600">
+                                        ₹{realizedAmount.toLocaleString('en-IN')}
+                                      </span>
+                                    </div>
+                                    <div className="p-2.5 bg-white rounded-xl border border-neutral-200 shadow-2xs">
+                                      <span className="text-[10px] font-bold uppercase tracking-wider text-neutral-500 block">
+                                        Pending Realization
+                                      </span>
+                                      <span className="text-base font-bold font-mono text-neutral-700">
+                                        ₹{Math.max(0, totalEntitlement - realizedAmount).toLocaleString('en-IN')}
+                                      </span>
+                                    </div>
+                                    <div className="p-2.5 bg-white rounded-xl border border-neutral-200 shadow-2xs">
+                                      <span className="text-[10px] font-bold uppercase tracking-wider text-neutral-500 block">
+                                        Billing / Margin
+                                      </span>
+                                      <span className="text-xs font-semibold text-neutral-800">
+                                        {billingPeriod} • {as.marginPct || 30}% Margin
+                                      </span>
+                                    </div>
+                                  </div>
+
+                                  {/* Live Enrolled Students Roster */}
+                                  <div className="bg-white rounded-xl border border-neutral-200 shadow-2xs overflow-hidden">
+                                    <div className="px-3.5 py-2.5 border-b border-neutral-100 flex items-center justify-between bg-neutral-50/60">
+                                      <div className="flex items-center gap-2">
+                                        <Users className="w-3.5 h-3.5 text-[#FF8500]" />
+                                        <span className="text-xs font-bold text-neutral-900">
+                                          Enrolled Students Payout Distribution ({filteredEligibleStudents.length})
+                                        </span>
+                                      </div>
+                                      <span className="text-[11px] text-neutral-500 font-mono">
+                                        {as.class?.name || 'Course'} • {as.subject?.name || 'All Subjects'}
+                                      </span>
+                                    </div>
+
+                                    {filteredEligibleStudents.length === 0 ? (
+                                      <div className="py-6 text-center text-xs text-neutral-400">
+                                        No students currently enrolled for this course and batch.
+                                      </div>
+                                    ) : (
+                                      <div className="overflow-x-auto max-h-60 overflow-y-auto">
+                                        <table className="w-full text-left text-xs border-collapse">
+                                          <thead className="bg-neutral-50 text-[10px] uppercase font-bold text-neutral-500 sticky top-0 z-10 border-b border-neutral-200">
+                                            <tr>
+                                              <th className="py-2 px-3">Student</th>
+                                              <th className="py-2 px-3">Tier</th>
+                                              <th className="py-2 px-3 text-right">Student Fee</th>
+                                              <th className="py-2 px-3 text-right">Faculty Share</th>
+                                              <th className="py-2 px-3 text-center">Payment Status</th>
+                                              <th className="py-2 px-3 text-right">Realized Amount</th>
+                                            </tr>
+                                          </thead>
+                                          <tbody className="divide-y divide-neutral-100">
+                                            {filteredEligibleStudents.map((st) => {
+                                              const courseEntries = st.enrolledCourses.filter((ec) => ec.courseId === as.classId);
+                                              const distinctSubjects = new Set(courseEntries.map((e) => e.subjectName).filter(Boolean));
+                                              let tierLabel = 'Single Subject';
+                                              let stStaffShare = amountPerStudent;
+
+                                              if (distinctSubjects.size >= 3 || courseEntries.some((e) => !e.subjectName)) {
+                                                tierLabel = 'All Subjects Bundle';
+                                                if (parsed.mode === 'STUDENT_TIER_BASED') {
+                                                  stStaffShare = Number(parsed.allSubjectsValue) || 0;
+                                                }
+                                              } else if (distinctSubjects.size === 2) {
+                                                tierLabel = 'Two Subjects Combo';
+                                                if (parsed.mode === 'STUDENT_TIER_BASED') {
+                                                  stStaffShare = Number(parsed.twoSubjectsValue) || 0;
+                                                }
+                                              } else {
+                                                tierLabel = 'Single Subject';
+                                                if (parsed.mode === 'STUDENT_TIER_BASED') {
+                                                  stStaffShare = Number(parsed.singleSubjectValue) || 0;
+                                                }
+                                              }
+
+                                              let realizedSt = 0;
+                                              if (st.overallStatus === 'PAID') {
+                                                realizedSt = stStaffShare;
+                                              } else if (st.overallStatus === 'PARTIAL' && st.consolidatedBilled > 0 && st.consolidatedPaid > 0) {
+                                                realizedSt = Math.round(stStaffShare * Math.min(1, st.consolidatedPaid / st.consolidatedBilled));
+                                              }
+
+                                              return (
+                                                <tr key={st.id} className="hover:bg-neutral-50/60">
+                                                  <td className="py-2 px-3 font-semibold text-neutral-900">
+                                                    <div>{st.name}</div>
+                                                    <div className="font-mono text-[10px] text-neutral-400">
+                                                      {st.studentCode}
+                                                    </div>
+                                                  </td>
+                                                  <td className="py-2 px-3">
+                                                    <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-neutral-100 text-neutral-700">
+                                                      {tierLabel}
+                                                    </span>
+                                                  </td>
+                                                  <td className="py-2 px-3 text-right font-mono text-neutral-700">
+                                                    ₹{Number(st.consolidatedBilled || 0).toLocaleString('en-IN')}
+                                                  </td>
+                                                  <td className="py-2 px-3 text-right font-mono font-bold text-neutral-900">
+                                                    ₹{stStaffShare.toLocaleString('en-IN')}
+                                                  </td>
+                                                  <td className="py-2 px-3 text-center">
+                                                    <span
+                                                      className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                                                        st.overallStatus === 'PAID'
+                                                          ? 'bg-emerald-100 text-emerald-800'
+                                                          : st.overallStatus === 'PARTIAL'
+                                                          ? 'bg-amber-100 text-amber-800'
+                                                          : 'bg-rose-100 text-rose-800'
+                                                      }`}
+                                                    >
+                                                      {st.overallStatus}
+                                                    </span>
+                                                  </td>
+                                                  <td className="py-2 px-3 text-right font-mono font-bold text-emerald-600">
+                                                    ₹{realizedSt.toLocaleString('en-IN')}
+                                                  </td>
+                                                </tr>
+                                              );
+                                            })}
+                                          </tbody>
+                                        </table>
+                                      </div>
+                                    )}
+                                  </div>
+
+                                  {/* Detail Action Footer */}
+                                  <div className="flex items-center justify-between pt-1">
+                                    <div className="flex items-center gap-2">
+                                      <button
+                                        type="button"
+                                        onClick={() => handleOpenEditStaffPayRule(as)}
+                                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-neutral-300 bg-white hover:bg-neutral-50 text-neutral-800 text-xs font-semibold transition"
+                                      >
+                                        <Pencil className="w-3.5 h-3.5 text-[#FF8500]" />
+                                        <span>Edit Rule Parameters</span>
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleToggleStaffPayRuleActive(as)}
+                                        className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition ${
+                                          as.isActive !== false
+                                            ? 'border-neutral-200 text-neutral-600 hover:text-red-600 hover:bg-red-50'
+                                            : 'border-emerald-200 text-emerald-700 hover:bg-emerald-50'
+                                        }`}
+                                      >
+                                        <span>{as.isActive !== false ? 'Deactivate Rule' : 'Activate Rule'}</span>
+                                      </button>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      onClick={() => setExpandedAssignmentId(null)}
+                                      className="text-xs text-neutral-500 hover:text-black font-semibold flex items-center gap-1 cursor-pointer"
+                                    >
+                                      <span>Collapse Details</span>
+                                      <ChevronUp className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
         )}
 

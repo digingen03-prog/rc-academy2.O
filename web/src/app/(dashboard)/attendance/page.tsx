@@ -713,7 +713,7 @@ export default function AttendancePage() {
     const cId = targetClassId !== undefined ? targetClassId : classFilterId;
     const bId = targetBatchId !== undefined ? targetBatchId : batchFilterId;
     const sId = targetSubjectId !== undefined ? targetSubjectId : subjectFilterId;
-    const dStr = targetDate || selectedDate;
+    const dStr = targetDate || selectedDate || new Date().toISOString().split('T')[0];
 
     // If no filter selected at all, clear roster
     if (!cId && !bId && !sId) {
@@ -721,6 +721,10 @@ export default function AttendancePage() {
       setTodayAttendanceStudents([]);
       setSelectedStudentIds(new Set());
       return;
+    }
+
+    if (!selectedDate && dStr) {
+      setSelectedDate(dStr);
     }
 
     setLoadingTodayAttendance(true);
