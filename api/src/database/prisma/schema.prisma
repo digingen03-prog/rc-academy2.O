@@ -41,6 +41,25 @@ enum StaffCategory {
   FACULTY
 }
 
+enum ExpenseStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum ExpenseCategory {
+  RENT
+  UTILITIES
+  MAINTENANCE
+  SALARIES
+  OFFICE_SUPPLIES
+  EQUIPMENT
+  MARKETING
+  EVENT
+  TRAVEL
+  OTHER
+}
+
 model User {
   id           String     @id @default(uuid())
   email        String     @unique
@@ -82,6 +101,8 @@ model User {
   sharedExamAnnouncements Examination[]          @relation("ExamAnnouncementSharedBy")
   recordedAdvances        StudentAdvance[]       @relation("RecordedAdvances")
   advanceAllocations      StudentAdvanceAllocation[] @relation("AuthorizedAdvanceAllocations")
+  createdExpenses         Expense[]              @relation("CreatedExpenses")
+  approvedExpenses        Expense[]              @relation("ApprovedExpenses")
 
   @@map("users")
 }
@@ -1260,4 +1281,46 @@ model AcademyScheduleConfig {
   updatedAt          DateTime @default(now()) @updatedAt
 
   @@map("academy_schedule_configs")
+}
+
+// ----------------------------------------------------
+// 12. INSTITUTIONAL EXPENSES & APPROVAL WORKFLOW
+// ----------------------------------------------------
+
+model Expense {
+  id              String          @id @default(uuid())
+  title           String
+  category        ExpenseCategory @default(OTHER)
+  amount          Decimal         @db.Decimal(12, 2)
+  expenseDate     DateTime        @default(now())
+  paymentMethod   String          @default("CASH") // CASH, UPI, BANK_TRANSFER, CHEQUE, CARD, OTHER
+  referenceNumber String?
+  notes           String?
+  status          ExpenseStatus   @default(PENDING)
+  rejectionReason String?
+
+  // Attachment / Proof Document
+  proofUrl        String?
+  proofObjectKey  String?
+  proofFileName   String?
+  proofFileSize   Int?
+  proofMimeType   String?
+  proofUploadedAt DateTime?
+
+  // Audit / Approval Workflow
+  createdById     String
+  createdBy       User            @relation("CreatedExpenses", fields: [createdById], references: [id])
+  approvedById    String?
+  approvedBy      User?           @relation("ApprovedExpenses", fields: [approvedById], references: [id])
+  approvedAt      DateTime?
+
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  @@index([status])
+  @@index([expenseDate])
+  @@index([category])
+  @@index([createdById])
+  @@index([approvedById])
+  @@map("expenses")
 }

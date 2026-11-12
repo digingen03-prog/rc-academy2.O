@@ -14,6 +14,7 @@ import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { SalaryModule } from './modules/salary/salary.module';
 import { ScheduleModule } from './modules/schedule/schedule.module';
 import { FinanceAnalyticsModule } from './modules/finance-analytics/finance-analytics.module';
+import { ExpensesModule } from './modules/expenses/expenses.module';
 
 @Module({
   imports: [
@@ -35,6 +36,7 @@ import { FinanceAnalyticsModule } from './modules/finance-analytics/finance-anal
     DashboardModule,
     ScheduleModule,
     FinanceAnalyticsModule,
+    ExpensesModule,
   ],
 })
 export class AppModule {}

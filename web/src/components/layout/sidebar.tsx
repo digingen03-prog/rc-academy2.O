@@ -16,6 +16,7 @@ import {
   Calendar,
   X,
   FileText,
+  Receipt,
 } from 'lucide-react';
 import { useSidebar } from './sidebar-context';
 
@@ -27,6 +28,7 @@ const navigation = [
   { name: 'Students', href: '/students', icon: Users },
   { name: 'Smart Attendance', href: '/attendance', icon: QrCode },
   { name: 'Fees & Finance', href: '/fees', icon: CreditCard },
+  { name: 'Expenses', href: '/expenses', icon: Receipt },
   { name: 'Question Papers', href: '/examinations', icon: FileText },
   { name: 'AI Evaluation', href: '/answer-evaluation', icon: FileCheck2 },
 ];

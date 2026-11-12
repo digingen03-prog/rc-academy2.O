@@ -207,7 +207,11 @@ export class S3StorageService {
   /**
    * Generates a short-lived presigned download URL for an authorized user.
    */
-  async getPresignedDownloadUrl(objectKey: string, fileName?: string): Promise<{ downloadUrl: string; expiresIn: number }> {
+  async getPresignedDownloadUrl(
+    objectKey: string,
+    fileName?: string,
+    prefixPath: string = '/api/v1/fees/proofs/local-file',
+  ): Promise<{ downloadUrl: string; expiresIn: number }> {
     if (!objectKey) {
       throw new BadRequestException('Object key is required');
     }
@@ -237,9 +241,92 @@ export class S3StorageService {
 
     // Local Driver Fallback URL
     return {
-      downloadUrl: `/api/v1/fees/proofs/local-file?key=${encodeURIComponent(objectKey)}`,
+      downloadUrl: `${prefixPath}?key=${encodeURIComponent(objectKey)}`,
       expiresIn: this.presignedExpirySeconds,
     };
+  }
+
+  /**
+   * Generates a collision-resistant unique S3 object key for expense proofs.
+   */
+  generateExpenseObjectKey(expenseId: string, extension: string): string {
+    const timestamp = Date.now();
+    const randomUuid = crypto.randomUUID();
+    const safeExpenseId = (expenseId || 'new').replace(/[^a-zA-Z0-9_-]/g, '');
+    return `expenses/${safeExpenseId}/${timestamp}-${randomUuid}.${extension}`;
+  }
+
+  /**
+   * Uploads real binary file for expense receipt / proof to private AWS S3 bucket (or local storage fallback).
+   */
+  async uploadExpenseProof(params: {
+    buffer: Buffer;
+    originalFileName: string;
+    declaredMimeType: string;
+    sizeBytes: number;
+    expenseId: string;
+    actorId: string;
+  }): Promise<UploadProofResult> {
+    const { detectedMimeType, extension } = this.validateFileSignatureAndSize(
+      params.buffer,
+      params.declaredMimeType,
+    );
+
+    const objectKey = this.generateExpenseObjectKey(params.expenseId, extension);
+    const sanitizedFileName = path.basename(params.originalFileName).replace(/[^a-zA-Z0-9._-]/g, '_');
+
+    if (this.storageDriver === 's3') {
+      try {
+        const command = new PutObjectCommand({
+          Bucket: this.bucketName,
+          Key: objectKey,
+          Body: params.buffer,
+          ContentType: detectedMimeType,
+          Metadata: {
+            expenseid: params.expenseId,
+            actorid: params.actorId,
+            originalfilename: encodeURIComponent(sanitizedFileName),
+          },
+          ServerSideEncryption: 'AES256',
+        });
+
+        await this.s3Client.send(command);
+        this.logger.log(`Uploaded expense proof to private S3: s3://${this.bucketName}/${objectKey}`);
+
+        return {
+          objectKey,
+          fileName: sanitizedFileName,
+          fileSize: params.buffer.length,
+          mimeType: detectedMimeType,
+          storageDriver: 's3',
+        };
+      } catch (err: any) {
+        this.logger.error(`Failed to upload expense proof to S3 (${this.bucketName}): ${err.message}`, err.stack);
+        throw new InternalServerErrorException(
+          `Failed to upload expense proof to secure storage: ${err.message || 'S3 upload error'}`,
+        );
+      }
+    }
+
+    // Local Driver Fallback (when STORAGE_DRIVER=local)
+    try {
+      const targetDir = path.join(this.localRoot, path.dirname(objectKey));
+      fs.mkdirSync(targetDir, { recursive: true });
+      const targetFilePath = path.join(this.localRoot, objectKey);
+      fs.writeFileSync(targetFilePath, params.buffer);
+      this.logger.log(`Saved expense proof locally: ${targetFilePath}`);
+
+      return {
+        objectKey,
+        fileName: sanitizedFileName,
+        fileSize: params.buffer.length,
+        mimeType: detectedMimeType,
+        storageDriver: 'local',
+      };
+    } catch (err: any) {
+      this.logger.error(`Failed to save expense proof locally: ${err.message}`, err.stack);
+      throw new InternalServerErrorException(`Failed to persist file: ${err.message}`);
+    }
   }
 
   /**

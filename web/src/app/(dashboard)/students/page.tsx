@@ -130,6 +130,7 @@ export default function StudentsPage() {
   const [search, setSearch] = useState('');
   const [courseFilter, setCourseFilter] = useState('');
   const [batchFilter, setBatchFilter] = useState('');
+  const [subjectFilter, setSubjectFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('ALL');
   const [loading, setLoading] = useState(true);
 
@@ -145,6 +146,23 @@ export default function StudentsPage() {
         name: `${c.code || c.name} - ${b.name}`,
       }))
     );
+  }, [courses, courseFilter]);
+
+  // Available subjects based on selected courseFilter
+  const availableSubjects = useMemo(() => {
+    if (courseFilter) {
+      const selectedCourse = courses.find((c) => c.id === courseFilter);
+      return selectedCourse?.subjects || [];
+    }
+    const map = new Map<string, { id: string; name: string; code: string }>();
+    courses.forEach((c) => {
+      (c.subjects || []).forEach((s) => {
+        if (s && s.id && !map.has(s.id)) {
+          map.set(s.id, s);
+        }
+      });
+    });
+    return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
   }, [courses, courseFilter]);
 
   // Pagination states (Defaults to 100 per user request)
@@ -644,6 +662,7 @@ export default function StudentsPage() {
       if (search) queryParams.append('search', search);
       if (courseFilter) queryParams.append('classId', courseFilter);
       if (batchFilter) queryParams.append('batchId', batchFilter);
+      if (subjectFilter) queryParams.append('subjectId', subjectFilter);
       queryParams.append('page', String(currentPage));
       queryParams.append('limit', String(pageSize));
 
@@ -671,11 +690,11 @@ export default function StudentsPage() {
 
   useEffect(() => {
     loadData();
-  }, [search, courseFilter, batchFilter, currentPage, pageSize]);
+  }, [search, courseFilter, batchFilter, subjectFilter, currentPage, pageSize]);
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [search, courseFilter, batchFilter, statusFilter, selectedSubjectFilter]);
+  }, [search, courseFilter, batchFilter, subjectFilter, statusFilter, selectedSubjectFilter]);
 
   // Handle Manual Student Registration
   const handleManualSubmit = async (e: React.FormEvent) => {
@@ -1692,6 +1711,15 @@ export default function StudentsPage() {
       const hasCurrent = s.currentBatch?.id === batchFilter;
       if (!hasEnrollment && !hasCurrent) return false;
     }
+    if (subjectFilter) {
+      const selectedSubObj = availableSubjects.find((sub) => sub.id === subjectFilter);
+      const hasSubject = s.enrollments?.some(
+        (e) =>
+          e.subjectId === subjectFilter ||
+          (selectedSubObj && e.subjectName && e.subjectName.toLowerCase() === selectedSubObj.name.toLowerCase()),
+      );
+      if (!hasSubject) return false;
+    }
     if (selectedSubjectFilter) {
       const hasSubject = s.enrollments?.some(
         (e) => e.subjectName && e.subjectName.toLowerCase().includes(selectedSubjectFilter.toLowerCase()),
@@ -1830,6 +1858,11 @@ export default function StudentsPage() {
                     const courseObj = courses.find((c) => c.id === newCourse);
                     const batchExists = courseObj?.batches.some((b) => b.id === batchFilter);
                     if (!batchExists) setBatchFilter('');
+                    const subjectExists = courseObj?.subjects?.some((s) => s.id === subjectFilter);
+                    if (!subjectExists) {
+                      setSubjectFilter('');
+                      setSelectedSubjectFilter('');
+                    }
                   }
                 }}
                 className={`w-full pl-8 pr-7 py-2 text-xs font-semibold rounded-lg border transition appearance-none cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#FF8500]/20 focus:border-[#FF8500] ${
@@ -1873,7 +1906,36 @@ export default function StudentsPage() {
             </div>
           </div>
 
-          {/* 3. Status Filter */}
+          {/* 3. Subject Filter */}
+          <div className="flex items-center gap-1.5 min-w-[190px] flex-1 sm:flex-initial">
+            <div className="relative w-full">
+              <GraduationCap className="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-400 pointer-events-none" />
+              <select
+                value={subjectFilter}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setSubjectFilter(val);
+                  const subObj = availableSubjects.find((s) => s.id === val);
+                  setSelectedSubjectFilter(subObj?.name || '');
+                }}
+                className={`w-full pl-8 pr-7 py-2 text-xs font-semibold rounded-lg border transition appearance-none cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#FF8500]/20 focus:border-[#FF8500] ${
+                  subjectFilter
+                    ? 'bg-orange-50/70 border-[#FF8500] text-[#CC6B00] ring-1 ring-[#FF8500]/20'
+                    : 'bg-neutral-50 border-neutral-200 text-neutral-700 hover:border-neutral-300'
+                }`}
+              >
+                <option value="">{courseFilter ? 'All Subjects in Course' : 'All Subjects'}</option>
+                {availableSubjects.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name} {s.code ? `(${s.code})` : ''}
+                  </option>
+                ))}
+              </select>
+              <span className="absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none text-neutral-400 text-[10px]">▼</span>
+            </div>
+          </div>
+
+          {/* 4. Status Filter */}
           <div className="flex items-center gap-1.5 min-w-[130px] flex-1 sm:flex-initial">
             <div className="relative w-full">
               <select
@@ -1898,7 +1960,7 @@ export default function StudentsPage() {
 
         {/* Active Filters Summary & Reset / Bulk Action Buttons */}
         <div className="flex flex-wrap items-center justify-between gap-2">
-          {(courseFilter || batchFilter || statusFilter !== 'ALL' || selectedSubjectFilter || search) && (
+          {(courseFilter || batchFilter || subjectFilter || statusFilter !== 'ALL' || selectedSubjectFilter || search) && (
             <div className="flex items-center gap-2 shrink-0">
               <span className="text-[11px] font-medium text-neutral-500">
                 Showing <strong className="text-neutral-900">{filteredStudents.length}</strong> matching students
@@ -1908,6 +1970,7 @@ export default function StudentsPage() {
                 onClick={() => {
                   setCourseFilter('');
                   setBatchFilter('');
+                  setSubjectFilter('');
                   setStatusFilter('ALL');
                   setSelectedSubjectFilter('');
                   setSearch('');
@@ -1979,12 +2042,15 @@ export default function StudentsPage() {
                   </button>
                 </div>
               )}
-              {selectedSubjectFilter && (
+              {(selectedSubjectFilter || subjectFilter) && (
                 <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-orange-100 border border-orange-200 text-orange-900 text-xs font-semibold">
-                  <span>Subject: {selectedSubjectFilter}</span>
+                  <span>Subject: {selectedSubjectFilter || availableSubjects.find((s) => s.id === subjectFilter)?.name || subjectFilter}</span>
                   <button
                     type="button"
-                    onClick={() => setSelectedSubjectFilter('')}
+                    onClick={() => {
+                      setSelectedSubjectFilter('');
+                      setSubjectFilter('');
+                    }}
                     className="p-0.5 hover:bg-orange-200 rounded-full cursor-pointer"
                     title="Clear subject filter"
                   >
@@ -2024,10 +2090,13 @@ export default function StudentsPage() {
               <span className="font-semibold text-neutral-700 uppercase tracking-wider text-[11px]">
                 Subject Distribution (Click to filter table)
               </span>
-              {selectedSubjectFilter && (
+              {(selectedSubjectFilter || subjectFilter) && (
                 <button
                   type="button"
-                  onClick={() => setSelectedSubjectFilter('')}
+                  onClick={() => {
+                    setSelectedSubjectFilter('');
+                    setSubjectFilter('');
+                  }}
                   className="text-xs text-[#FF8500] hover:underline font-semibold cursor-pointer"
                 >
                   Show All Subjects
@@ -2039,14 +2108,25 @@ export default function StudentsPage() {
                 <p className="text-xs text-neutral-400 italic">No subject-specific enrollments recorded yet.</p>
               ) : (
                 analysisStats.subjects.map((sub) => {
-                  const isSelected = selectedSubjectFilter.toLowerCase() === sub.name.toLowerCase();
+                  const isSelected =
+                    (selectedSubjectFilter && selectedSubjectFilter.toLowerCase() === sub.name.toLowerCase()) ||
+                    (subjectFilter && availableSubjects.find((s) => s.id === subjectFilter)?.name.toLowerCase() === sub.name.toLowerCase());
                   return (
                     <button
                       key={sub.name}
                       type="button"
-                      onClick={() =>
-                        setSelectedSubjectFilter(isSelected ? '' : sub.name)
-                      }
+                      onClick={() => {
+                        if (isSelected) {
+                          setSelectedSubjectFilter('');
+                          setSubjectFilter('');
+                        } else {
+                          setSelectedSubjectFilter(sub.name);
+                          const matched = availableSubjects.find((s) => s.name.toLowerCase() === sub.name.toLowerCase());
+                          if (matched) {
+                            setSubjectFilter(matched.id);
+                          }
+                        }
+                      }}
                       className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer border ${
                         isSelected
                           ? 'bg-[#FF8500] text-white border-[#FF8500] shadow-sm'
@@ -5861,7 +5941,7 @@ export default function StudentsPage() {
           </div>
 
           {/* Active Filter Scope Context */}
-          {(courseFilter || batchFilter || statusFilter !== 'ALL' || selectedSubjectFilter || search) && (
+          {(courseFilter || batchFilter || subjectFilter || statusFilter !== 'ALL' || selectedSubjectFilter || search) && (
             <div className="p-3 bg-neutral-50 border border-neutral-200 rounded-xl text-xs space-y-1.5">
               <span className="font-bold text-neutral-700 text-[11px] uppercase tracking-wider block">
                 Applied Filter Scope:
@@ -5877,14 +5957,14 @@ export default function StudentsPage() {
                     Batch: {availableBatches.find((b) => b.id === batchFilter)?.name || batchFilter}
                   </span>
                 )}
+                {(subjectFilter || selectedSubjectFilter) && (
+                  <span className="px-2.5 py-0.5 rounded-full bg-orange-50 border border-orange-200 text-orange-800 text-[11px] font-medium">
+                    Subject: {availableSubjects.find((s) => s.id === subjectFilter)?.name || selectedSubjectFilter}
+                  </span>
+                )}
                 {statusFilter !== 'ALL' && (
                   <span className="px-2.5 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] font-medium">
                     Status: {statusFilter}
-                  </span>
-                )}
-                {selectedSubjectFilter && (
-                  <span className="px-2.5 py-0.5 rounded-full bg-orange-50 border border-orange-200 text-orange-800 text-[11px] font-medium">
-                    Subject: {selectedSubjectFilter}
                   </span>
                 )}
                 {search && (

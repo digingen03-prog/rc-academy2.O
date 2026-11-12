@@ -10,6 +10,7 @@ import {
   LuFileCheck2,
   LuEllipsis,
   LuTrendingUp,
+  LuReceipt,
 } from '@/components/icons';
 import { UserRole } from '@/lib/auth/use-role';
 
@@ -75,6 +76,14 @@ export const ALL_NAV_ITEMS: NavItem[] = [
     shortName: 'Fees',
     href: '/fees',
     icon: LuWallet,
+    roles: ['SUPER_ADMIN', 'ACADEMY_ADMIN', 'ACCOUNTANT'],
+  },
+  {
+    id: 'expenses',
+    name: 'Expenses',
+    shortName: 'Expenses',
+    href: '/expenses',
+    icon: LuReceipt,
     roles: ['SUPER_ADMIN', 'ACADEMY_ADMIN', 'ACCOUNTANT'],
   },
   {

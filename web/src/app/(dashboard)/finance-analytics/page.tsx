@@ -56,6 +56,8 @@ interface FinanceAnalyticsKPIs {
   academyShareAccrued: number;
 
   totalExpensesPaid: number;
+  approvedExpensesAmount?: number;
+  approvedExpensesCount?: number;
   netAcademyProfit: number;
   profitMargin: number;
   collectionEfficiency: number;
@@ -298,6 +300,7 @@ export default function FinanceAnalyticsPage() {
       ['Top-Line Academy Share Accrued', kpis.academyShareAccrued],
       [''],
       ['--- PROFITABILITY & EXPENSES ---'],
+      ['Super Admin Approved Operational Expenses', kpis.approvedExpensesAmount || 0],
       ['Total Operational Expenses Paid', kpis.totalExpensesPaid],
       ['Net Academy Retained Profit', kpis.netAcademyProfit],
       ['Profit Margin (%)', `${kpis.profitMargin}%`],
@@ -647,6 +650,13 @@ export default function FinanceAnalyticsPage() {
                     <strong className="font-mono text-red-600">-₹{kpis?.totalReversals.toLocaleString()}</strong>
                   </div>
 
+                  <div className="flex justify-between items-center py-1 border-b border-neutral-50">
+                    <span className="text-neutral-500">Approved Institutional Expenses</span>
+                    <strong className="font-mono text-amber-700">
+                      -₹{(kpis?.approvedExpensesAmount || 0).toLocaleString()}
+                    </strong>
+                  </div>
+
                   <div className="flex justify-between items-center pt-2 font-bold text-sm bg-emerald-50/70 p-2.5 rounded-xl border border-emerald-200">
                     <span className="text-emerald-900">Net Academy Profit</span>
                     <span className="font-mono text-emerald-800">₹{kpis?.netAcademyProfit.toLocaleString()}</span>
@@ -751,7 +761,22 @@ export default function FinanceAnalyticsPage() {
                     <div className="text-lg font-bold font-mono text-black">
                       ₹{kpis?.totalExpensesPaid.toLocaleString()}
                     </div>
-                    <p className="text-[10px] text-neutral-400">Paid faculty payouts & processed payment reversals</p>
+                    <p className="text-[10px] text-neutral-400">
+                      Faculty payouts + payment reversals + Super Admin approved operational expenses
+                    </p>
+                  </div>
+
+                  <div className="p-3 bg-amber-50/70 border border-amber-200 rounded-xl space-y-1">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] text-amber-800 uppercase font-semibold block">Approved Operational Expenses</span>
+                      <span className="text-[10px] bg-amber-200/60 text-amber-900 px-1.5 py-0.5 rounded-full font-bold">
+                        {kpis?.approvedExpensesCount || 0} approved
+                      </span>
+                    </div>
+                    <div className="text-lg font-bold font-mono text-amber-900">
+                      ₹{(kpis?.approvedExpensesAmount || 0).toLocaleString()}
+                    </div>
+                    <p className="text-[10px] text-amber-700">Calculated directly into net academy surplus</p>
                   </div>
 
                   <div className="p-3 bg-purple-50/70 border border-purple-200 rounded-xl space-y-1">

@@ -47,6 +47,7 @@ export class StudentsController {
       search?: string;
       batchId?: string;
       classId?: string;
+      subjectId?: string;
       page?: number;
       limit?: number;
     },

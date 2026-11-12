@@ -1261,9 +1261,18 @@ export class SalaryService {
     const totalStaffPaid = facultyPaid.add(fixedPaid);
     const pendingStaffSettlement = totalStaffAccrued.sub(totalStaffPaid);
 
-    // 4. Expenses & Net Profitability
-    const totalExpensesPaid = totalStaffPaid.add(totalReversed);
-    const netAcademyProfit = totalCollected.sub(totalStaffAccrued).sub(totalReversed);
+    // 4. Institutional Expenses (Only Super Admin APPROVED expenses are calculated)
+    const approvedExpensesAgg = await (this.prisma as any).expense.aggregate({
+      where: { status: 'APPROVED' },
+      _sum: { amount: true },
+      _count: { id: true },
+    });
+    const approvedExpensesAmount = approvedExpensesAgg._sum.amount || new Decimal(0);
+    const approvedExpensesCount = approvedExpensesAgg._count.id || 0;
+
+    // Expenses & Net Profitability (Staff payouts + Reversals + Super Admin Approved Expenses)
+    const totalExpensesPaid = totalStaffPaid.add(totalReversed).add(approvedExpensesAmount);
+    const netAcademyProfit = totalCollected.sub(totalStaffAccrued).sub(totalReversed).sub(approvedExpensesAmount);
     const grossInvoiced = invoiceAgg._sum.totalAmount || new Decimal(0);
     const grossBalance = invoiceAgg._sum.balanceAmount || new Decimal(0);
     const totalDiscounts = invoiceAgg._sum.discountAmount || new Decimal(0);
@@ -1302,6 +1311,24 @@ export class SalaryService {
         const key = `${monthNames[d.getMonth()]} ${d.getFullYear()}`;
         if (monthlyMap.has(key)) {
           monthlyMap.get(key)!.payouts += Number(l.earnedAmount);
+        }
+      }
+    }
+
+    const sixMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 5, 1);
+    const approvedMonthlyExpenses = await (this.prisma as any).expense.findMany({
+      where: {
+        status: 'APPROVED',
+        expenseDate: { gte: sixMonthsAgo },
+      },
+    });
+
+    for (const exp of approvedMonthlyExpenses) {
+      if (exp.expenseDate) {
+        const d = new Date(exp.expenseDate);
+        const key = `${monthNames[d.getMonth()]} ${d.getFullYear()}`;
+        if (monthlyMap.has(key)) {
+          monthlyMap.get(key)!.payouts += Number(exp.amount);
         }
       }
     }
@@ -1364,7 +1391,9 @@ export class SalaryService {
         pendingStaffSettlement: pendingStaffSettlement.toNumber(),
         academyShareAccrued: academyShareAccrued.toNumber(),
 
-        // Expenses & Profit
+        // Expenses & Profit (Approved institutional expenses included)
+        approvedExpensesAmount: approvedExpensesAmount.toNumber(),
+        approvedExpensesCount,
         totalExpensesPaid: totalExpensesPaid.toNumber(),
         netAcademyProfit: netAcademyProfit.toNumber(),
         profitMargin,

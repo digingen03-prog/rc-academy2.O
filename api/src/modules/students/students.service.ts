@@ -113,6 +113,7 @@ export class StudentsService {
       search?: string;
       batchId?: string;
       classId?: string;
+      subjectId?: string;
       page?: number;
       limit?: number;
     },
@@ -186,17 +187,20 @@ export class StudentsService {
       }
     }
 
-    if (query.batchId && query.classId) {
+    const enrollmentFilter: any = { isActive: true };
+    if (query.batchId) {
+      enrollmentFilter.batchId = query.batchId;
+    }
+    if (query.classId) {
+      enrollmentFilter.batch = { classId: query.classId };
+    }
+    if (query.subjectId) {
+      enrollmentFilter.subjectId = query.subjectId;
+    }
+
+    if (query.batchId || query.classId || query.subjectId) {
       where.batchEnrollments = {
-        some: { batchId: query.batchId, batch: { classId: query.classId }, isActive: true },
-      };
-    } else if (query.batchId) {
-      where.batchEnrollments = {
-        some: { batchId: query.batchId, isActive: true },
-      };
-    } else if (query.classId) {
-      where.batchEnrollments = {
-        some: { batch: { classId: query.classId }, isActive: true },
+        some: enrollmentFilter,
       };
     }
 

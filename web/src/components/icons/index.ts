@@ -40,7 +40,8 @@ import {
   Activity as LuActivity,
   UserPlus as LuUserPlus,
   TrendingUp as LuTrendingUp,
-  PieChart as LuPieChart
+  PieChart as LuPieChart,
+  Receipt as LuReceipt,
 } from 'lucide-react';
 
 export {
@@ -85,5 +86,6 @@ export {
   LuActivity,
   LuUserPlus,
   LuTrendingUp,
-  LuPieChart
+  LuPieChart,
+  LuReceipt,
 };
