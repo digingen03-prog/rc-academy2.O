@@ -17,6 +17,7 @@ import {
   X,
   FileText,
   Receipt,
+  PieChart,
 } from 'lucide-react';
 import { useSidebar } from './sidebar-context';
 
@@ -29,6 +30,7 @@ const navigation = [
   { name: 'Smart Attendance', href: '/attendance', icon: QrCode },
   { name: 'Fees & Finance', href: '/fees', icon: CreditCard },
   { name: 'Expenses', href: '/expenses', icon: Receipt },
+  { name: 'Admin Reports', href: '/reports', icon: PieChart },
   { name: 'Question Papers', href: '/examinations', icon: FileText },
   { name: 'AI Evaluation', href: '/answer-evaluation', icon: FileCheck2 },
 ];

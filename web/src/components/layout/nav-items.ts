@@ -11,6 +11,7 @@ import {
   LuEllipsis,
   LuTrendingUp,
   LuReceipt,
+  LuPieChart,
 } from '@/components/icons';
 import { UserRole } from '@/lib/auth/use-role';
 
@@ -93,6 +94,14 @@ export const ALL_NAV_ITEMS: NavItem[] = [
     href: '/finance-analytics',
     icon: LuTrendingUp,
     roles: ['SUPER_ADMIN'],
+  },
+  {
+    id: 'reports',
+    name: 'Admin Reports & Ledger',
+    shortName: 'Reports',
+    href: '/reports',
+    icon: LuPieChart,
+    roles: ['SUPER_ADMIN', 'ACADEMY_ADMIN', 'ACCOUNTANT'],
   },
   {
     id: 'examinations',

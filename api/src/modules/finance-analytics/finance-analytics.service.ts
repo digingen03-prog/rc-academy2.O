@@ -1146,6 +1146,348 @@ export class FinanceAnalyticsService {
       runningTotal,
     };
   }
+
+  /**
+   * Generates a unified all-transactions financial report for admin:
+   * 1. Fee Collections (inflows from students)
+   * 2. Staff & Faculty Settlements / Payouts (outflows)
+   * 3. Super Admin Approved Institutional Expenses (outflows)
+   * 4. Fee Reversals / Refunds (outflows)
+   * Includes summary totals (total received, total settled, total expenses, net cash flow)
+   */
+  async getTransactionsReport(query: {
+    startDate?: string;
+    endDate?: string;
+    month?: string;
+    type?: string;
+    paymentMethod?: string;
+    search?: string;
+    page?: number;
+    limit?: number;
+  }) {
+    let startDate: Date | undefined;
+    let endDate: Date | undefined;
+
+    if (query.month && query.month !== 'ALL') {
+      const [yearStr, monthStr] = query.month.split('-');
+      const y = parseInt(yearStr, 10);
+      const m = parseInt(monthStr, 10) - 1;
+      if (!isNaN(y) && !isNaN(m)) {
+        startDate = new Date(y, m, 1, 0, 0, 0, 0);
+        endDate = new Date(y, m + 1, 0, 23, 59, 59, 999);
+      }
+    } else {
+      if (query.startDate) startDate = new Date(query.startDate);
+      if (query.endDate) {
+        const ed = new Date(query.endDate);
+        ed.setHours(23, 59, 59, 999);
+        endDate = ed;
+      }
+    }
+
+    const paymentWhere: any = {};
+    if (startDate && endDate) {
+      paymentWhere.paidAt = { gte: startDate, lte: endDate };
+    }
+    if (query.paymentMethod && query.paymentMethod !== 'ALL') {
+      paymentWhere.paymentMethod = query.paymentMethod;
+    }
+
+    const payoutWhere: any = {
+      status: { in: ['PAID', 'APPROVED'] },
+    };
+    if (startDate && endDate) {
+      payoutWhere.OR = [
+        { paidAt: { gte: startDate, lte: endDate } },
+        { approvedAt: { gte: startDate, lte: endDate } },
+      ];
+    }
+    if (query.paymentMethod && query.paymentMethod !== 'ALL') {
+      payoutWhere.paymentMethod = query.paymentMethod;
+    }
+
+    const expenseWhere: any = {
+      status: 'APPROVED',
+    };
+    if (startDate && endDate) {
+      expenseWhere.expenseDate = { gte: startDate, lte: endDate };
+    }
+    if (query.paymentMethod && query.paymentMethod !== 'ALL') {
+      expenseWhere.paymentMethod = query.paymentMethod;
+    }
+
+    const [payments, payouts, expenses] = await Promise.all([
+      this.prisma.payment.findMany({
+        where: paymentWhere,
+        include: {
+          student: {
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+              studentCode: true,
+              admissionNumber: true,
+            },
+          },
+          allocations: {
+            include: {
+              invoice: {
+                select: {
+                  invoiceNumber: true,
+                  class: { select: { id: true, name: true } },
+                },
+              },
+            },
+          },
+          recordedBy: {
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+            },
+          },
+        },
+        orderBy: { paidAt: 'desc' },
+      }),
+      this.prisma.staffSalaryPayout.findMany({
+        where: payoutWhere,
+        include: {
+          user: {
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+              designation: true,
+              email: true,
+            },
+          },
+          approvedBy: {
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+            },
+          },
+        },
+        orderBy: { approvedAt: 'desc' },
+      }),
+      (this.prisma as any).expense.findMany({
+        where: expenseWhere,
+        include: {
+          createdBy: {
+            select: { id: true, firstName: true, lastName: true },
+          },
+          approvedBy: {
+            select: { id: true, firstName: true, lastName: true },
+          },
+        },
+        orderBy: { expenseDate: 'desc' },
+      }),
+    ]);
+
+    const allTransactions: Array<{
+      id: string;
+      date: string;
+      type: 'FEE_COLLECTION' | 'STAFF_PAYOUT' | 'EXPENSE' | 'REVERSAL';
+      typeLabel: string;
+      reference: string;
+      title: string;
+      party: string;
+      partySubtitle?: string;
+      flow: 'INFLOW' | 'OUTFLOW';
+      amount: number;
+      paymentMethod: string;
+      status: string;
+      notes?: string | null;
+      recordedBy?: string;
+      category?: string;
+      hasProof?: boolean;
+      proofUrl?: string | null;
+    }> = [];
+
+    // Map payments
+    for (const p of payments) {
+      const studentName = p.student
+        ? `${p.student.firstName} ${p.student.lastName || ''}`.trim()
+        : 'Student';
+      const className = p.allocations?.[0]?.invoice?.class?.name || '';
+      const recordedByName = p.recordedBy
+        ? `${p.recordedBy.firstName} ${p.recordedBy.lastName || ''}`.trim()
+        : 'Admin';
+
+      if (p.status === 'COMPLETED') {
+        allTransactions.push({
+          id: `pay-${p.id}`,
+          date: (p.paidAt || new Date()).toISOString(),
+          type: 'FEE_COLLECTION',
+          typeLabel: 'Student Fee Collection',
+          reference: p.receiptNumber || `REC-${p.id.slice(0, 8).toUpperCase()}`,
+          title: `Fee Payment - ${studentName}${className ? ` (${className})` : ''}`,
+          party: studentName,
+          partySubtitle: className || p.student?.admissionNumber || p.student?.studentCode || 'Student Fee',
+          flow: 'INFLOW',
+          amount: Number(p.amount),
+          paymentMethod: p.paymentMethod || 'CASH',
+          status: p.status,
+          notes: p.notes,
+          recordedBy: recordedByName,
+          category: 'STUDENT_FEE',
+        });
+      }
+
+      if (p.status === 'REVERSED' || p.reversedAt) {
+        allTransactions.push({
+          id: `rev-${p.id}`,
+          date: (p.reversedAt || p.paidAt || new Date()).toISOString(),
+          type: 'REVERSAL',
+          typeLabel: 'Fee Refund / Reversal',
+          reference: p.receiptNumber ? `${p.receiptNumber}-REV` : `REV-${p.id.slice(0, 8).toUpperCase()}`,
+          title: `Payment Reversal - ${studentName}`,
+          party: studentName,
+          partySubtitle: 'Reversed / Refunded Fee',
+          flow: 'OUTFLOW',
+          amount: Number(p.amount),
+          paymentMethod: p.paymentMethod || 'CASH',
+          status: 'REVERSED',
+          notes: p.reversalReason || p.notes,
+          recordedBy: recordedByName,
+          category: 'REFUND',
+        });
+      }
+    }
+
+    // Map staff payouts
+    for (const s of payouts) {
+      const staffName = s.user
+        ? `${s.user.firstName} ${s.user.lastName || ''}`.trim()
+        : 'Faculty / Staff';
+      const approverName = s.approvedBy
+        ? `${s.approvedBy.firstName} ${s.approvedBy.lastName || ''}`.trim()
+        : 'Super Admin';
+
+      allTransactions.push({
+        id: `payout-${s.id}`,
+        date: (s.paidAt || s.approvedAt || new Date()).toISOString(),
+        type: 'STAFF_PAYOUT',
+        typeLabel: 'Staff Compensation Payout',
+        reference: s.payoutNumber || s.reference || `PAY-${s.id.slice(0, 8).toUpperCase()}`,
+        title: `Compensation Settlement - ${staffName}`,
+        party: staffName,
+        partySubtitle: s.user?.designation || 'Staff Member',
+        flow: 'OUTFLOW',
+        amount: Number(s.totalAmount),
+        paymentMethod: s.paymentMethod || 'BANK_TRANSFER',
+        status: s.status,
+        notes: s.notes,
+        recordedBy: approverName,
+        category: 'STAFF_SALARY',
+      });
+    }
+
+    // Map operational expenses
+    for (const e of expenses) {
+      const recordedBy = e.createdBy
+        ? `${e.createdBy.firstName} ${e.createdBy.lastName || ''}`.trim()
+        : 'Admin';
+      const categoryLabel = (e.category || 'OTHER').replace(/_/g, ' ');
+      allTransactions.push({
+        id: `exp-${e.id}`,
+        date: (e.expenseDate || e.createdAt).toISOString(),
+        type: 'EXPENSE',
+        typeLabel: 'Operational Expense',
+        reference: e.referenceNumber || `EXP-${e.id.slice(0, 8).toUpperCase()}`,
+        title: e.title,
+        party: categoryLabel,
+        partySubtitle: e.approvedBy ? `Approved by ${e.approvedBy.firstName}` : 'Approved Expense',
+        flow: 'OUTFLOW',
+        amount: Number(e.amount),
+        paymentMethod: e.paymentMethod || 'CASH',
+        status: e.status,
+        notes: e.notes,
+        recordedBy,
+        category: e.category,
+        hasProof: Boolean(e.proofObjectKey || e.proofUrl),
+        proofUrl: e.proofUrl,
+      });
+    }
+
+    let totalReceived = 0;
+    let receivedCount = 0;
+    let totalSettled = 0;
+    let settledCount = 0;
+    let totalExpenses = 0;
+    let expensesCount = 0;
+    let totalReversals = 0;
+    let reversalsCount = 0;
+
+    for (const t of allTransactions) {
+      if (t.type === 'FEE_COLLECTION') {
+        totalReceived += t.amount;
+        receivedCount++;
+      } else if (t.type === 'STAFF_PAYOUT') {
+        totalSettled += t.amount;
+        settledCount++;
+      } else if (t.type === 'EXPENSE') {
+        totalExpenses += t.amount;
+        expensesCount++;
+      } else if (t.type === 'REVERSAL') {
+        totalReversals += t.amount;
+        reversalsCount++;
+      }
+    }
+
+    const netCashFlow = totalReceived - totalSettled - totalExpenses - totalReversals;
+
+    let filtered = allTransactions;
+
+    if (query.type && query.type !== 'ALL') {
+      filtered = filtered.filter((t) => t.type === query.type);
+    }
+
+    if (query.search && query.search.trim()) {
+      const q = query.search.trim().toLowerCase();
+      filtered = filtered.filter(
+        (t) =>
+          t.title.toLowerCase().includes(q) ||
+          t.reference.toLowerCase().includes(q) ||
+          t.party.toLowerCase().includes(q) ||
+          (t.partySubtitle && t.partySubtitle.toLowerCase().includes(q)) ||
+          (t.notes && t.notes.toLowerCase().includes(q)) ||
+          (t.paymentMethod && t.paymentMethod.toLowerCase().includes(q)),
+      );
+    }
+
+    // Sort chronologically descending (newest first)
+    filtered.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+    const page = Math.max(1, query.page || 1);
+    const limit = Math.max(1, Math.min(200, query.limit || 50));
+    const skip = (page - 1) * limit;
+    const paginatedItems = filtered.slice(skip, skip + limit);
+
+    return {
+      selectedMonth: query.month || (startDate ? this.formatCycleLabel(query.month || '') : 'ALL'),
+      summary: {
+        totalReceived,
+        receivedCount,
+        totalSettled,
+        settledCount,
+        totalExpenses,
+        expensesCount,
+        totalReversals,
+        reversalsCount,
+        netCashFlow,
+        totalTransactionsCount: allTransactions.length,
+      },
+      items: paginatedItems,
+      pagination: {
+        page,
+        limit,
+        total: filtered.length,
+        totalPages: Math.ceil(filtered.length / limit) || 1,
+      },
+    };
+  }
 }
 
 

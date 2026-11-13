@@ -61,19 +61,19 @@ export class SalaryController {
   }
 
   // ----------------------------------------------------
-  // Executive Finance Analytics & Settlements (Super Admin Only)
+  // Executive Finance Analytics & Settlements
   // ----------------------------------------------------
 
   @Get('analytics')
-  @Roles(UserRoleType.SUPER_ADMIN)
-  async getFinanceAnalytics() {
-    return this.salaryService.getFinanceExecutiveAnalytics();
+  @Roles(UserRoleType.SUPER_ADMIN, UserRoleType.ACADEMY_ADMIN, UserRoleType.ACCOUNTANT)
+  async getFinanceAnalytics(@Query('month') month?: string) {
+    return this.salaryService.getFinanceExecutiveAnalytics(month);
   }
 
   @Get('staff-settlements')
-  @Roles(UserRoleType.SUPER_ADMIN)
-  async getStaffSettlementsOverview() {
-    return this.salaryService.getStaffSettlementsOverview();
+  @Roles(UserRoleType.SUPER_ADMIN, UserRoleType.ACADEMY_ADMIN, UserRoleType.ACCOUNTANT)
+  async getStaffSettlementsOverview(@Query('month') month?: string) {
+    return this.salaryService.getStaffSettlementsOverview(month);
   }
 
   @Get('payouts')

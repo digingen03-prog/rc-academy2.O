@@ -1157,12 +1157,30 @@ export class SalaryService {
   // EXECUTIVE FINANCE ANALYTICS (SUPER ADMIN)
   // ==========================================
 
-  async getFinanceExecutiveAnalytics() {
+  async getFinanceExecutiveAnalytics(month?: string) {
     const now = new Date();
+    const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const selectedMonth = month && month !== 'ALL' ? month : undefined;
+
+    let startDate: Date | undefined;
+    let endDate: Date | undefined;
+    if (selectedMonth) {
+      const [yearStr, monthStr] = selectedMonth.split('-');
+      const year = parseInt(yearStr, 10);
+      const mIdx = parseInt(monthStr, 10) - 1;
+      if (!isNaN(year) && !isNaN(mIdx)) {
+        startDate = new Date(year, mIdx, 1, 0, 0, 0, 0);
+        endDate = new Date(year, mIdx + 1, 0, 23, 59, 59, 999);
+      }
+    }
 
     // 1. Fee Invoices Aggregates
+    const invoiceWhere: any = { status: { not: 'CANCELLED' } };
+    if (startDate && endDate) {
+      invoiceWhere.createdAt = { gte: startDate, lte: endDate };
+    }
     const invoiceAgg = await this.prisma.feeInvoice.aggregate({
-      where: { status: { not: 'CANCELLED' } },
+      where: invoiceWhere,
       _sum: {
         totalAmount: true,
         paidAmount: true,
@@ -1172,17 +1190,26 @@ export class SalaryService {
       _count: { id: true },
     });
 
+    const overdueWhere: any = {
+      status: { in: ['UNPAID', 'PARTIAL'] },
+      dueDate: { lt: endDate || now },
+    };
+    if (startDate && endDate) {
+      overdueWhere.createdAt = { lte: endDate };
+    }
     const overdueAgg = await this.prisma.feeInvoice.aggregate({
-      where: {
-        status: { in: ['UNPAID', 'PARTIAL'] },
-        dueDate: { lt: now },
-      },
+      where: overdueWhere,
       _sum: { balanceAmount: true },
       _count: { id: true },
     });
 
     // 2. Payments & Collections
+    const paymentWhere: any = {};
+    if (startDate && endDate) {
+      paymentWhere.paidAt = { gte: startDate, lte: endDate };
+    }
     const payments = await this.prisma.payment.findMany({
+      where: paymentWhere,
       orderBy: { paidAt: 'desc' },
     });
 
@@ -1214,15 +1241,21 @@ export class SalaryService {
     }
 
     // 3. Staff Salary Ledgers & Liabilities
+    const ledgerWhere: any = { isReversed: false };
+    if (selectedMonth && startDate && endDate) {
+      ledgerWhere.OR = [
+        { payPeriod: selectedMonth },
+        { createdAt: { gte: startDate, lte: endDate } },
+      ];
+    }
     const activeLedgers = await this.prisma.staffSalaryLedger.findMany({
-      where: { isReversed: false },
+      where: ledgerWhere,
     });
 
-    const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
     const activeAccruals = await this.prisma.staffAccrualLedger.findMany({
       where: {
         type: 'ACCRUAL',
-        payPeriod: currentMonth,
+        payPeriod: selectedMonth || currentMonth,
       },
     });
 
@@ -1262,8 +1295,12 @@ export class SalaryService {
     const pendingStaffSettlement = totalStaffAccrued.sub(totalStaffPaid);
 
     // 4. Institutional Expenses (Only Super Admin APPROVED expenses are calculated)
+    const expenseWhere: any = { status: 'APPROVED' };
+    if (startDate && endDate) {
+      expenseWhere.expenseDate = { gte: startDate, lte: endDate };
+    }
     const approvedExpensesAgg = await (this.prisma as any).expense.aggregate({
-      where: { status: 'APPROVED' },
+      where: expenseWhere,
       _sum: { amount: true },
       _count: { id: true },
     });
@@ -1337,7 +1374,10 @@ export class SalaryService {
     const classes = await this.prisma.class.findMany({
       include: {
         feeInvoices: {
-          where: { status: { not: 'CANCELLED' } },
+          where: {
+            status: { not: 'CANCELLED' },
+            ...(startDate && endDate ? { createdAt: { gte: startDate, lte: endDate } } : {}),
+          },
         },
       },
     });
@@ -1372,6 +1412,7 @@ export class SalaryService {
     });
 
     return {
+      selectedMonth: selectedMonth || 'ALL',
       kpis: {
         totalCollected: totalCollected.toNumber(),
         netCollections: totalCollected.sub(totalReversed).toNumber(),
@@ -1429,9 +1470,10 @@ export class SalaryService {
   // STAFF SETTLEMENTS OVERVIEW
   // ==========================================
 
-  async getStaffSettlementsOverview() {
+  async getStaffSettlementsOverview(month?: string) {
     const now = new Date();
     const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const targetMonth = month && month !== 'ALL' ? month : currentMonth;
 
     const staffUsers = await this.prisma.user.findMany({
       where: {
@@ -1459,7 +1501,7 @@ export class SalaryService {
     const activeAccruals = await this.prisma.staffAccrualLedger.findMany({
       where: {
         type: 'ACCRUAL',
-        payPeriod: currentMonth,
+        payPeriod: targetMonth,
       },
     });
 

@@ -52,5 +52,37 @@ export class FinanceAnalyticsController {
       viewerId,
     );
   }
+
+  /**
+   * GET /finance-analytics/reports/transactions
+   * Unified transaction report for admin: Fee Collections, Staff Settlements/Payouts, Operational Expenses, Reversals.
+   */
+  @Get('reports/transactions')
+  @Roles(
+    UserRoleType.SUPER_ADMIN,
+    UserRoleType.ACADEMY_ADMIN,
+    UserRoleType.ACCOUNTANT,
+  )
+  async getTransactionsReport(
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+    @Query('month') month?: string,
+    @Query('type') type?: string,
+    @Query('paymentMethod') paymentMethod?: string,
+    @Query('search') search?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.analyticsService.getTransactionsReport({
+      startDate,
+      endDate,
+      month,
+      type,
+      paymentMethod,
+      search,
+      page: page ? parseInt(page, 10) : 1,
+      limit: limit ? parseInt(limit, 10) : 50,
+    });
+  }
 }
 

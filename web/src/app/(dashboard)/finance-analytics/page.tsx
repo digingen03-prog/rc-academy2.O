@@ -173,6 +173,10 @@ export default function FinanceAnalyticsPage() {
   const [ledgerEntries, setLedgerEntries] = useState<LedgerEntry[]>([]);
 
   // Search & Filters
+  const [selectedMonth, setSelectedMonth] = useState<string>(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  });
   const [staffSearchQuery, setStaffSearchQuery] = useState('');
   const [ledgerSearchQuery, setLedgerSearchQuery] = useState('');
   const [ledgerStatusFilter, setLedgerStatusFilter] = useState('');
@@ -186,12 +190,13 @@ export default function FinanceAnalyticsPage() {
   const [settlingSubmitting, setSettlingSubmitting] = useState(false);
 
   // Load all analytics data
-  const loadFinanceData = async () => {
+  const loadFinanceData = async (monthToLoad = selectedMonth) => {
     try {
       setErrorMsg(null);
+      const queryParam = monthToLoad && monthToLoad !== 'ALL' ? `?month=${monthToLoad}` : '';
       const [analyticsRes, settlementsRes, payoutsRes, ledgerRes] = await Promise.all([
-        ApiClient.fetch<any>('/salary/analytics'),
-        ApiClient.fetch<any>('/salary/staff-settlements'),
+        ApiClient.fetch<any>(`/salary/analytics${queryParam}`),
+        ApiClient.fetch<any>(`/salary/staff-settlements${queryParam}`),
         ApiClient.fetch<any>('/salary/payouts'),
         ApiClient.fetch<any>('/salary/ledger'),
       ]);
@@ -225,16 +230,16 @@ export default function FinanceAnalyticsPage() {
   useEffect(() => {
     if (!authLoading) {
       if (isSuperAdmin) {
-        loadFinanceData();
+        loadFinanceData(selectedMonth);
       } else {
         setLoading(false);
       }
     }
-  }, [authLoading, isSuperAdmin]);
+  }, [authLoading, isSuperAdmin, selectedMonth]);
 
   const handleRefresh = async () => {
     setRefreshing(true);
-    await loadFinanceData();
+    await loadFinanceData(selectedMonth);
   };
 
   // Open Direct Settlement Modal
@@ -426,6 +431,84 @@ export default function FinanceAnalyticsPage() {
             >
               <Download className="w-3.5 h-3.5" />
               <span>Export CSV</span>
+            </Button>
+          </div>
+        </div>
+
+        {/* Month & Period Filter Toolbar */}
+        <div className="bg-white p-3.5 rounded-2xl border border-neutral-200 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-bold text-neutral-700 flex items-center gap-1.5 uppercase tracking-wider text-[11px]">
+              <Calendar className="w-3.5 h-3.5 text-[#FF8500]" />
+              Period Filter:
+            </span>
+
+            {/* Month Input */}
+            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-neutral-200 bg-neutral-50/70 text-xs">
+              <input
+                type="month"
+                value={selectedMonth === 'ALL' ? '' : selectedMonth}
+                onChange={(e) => setSelectedMonth(e.target.value || 'ALL')}
+                className="bg-transparent text-xs text-neutral-800 font-bold focus:outline-none cursor-pointer"
+              />
+            </div>
+
+            {/* Quick Filter Buttons */}
+            <button
+              type="button"
+              onClick={() => {
+                const now = new Date();
+                setSelectedMonth(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`);
+              }}
+              className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition cursor-pointer border ${
+                selectedMonth !== 'ALL' &&
+                selectedMonth === `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`
+                  ? 'bg-[#FF8500] text-white border-[#FF8500] shadow-sm'
+                  : 'bg-neutral-50 hover:bg-[#FFF4E5] hover:text-[#CC6B00] border-neutral-200 text-neutral-700'
+              }`}
+            >
+              This Month
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                const prev = new Date();
+                prev.setMonth(prev.getMonth() - 1);
+                setSelectedMonth(`${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, '0')}`);
+              }}
+              className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-neutral-50 hover:bg-[#FFF4E5] hover:text-[#CC6B00] border border-neutral-200 text-neutral-700 transition cursor-pointer"
+            >
+              Last Month
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setSelectedMonth('ALL')}
+              className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition cursor-pointer border ${
+                selectedMonth === 'ALL'
+                  ? 'bg-neutral-900 text-white border-neutral-900 shadow-sm'
+                  : 'bg-neutral-50 hover:bg-neutral-100 border-neutral-200 text-neutral-700'
+              }`}
+            >
+              All Time
+            </button>
+
+            <Badge variant="outline" className="text-[11px] font-semibold bg-neutral-50 border-neutral-200 text-neutral-600">
+              {selectedMonth === 'ALL' ? 'Displaying All-Time Aggregates' : `Cycle: ${selectedMonth}`}
+            </Badge>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => router.push('/reports')}
+              className="text-xs flex items-center gap-1.5 text-neutral-700 hover:text-black border-neutral-200 hover:border-neutral-300"
+            >
+              <FileText className="w-3.5 h-3.5 text-[#FF8500]" />
+              <span>All Transactions & Reports</span>
+              <ArrowUpRight className="w-3.5 h-3.5 text-neutral-400" />
             </Button>
           </div>
         </div>
